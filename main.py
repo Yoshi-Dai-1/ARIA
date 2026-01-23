@@ -7,15 +7,15 @@ from time import sleep
 from dotenv import load_dotenv
 from pathlib import Path
 
-# 1. 検索パスにサブモジュールのソースフォルダを追加
-# 階層が edinet_xbrl_prep/edinet_xbrl_prep になっているため
-submodule_path = os.path.join(os.path.dirname(__file__), 'edinet_xbrl_prep', 'edinet_xbrl_prep')
-sys.path.append(submodule_path)
+# 1. 検索パスにサブモジュールのルートフォルダを追加
+# パッケージとして edinet_xbrl_prep を認識させるため
+submodule_root = os.path.abspath(os.path.join(os.path.dirname(__file__), 'edinet_xbrl_prep'))
+sys.path.insert(0, submodule_root)
 
-# 2. ファイル名から直接インポートする
-from edinet_api import request_term, request_doc, edinet_response_metadata
-from link_base_file_analyzer import account_list_common
-from fs_tbl import get_fs_tbl
+# 2. パッケージ形式でインポートする
+from edinet_xbrl_prep.edinet_api import request_term, request_doc, edinet_response_metadata
+from edinet_xbrl_prep.link_base_file_analyzer import account_list_common
+from edinet_xbrl_prep.fs_tbl import get_fs_tbl
 
 # 環境変数の読み込み
 load_dotenv()
