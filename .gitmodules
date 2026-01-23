@@ -1,0 +1,3 @@
+[submodule "edinet_xbrl_prep"]
+	path = edinet_xbrl_prep
+	url = https://github.com/nororo/edinet_xbrl_prep.git
