@@ -17,4 +17,3 @@ tqdm>=4.67.1
 wordcloud>=1.9.4
 xlrd>=2.0.1
 python-dotenv
-git+https://github.com/nororo/edinet_xbrl_prep.git
