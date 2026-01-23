@@ -93,7 +93,7 @@ for docid in tqdm(yuho_filtered.index):
 # データの統合と保存
 if fs_tbl_list:
     final_df = pd.concat(fs_tbl_list)
-    output_file = "financial_data.csv"
+    output_file = DATA_PATH / "financial_data.csv"
     final_df.to_csv(output_file, index=False, encoding="utf-8-sig")
     print(f"CSV保存完了: {output_file}")
 else:
