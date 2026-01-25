@@ -65,8 +65,15 @@ edinet_meta = edinet_response_metadata(
 edinet_meta.set_data(res_results)
 
 # 有価証券報告書に絞り込み（全業種）
-# docTypeCode=='120' (有価証券報告書), ordinanceCode=='010' (内閣府令), formCode=='030000' (第三号様式)
 print("有価証券報告書を抽出中...")
+
+# 【選択肢C対応】Submoduleのエラーを避けるため、まず素のメタデータを取得してチェック
+raw_df = edinet_meta.get_metadata_pandas_df()
+
+if raw_df.empty or 'docTypeCode' not in raw_df.columns:
+    print("指定期間内に書類が見つかりませんでした。処理を終了します。")
+    exit(0)
+
 yuho_df = edinet_meta.get_yuho_df()
 
 # フィルタリング: 有価証券報告書のみを対象とする
