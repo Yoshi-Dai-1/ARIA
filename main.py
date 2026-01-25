@@ -1,14 +1,15 @@
 import os
 import sys
 import pandas as pd
-from datetime import datetime
+import sqlite3
+import shutil
+from datetime import datetime, timedelta
 from tqdm import tqdm
 from time import sleep
 from dotenv import load_dotenv
 from pathlib import Path
 
 # 1. 検索パスにサブモジュールのルートフォルダを追加
-# パッケージとして edinet_xbrl_prep を認識させるため
 submodule_root = os.path.abspath(os.path.join(os.path.dirname(__file__), 'edinet_xbrl_prep'))
 sys.path.insert(0, submodule_root)
 
@@ -28,13 +29,28 @@ if not API_KEY:
 # 設定
 DATA_PATH = Path("./data")
 DATA_PATH.mkdir(exist_ok=True)
-(DATA_PATH / "raw/xbrl_doc").mkdir(parents=True, exist_ok=True)
-(DATA_PATH / "raw/xbrl_doc_ext").mkdir(parents=True, exist_ok=True)
+RAW_XBRL_DIR = DATA_PATH / "raw/xbrl_doc"
+RAW_XBRL_EXT_DIR = DATA_PATH / "raw/xbrl_doc_ext"
+RAW_XBRL_DIR.mkdir(parents=True, exist_ok=True)
+RAW_XBRL_EXT_DIR.mkdir(parents=True, exist_ok=True)
 
-# 1. 書類一覧の取得（例：2024年6月の有報集中時期）
-START_DATE = "2024-06-15"
+# 取得期間設定（全期間取得の際はここを広く設定）
+# 例: 直近1ヶ月分を取得する場合
+START_DATE = "2024-06-01"
 END_DATE = "2024-06-30"
-TARGET_SECTOR = "食料品"  # 指定業種
+
+# 抽出対象のロール設定（全項目）
+FS_DICT = {
+    'BS': ["_BalanceSheet", "_ConsolidatedBalanceSheet"],
+    'PL': ["_StatementOfIncome", "_ConsolidatedStatementOfIncome"],
+    'CF': ["_StatementOfCashFlows", "_ConsolidatedStatementOfCashFlows"],
+    'SS': ["_StatementOfChangesInEquity", "_ConsolidatedStatementOfChangesInEquity"],
+    'notes': ["_Notes", "_ConsolidatedNotes"],
+    'report': ["_CabinetOfficeOrdinanceOnDisclosure"]
+}
+ALL_ROLES = []
+for roles in FS_DICT.values():
+    ALL_ROLES.extend(roles)
 
 print(f"{START_DATE} から {END_DATE} の書類一覧を取得中...")
 res_results = request_term(api_key=API_KEY, start_date_str=START_DATE, end_date_str=END_DATE)
@@ -48,59 +64,214 @@ edinet_meta = edinet_response_metadata(
 )
 edinet_meta.set_data(res_results)
 
-# 2. 有価証券報告書に絞り込み、指定業種でフィルタリング
-print(f"業種 '{TARGET_SECTOR}' の有価証券報告書を抽出中...")
+# 有価証券報告書に絞り込み（全業種）
+# docTypeCode=='120' (有価証券報告書), ordinanceCode=='010' (内閣府令), formCode=='030000' (第三号様式)
+print("有価証券報告書を抽出中...")
 yuho_df = edinet_meta.get_yuho_df()
-yuho_filtered = yuho_df.query(f"sector_label_33 == '{TARGET_SECTOR}'")
-print(f"対象企業数: {len(yuho_filtered)}")
 
-# デモ用に件数を制限（必要に応じて調整）
-yuho_filtered = yuho_filtered.set_index("docID").head(10)
+# フィルタリング: 有価証券報告書のみを対象とする
+# 訂正報告書なども含める場合は条件を緩和してください
+yuho_filtered = yuho_df[yuho_df['docTypeCode'] == '120'].copy()
+if yuho_filtered.empty:
+    print("対象の有価証券報告書が見つかりませんでした。")
+    exit(0)
 
-# 3. XBRLデータのダウンロード
-print("XBRLデータをダウンロード中...")
-for docid in tqdm(yuho_filtered.index):
-    out_filename = str(DATA_PATH / "raw/xbrl_doc" / (docid + ".zip"))
-    if not os.path.exists(out_filename):
-        request_doc(api_key=API_KEY, docid=docid, out_filename_str=out_filename)
-        sleep(0.5)
+# docIDをインデックスにセット（重複排除のため）
+yuho_filtered = yuho_filtered.set_index("docID")
+print(f"対象書類数: {len(yuho_filtered)}")
 
-# 4. 財務データの抽出（大福帳の作成）
+# 共通タクソノミ準備
 print("共通タクソノミを準備中...")
+# 年度は適宜最新のものを使用、あるいは処理対象に合わせて動的に取得も検討
 account_list = account_list_common(data_path=DATA_PATH, account_list_year="2024")
 
-# 抽出対象のロール設定
-fs_dict = {
-    'BS': ["_BalanceSheet", "_ConsolidatedBalanceSheet"],
-    'PL': ["_StatementOfIncome", "_ConsolidatedStatementOfIncome"],
-    'report': ["_CabinetOfficeOrdinanceOnDisclosure"]
-}
+def get_db_path(year, sector_label):
+    """
+    年度と業種名からDBファイルのパスを生成する
+    禁止文字などを置換して安全なファイル名にする
+    """
+    safe_sector = str(sector_label).replace("/", "・").replace("\\", "・")
+    year_dir = DATA_PATH / str(year)
+    year_dir.mkdir(exist_ok=True)
+    return year_dir / f"{year}_{safe_sector}.db"
 
-print("各書類から財務データを抽出中...")
-fs_tbl_list = []
-for docid in tqdm(yuho_filtered.index):
+def init_db(conn):
+    """
+    DBの初期化（テーブル作成）
+    """
+    cursor = conn.cursor()
+    
+    # 書類管理テーブル
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS documents (
+        docID TEXT PRIMARY KEY,
+        secCode TEXT,
+        filerName TEXT,
+        submitDateTime TEXT,
+        docDescription TEXT,
+        periodStart TEXT,
+        periodEnd TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    ''')
+    
+    # 財務データテーブル（大福帳）
+    # 複合ユニーク制約で重複排除
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS financial_data (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        docID TEXT,
+        secCode TEXT,
+        filerName TEXT,
+        key TEXT,
+        data_str TEXT,
+        period_start TEXT,
+        period_end TEXT,
+        instant_date TEXT,
+        scenario TEXT,
+        label_jp TEXT,
+        label_en TEXT,
+        unit TEXT,
+        decimals TEXT,
+        -- 他に必要なカラムがあれば追加
+        UNIQUE(secCode, key, period_start, period_end, instant_date, scenario)
+    )
+    ''')
+    
+    # インデックス
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_fin_docid ON financial_data(docID)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_fin_seccode ON financial_data(secCode)')
+    conn.commit()
+
+def is_doc_processed(conn, docid):
+    """
+    そのdocIDが既に処理済み(documentsテーブルに存在)か確認
+    """
+    cursor = conn.cursor()
+    cursor.execute('SELECT 1 FROM documents WHERE docID = ?', (docid,))
+    return cursor.fetchone() is not None
+
+def save_to_db(conn, doc_meta, fs_df):
+    """
+    解析結果とメタデータをDBに保存 (UPSERT)
+    """
+    cursor = conn.cursor()
+    
+    # 1. documentsテーブルへのUPSERT
+    cursor.execute('''
+    INSERT OR REPLACE INTO documents (docID, secCode, filerName, submitDateTime, docDescription, periodStart, periodEnd)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        doc_meta['docID'],
+        doc_meta['secCode'],
+        doc_meta['filerName'],
+        doc_meta['submitDateTime'],
+        doc_meta['docDescription'],
+        doc_meta['periodStart'],
+        doc_meta['periodEnd']
+    ))
+    
+    # 2. financial_dataテーブルへのUPSERT
+    # pandasのto_sqlはUPSERT標準対応していないため、一度一時テーブルに入れるか、executemanyで処理する
+    # ここではレコード単位での細かい制御のため、executemany + INSERT OR REPLACE を使用
+    
+    data_to_insert = []
+    for _, row in fs_df.iterrows():
+        # 必要なカラムを抽出してリスト化
+        data_to_insert.append((
+            doc_meta['docID'],
+            doc_meta['secCode'],
+            doc_meta['filerName'],
+            row.get('key'),
+            str(row.get('data_str')),
+            row.get('period_start'),
+            row.get('period_end'),
+            row.get('instant_date'),
+            row.get('scenario'),
+            row.get('label_jp'),
+            row.get('label_en'),
+            row.get('unit'),
+            row.get('decimals')
+        ))
+    
+    cursor.executemany('''
+    INSERT OR REPLACE INTO financial_data (
+        docID, secCode, filerName, key, data_str, 
+        period_start, period_end, instant_date, scenario, 
+        label_jp, label_en, unit, decimals
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', data_to_insert)
+    
+    conn.commit()
+
+
+print("データ抽出を開始します...")
+
+# 処理ループ
+for docid, row in tqdm(yuho_filtered.iterrows(), total=len(yuho_filtered)):
     try:
-        fs_tbl = get_fs_tbl(
-            account_list_common_obj=account_list,
-            docid=docid,
-            zip_file_str=str(DATA_PATH / "raw/xbrl_doc" / (docid + ".zip")),
-            temp_path_str=str(DATA_PATH / "raw/xbrl_doc_ext" / docid),
-            role_keyward_list=fs_dict['BS'] + fs_dict['PL'] + fs_dict['report']
-        )
-        # 企業名などの情報を付加
-        fs_tbl = fs_tbl.assign(
-            filerName=yuho_filtered.loc[docid, 'filerName'],
-            sector_label_33=yuho_filtered.loc[docid, 'sector_label_33']
-        )
-        fs_tbl_list.append(fs_tbl)
+        # メタデータ取得
+        submit_date = str(row['submitDateTime'])
+        submit_year = submit_date[:4] if submit_date else "unknown"
+        sector_label = row.get('sector_label_33', 'その他')
+        
+        # DB接続
+        db_path = get_db_path(submit_year, sector_label)
+        conn = sqlite3.connect(db_path)
+        init_db(conn)
+        
+        # 重複チェック（既に処理済みならスキップ）
+        if is_doc_processed(conn, docid):
+            conn.close()
+            continue
+
+        # ダウンロード
+        zip_path = RAW_XBRL_DIR / f"{docid}.zip"
+        if not zip_path.exists():
+            request_doc(api_key=API_KEY, docid=docid, out_filename_str=str(zip_path))
+            sleep(0.5) # API負荷軽減
+        
+        # 解析処理
+        extract_dir = RAW_XBRL_EXT_DIR / docid
+        
+        try:
+            fs_tbl = get_fs_tbl(
+                account_list_common_obj=account_list,
+                docid=docid,
+                zip_file_str=str(zip_path),
+                temp_path_str=str(extract_dir),
+                role_keyward_list=ALL_ROLES
+            )
+            
+            # DB保存用のメタデータ辞書
+            doc_meta = {
+                'docID': docid,
+                'secCode': row.get('secCode'),
+                'filerName': row.get('filerName'),
+                'submitDateTime': submit_date,
+                'docDescription': row.get('docDescription'),
+                'periodStart': row.get('periodStart'),
+                'periodEnd': row.get('periodEnd')
+            }
+            
+            # 保存実行
+            save_to_db(conn, doc_meta, fs_tbl)
+            print(f"Saved: {docid} ({row.get('filerName')}) -> {db_path.name}")
+            
+        finally:
+            conn.close()
+            
+            # クリーンアップ：一時ファイルの削除
+            # ZIPファイル
+            if zip_path.exists():
+                os.remove(zip_path)
+            # 解凍ディレクトリ
+            if extract_dir.exists():
+                shutil.rmtree(extract_dir)
+
     except Exception as e:
         print(f"エラー (docID: {docid}): {e}")
+        # エラー発生時もDB接続が開いていれば閉じる（上記finallyでカバー）
+        continue
 
-# データの統合と保存
-if fs_tbl_list:
-    final_df = pd.concat(fs_tbl_list)
-    output_file = DATA_PATH / "financial_data.csv"
-    final_df.to_csv(output_file, index=False, encoding="utf-8-sig")
-    print(f"CSV保存完了: {output_file}")
-else:
-    print("データが抽出されませんでした。")
+print("全ての処理が完了しました。")
