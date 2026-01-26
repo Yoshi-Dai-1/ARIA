@@ -76,6 +76,9 @@ def signal_handler(signum, frame):
 signal.signal(signal.SIGTERM, signal_handler)
 signal.signal(signal.SIGINT, signal_handler)
 
+# Pandera の警告抑制（最速で実行）
+os.environ["DISABLE_PANDERA_IMPORT_WARNING"] = "True"
+
 def get_last_day_of_month(date_str):
     """日付をクランプする（例：6月31日 -> 6月30日）"""
     try:
@@ -184,9 +187,9 @@ def main():
     start_date = get_last_day_of_month(args.start)
     end_date = get_last_day_of_month(args.end)
 
-    # list-only モード時は tqdm や print を抑制するために stderr を活用するか出力を工夫する
-    if not args.list_only:
-        print(f"[{start_date} 〜 {end_date}] 抽出ミッション開始")
+    # list-only モード時は、全てのライブラリ出力を stderr にリダイレクトして stdout を保護
+    if args.list_only:
+        sys.stdout = sys.stderr
         
     res_results = request_term(api_key=API_KEY, start_date_str=start_date, end_date_str=end_date)
     edinet_meta = edinet_response_metadata(tse_sector_url="https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls", tmp_path_str=str(DATA_PATH))
@@ -195,9 +198,9 @@ def main():
     
     if raw_df.empty:
         if args.list_only:
-            print("[]")
+            sys.__stdout__.write("[]\n")
         else:
-            print("書類が見つかりませんでした。")
+            sys.stderr.write("書類が見つかりませんでした。\n")
         return
 
     yuho_df = edinet_meta.get_yuho_df()
@@ -205,20 +208,19 @@ def main():
     
     if yuho_filtered.empty:
         if args.list_only:
-            print("[]")
+            sys.__stdout__.write("[]\n")
         else:
-            print("対象書類（有報）がありません。")
+            sys.stderr.write("対象書類（有報）がありません。\n")
         return
 
     if "docID" in yuho_filtered.columns: yuho_filtered.set_index("docID", inplace=True)
     yuho_filtered['submitYear'] = yuho_filtered['submitDateTime'].str[:4]
     yuho_filtered = yuho_filtered.sort_values(['submitYear', 'sector_label_33'])
 
-    # リスト出力モード（ stdout には JSON のみを出す）
+    # リスト出力モード（ sys.__stdout__ に JSON のみを出す）
     if args.list_only:
         id_sector_list = [{"id": str(idx), "sector": str(row['sector_label_33'])} for idx, row in yuho_filtered.iterrows()]
-        # stdoutに確実にJSONだけを出すため、明示的に書き込む
-        sys.stdout.write(json.dumps(id_sector_list) + "\n")
+        sys.__stdout__.write(json.dumps(id_sector_list) + "\n")
         return
 
     # ID指定モード
