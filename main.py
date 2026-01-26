@@ -4,11 +4,16 @@ import pandas as pd
 import sqlite3
 import shutil
 import traceback
+import urllib3
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from tqdm import tqdm
 from time import sleep
 from dotenv import load_dotenv
 from pathlib import Path
+
+# 警告の抑制
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # 1. 検索パスにサブモジュールのルートフォルダを追加
 submodule_root = os.path.abspath(os.path.join(os.path.dirname(__file__), 'edinet_xbrl_prep'))
@@ -52,6 +57,11 @@ ALL_ROLES = []
 for roles in FS_DICT.values():
     ALL_ROLES.extend(roles)
 
+# GitHub Actions環境ではコア数を最大限活用
+PARALLEL_WORKERS = os.cpu_count() or 2
+# 並列実行時のバッチサイズ（メモリと相談）
+BATCH_PARALLEL_SIZE = 8
+
 def get_db_path(year, sector_label):
     safe_sector = str(sector_label).replace("/", "・").replace("\\", "・")
     year_dir = DATA_PATH / str(year)
@@ -62,6 +72,7 @@ def init_db(conn):
     cursor = conn.cursor()
     cursor.execute('PRAGMA synchronous = OFF')
     cursor.execute('PRAGMA journal_mode = WAL')
+    cursor.execute('PRAGMA cache_size = -100000') # 約100MBのキャッシュ
     cursor.execute('''CREATE TABLE IF NOT EXISTS documents (docID TEXT PRIMARY KEY, secCode TEXT, filerName TEXT, submitDateTime TEXT, docDescription TEXT, periodStart TEXT, periodEnd TEXT, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS financial_data (id INTEGER PRIMARY KEY AUTOINCREMENT, docID TEXT, secCode TEXT, filerName TEXT, key TEXT, data_str TEXT, period_start TEXT, period_end TEXT, instant_date TEXT, scenario TEXT, label_jp TEXT, label_en TEXT, unit TEXT, decimals TEXT, UNIQUE(secCode, key, period_start, period_end, instant_date, scenario))''')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_fin_docid ON financial_data(docID)')
@@ -69,13 +80,10 @@ def init_db(conn):
     conn.commit()
 
 def save_sector_batch_to_db(db_path, batch_data):
-    """
-    蓄積した業種ごとのデータをDBに一括保存 (High Speed)
-    """
     if not batch_data:
         return
     
-    print(f" -> DB更新中: {db_path.name} ({len(batch_data)}書類分)")
+    # print(f" -> DB更新中: {db_path.name} ({len(batch_data)}書類分)")
     conn = sqlite3.connect(db_path)
     init_db(conn)
     cursor = conn.cursor()
@@ -93,10 +101,35 @@ def save_sector_batch_to_db(db_path, batch_data):
         conn.commit()
     except Exception as e:
         print(f"DB保存エラー: {e}")
-        # トレースバックも出す
-        traceback.print_exc()
     finally:
         conn.close()
+
+def parse_worker(task):
+    """マルチプロセス用ワーカー: 1書類の解析を実行"""
+    docid_str, row_dict, account_list = task
+    try:
+        zip_path = RAW_XBRL_DIR / f"{docid_str}.zip"
+        extract_dir = RAW_XBRL_EXT_DIR / docid_str
+        
+        fs_df = get_fs_tbl(
+            account_list_common_obj=account_list,
+            docid=docid_str,
+            zip_file_str=str(zip_path),
+            temp_path_str=str(extract_dir),
+            role_keyward_list=ALL_ROLES
+        )
+        
+        doc_meta = {
+            'docID': docid_str, 'secCode': row_dict.get('secCode'), 'filerName': row_dict.get('filerName'),
+            'submitDateTime': str(row_dict['submitDateTime']), 'docDescription': row_dict.get('docDescription'),
+            'periodStart': row_dict.get('periodStart'), 'periodEnd': row_dict.get('periodEnd')
+        }
+        
+        # 成功後は解析済みフォルダを消す（ZIPは後で親で消す）
+        if extract_dir.exists(): shutil.rmtree(extract_dir)
+        return docid_str, doc_meta, fs_df, None
+    except Exception as e:
+        return docid_str, None, None, str(e)
 
 def main():
     print(f"{START_DATE} から {END_DATE} の書類一覧を取得中...")
@@ -116,113 +149,96 @@ def main():
         print("対象書類（有報）がありません。")
         return
 
-    # docIDをインデックスにセット（★重要：これがないとループのdocidが数値になってしまう）
     if "docID" in yuho_filtered.columns:
         yuho_filtered.set_index("docID", inplace=True)
     
-    # 年度と業種でソート
     yuho_filtered['submitYear'] = yuho_filtered['submitDateTime'].str[:4]
     yuho_filtered = yuho_filtered.sort_values(['submitYear', 'sector_label_33'])
     
     print(f"対象書類数: {len(yuho_filtered)}")
     print("共通タクソノミを準備中...")
-    # タクソノミの準備には時間がかかるため、処理対象の最新年度に合わせるなどの調整を検討してください
     account_list = account_list_common(data_path=DATA_PATH, account_list_year="2024")
 
-    # セクターごとのバッチ管理
     current_db_path = None
     sector_batch = []
     processed_docids = set()
 
-    print("解析を開始します...")
+    # 高速化のため、ダウンロード済みリストを作成
+    print("未取得の書類をダウンロード中...")
+    tasks_to_parse = []
+    
+    for docid, row in yuho_filtered.iterrows():
+        docid_str = str(docid)
+        submit_year = row['submitYear']
+        sector_label = row.get('sector_label_33', 'その他')
+        db_path = get_db_path(submit_year, sector_label)
+        
+        # 業種が変わった時の処理
+        if current_db_path and db_path != current_db_path:
+            processed_docids = set()
+        current_db_path = db_path
 
-    for docid, row in tqdm(yuho_filtered.iterrows(), total=len(yuho_filtered)):
-        try:
-            docid_str = str(docid)
+        # 重複チェック用DB問い合わせ（キャッシュ）
+        if not processed_docids and db_path.exists():
+            conn_check = sqlite3.connect(db_path)
+            cursor = conn_check.cursor()
+            cursor.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents'")
+            if cursor.fetchone():
+                cursor.execute('SELECT docID FROM documents')
+                processed_docids = {str(r[0]) for r in cursor.fetchall()}
+            conn_check.close()
+        
+        if docid_str in processed_docids:
+            continue
+
+        # タスクに追加
+        tasks_to_parse.append((docid_str, row.to_dict()))
+
+    print(f"実処理対象: {len(tasks_to_parse)} 件 (GitHub Actions並列数: {PARALLE_WORKERS})")
+
+    # 並列実行エンジン
+    with ProcessPoolExecutor(max_workers=PARALLE_WORKERS) as executor:
+        # バッチ処理（数件ずつダウンロードして並列解析 → 保存）
+        for i in range(0, len(tasks_to_parse), BATCH_PARALLEL_SIZE):
+            batch_tasks = tasks_to_parse[i:i+BATCH_PARALLEL_SIZE]
             
-            # 業種・年度・DBパスの決定
-            submit_year = row['submitYear']
-            sector_label = row.get('sector_label_33', 'その他')
-            db_path = get_db_path(submit_year, sector_label)
+            # 1. 順次ダウンロード（API負荷考慮、解析中に空き時間を埋めるなら理想は別スレッドだがまずこれで）
+            for docid_str, _ in batch_tasks:
+                zip_path = RAW_XBRL_DIR / f"{docid_str}.zip"
+                if not zip_path.exists():
+                    res_doc = request_doc(api_key=API_KEY, docid=docid_str, out_filename_str=str(zip_path))
+                    if res_doc.status != "success":
+                        if zip_path.exists(): os.remove(zip_path)
+                    sleep(0.5)
 
-            # DBファイルが切り替わるタイミングで保存（一括コミットで高速化）
-            if current_db_path and db_path != current_db_path:
-                save_sector_batch_to_db(current_db_path, sector_batch)
-                sector_batch = []
-                processed_docids = set()
-
-            current_db_path = db_path
-
-            # 重複判定の高速化
-            if not processed_docids and db_path.exists():
-                try:
-                    conn_check = sqlite3.connect(db_path)
-                    cursor = conn_check.cursor()
-                    cursor.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents'")
-                    if cursor.fetchone():
-                        cursor.execute('SELECT docID FROM documents')
-                        processed_docids = {str(r[0]) for r in cursor.fetchall()}
-                    conn_check.close()
-                except Exception as db_err:
-                    print(f"警告: DBチェック失敗 ({db_path.name}): {db_err}")
+            # 2. 並列解析
+            futures = [executor.submit(parse_worker, (d_id, row, account_list)) for d_id, row in batch_tasks]
             
-            if docid_str in processed_docids:
-                continue
-
-            # ダウンロード
-            zip_path = RAW_XBRL_DIR / f"{docid_str}.zip"
-            if not zip_path.exists():
-                # APIリクエスト
-                res_doc = request_doc(api_key=API_KEY, docid=docid_str, out_filename_str=str(zip_path))
-                
-                # 失敗時のハンドリング
-                if res_doc.status != "success":
-                    if zip_path.exists(): os.remove(zip_path)
-                    print(f"  -> スキップ (DL失敗: {docid_str}): {res_doc.message}")
+            results_to_save = {} # db_path -> list of (meta, df)
+            
+            for future in as_completed(futures):
+                d_id, meta, df, err = future.result()
+                if err:
+                    print(f"エラー ({d_id}, 継続します): {err}")
                     continue
                 
-                # API負荷軽減のための待機
-                sleep(0.5)
-            
-            # 解析
-            extract_dir = RAW_XBRL_EXT_DIR / docid_str
-            try:
-                fs_df = get_fs_tbl(
-                    account_list_common_obj=account_list,
-                    docid=docid_str,
-                    zip_file_str=str(zip_path),
-                    temp_path_str=str(extract_dir),
-                    role_keyward_list=ALL_ROLES
-                )
+                # 保存用データのマッピング
+                target_year = meta['submitDateTime'][:4]
+                target_sector = batch_tasks[0][1].get('sector_label_33', 'その他') # 近い業種が集まっているはず
+                # 厳密にはmetaから引く
+                db_p = get_db_path(target_year, meta.get('sector_label_33', 'その他'))
                 
-                doc_meta = {
-                    'docID': docid_str, 
-                    'secCode': row.get('secCode'), 
-                    'filerName': row.get('filerName'),
-                    'submitDateTime': str(row['submitDateTime']), 
-                    'docDescription': row.get('docDescription'),
-                    'periodStart': row.get('periodStart'), 
-                    'periodEnd': row.get('periodEnd')
-                }
+                if db_p not in results_to_save:
+                    results_to_save[db_p] = []
+                results_to_save[db_p].append((meta, df))
                 
-                sector_batch.append((doc_meta, fs_df))
-            except Exception as parse_err:
-                # 解析に失敗した場合はログを出して次へ（不完全なZIPなどのケース）
-                print(f"  -> エラー (解析失敗: {docid_str}): {parse_err}")
-                continue
-            finally:
-                # 一時ファイルの即時削除（ディスク容量節約）
-                if zip_path.exists(): os.remove(zip_path)
-                if extract_dir.exists(): shutil.rmtree(extract_dir)
+                # 使い終わったZIPを消す
+                z_path = RAW_XBRL_DIR / f"{d_id}.zip"
+                if z_path.exists(): os.remove(z_path)
 
-        except Exception as e:
-            print(f"予期せぬエラー (docID: {docid}): {e}")
-            # traceback.print_exc() # 必要に応じて有効化
-            continue
-    
-    # 最後のセクターを保存
-    if sector_batch:
-        save_sector_batch_to_db(current_db_path, sector_batch)
+            # 3. 業種ごとに一括保存（書き込みの最大効率化）
+            for db_p, data_list in results_to_save.items():
+                save_sector_batch_to_db(db_p, data_list)
 
     print("全ての処理が完了しました。")
 
