@@ -194,7 +194,7 @@ def main():
         # タスクに追加
         tasks_to_parse.append((docid_str, row.to_dict()))
 
-    print(f"実処理対象: {len(tasks_to_parse)} 件 (GitHub Actions並列数: {PARALLE_WORKERS})")
+    print(f"実処理対象: {len(tasks_to_parse)} 件 (GitHub Actions並列数: {PARALLEL_WORKERS})")
 
     # 並列実行エンジン
     with ProcessPoolExecutor(max_workers=PARALLE_WORKERS) as executor:
