@@ -197,7 +197,7 @@ def main():
     print(f"実処理対象: {len(tasks_to_parse)} 件 (GitHub Actions並列数: {PARALLEL_WORKERS})")
 
     # 並列実行エンジン
-    with ProcessPoolExecutor(max_workers=PARALLE_WORKERS) as executor:
+    with ProcessPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:
         # バッチ処理（数件ずつダウンロードして並列解析 → 保存）
         for i in range(0, len(tasks_to_parse), BATCH_PARALLEL_SIZE):
             batch_tasks = tasks_to_parse[i:i+BATCH_PARALLEL_SIZE]
