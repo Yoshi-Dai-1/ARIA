@@ -196,36 +196,43 @@ def main():
 
     print(f"実処理対象: {len(tasks_to_parse)} 件 (GitHub Actions並列数: {PARALLEL_WORKERS})")
 
+    # 全体の進捗管理
+    pbar_total = tqdm(total=len(tasks_to_parse), desc="全体進捗")
+    
     # 並列実行エンジン
     with ProcessPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:
-        # バッチ処理（数件ずつダウンロードして並列解析 → 保存）
         for i in range(0, len(tasks_to_parse), BATCH_PARALLEL_SIZE):
             batch_tasks = tasks_to_parse[i:i+BATCH_PARALLEL_SIZE]
             
-            # 1. 順次ダウンロード（API負荷考慮、解析中に空き時間を埋めるなら理想は別スレッドだがまずこれで）
-            for docid_str, _ in batch_tasks:
+            # 1. 順次ダウンロード（会社名を表示して安心感を与える）
+            for docid_str, row_info in batch_tasks:
                 zip_path = RAW_XBRL_DIR / f"{docid_str}.zip"
                 if not zip_path.exists():
+                    filer_name = row_info.get('filerName', 'Unknown')
+                    print(f" -> DL中: {filer_name[:20]}... ({docid_str})")
                     res_doc = request_doc(api_key=API_KEY, docid=docid_str, out_filename_str=str(zip_path))
                     if res_doc.status != "success":
                         if zip_path.exists(): os.remove(zip_path)
+                        print(f"    !!! DL失敗: {res_doc.message}")
                     sleep(0.5)
 
             # 2. 並列解析
+            # print(f" -> 解析中 ({len(batch_tasks)}件)...")
             futures = [executor.submit(parse_worker, (d_id, row, account_list)) for d_id, row in batch_tasks]
             
-            results_to_save = {} # db_path -> list of (meta, df)
+            results_to_save = {}
             
             for future in as_completed(futures):
                 d_id, meta, df, err = future.result()
+                pbar_total.update(1) # 1件終わるごとにバーを進める
+                
                 if err:
-                    print(f"エラー ({d_id}, 継続します): {err}")
+                    print(f"    !!! 解析失敗 ({d_id}): {err}")
                     continue
                 
-                # 保存用データのマッピング
+                # 保存先を決定
                 target_year = meta['submitDateTime'][:4]
-                target_sector = batch_tasks[0][1].get('sector_label_33', 'その他') # 近い業種が集まっているはず
-                # 厳密にはmetaから引く
+                # row_info は正しいものを引く
                 db_p = get_db_path(target_year, meta.get('sector_label_33', 'その他'))
                 
                 if db_p not in results_to_save:
@@ -236,10 +243,13 @@ def main():
                 z_path = RAW_XBRL_DIR / f"{d_id}.zip"
                 if z_path.exists(): os.remove(z_path)
 
-            # 3. 業種ごとに一括保存（書き込みの最大効率化）
+            # 3. 業種ごとに一括保存
             for db_p, data_list in results_to_save.items():
-                save_sector_batch_to_db(db_p, data_list)
+                if data_list:
+                    print(f" -> DB書き込み中: {db_p.name} ({len(data_list)}件)")
+                    save_sector_batch_to_db(db_p, data_list)
 
+    pbar_total.close()
     print("全ての処理が完了しました。")
 
 if __name__ == "__main__":
