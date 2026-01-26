@@ -35,21 +35,24 @@ jobs:
           EXTRACT_START: ${{ github.event.inputs.start_date || '2024-06-01' }}
           EXTRACT_END: ${{ github.event.inputs.end_date || '2024-06-30' }}
         run: |
-          # 全書類IDをリスト取得
           IDS=$(python main.py --list-only --start "$EXTRACT_START" --end "$EXTRACT_END")
-          # 4等分するJSONを生成
+          # Matrix分割用スクリプト
           MATRIX=$(python -c "
-          import json, math
-          ids = json.loads('$IDS')
-          n = 4
-          size = math.ceil(len(ids) / n)
-          chunks = [ids[i:i + size] for i in range(0, len(ids), size)]
-          print(json.dumps([{'ids': ','.join(c), 'idx': i} for i, c in enumerate(chunks) if c]))
-          ")
+          import json, math, sys
+          try:
+              ids = json.loads(sys.argv[1])
+              n = 4
+              size = math.ceil(len(ids) / n) if len(ids) > 0 else 0
+              chunks = [ids[i:i + size] for i in range(0, len(ids), size)] if size > 0 else []
+              print(json.dumps([{'ids': ','.join(c), 'idx': i} for i, c in enumerate(chunks)]))
+          except Exception as e:
+              print(json.dumps([]))
+          " "$IDS")
           echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
 
   extract:
     needs: discovery
+    if: needs.discovery.outputs.matrix != '[]' && needs.discovery.outputs.matrix != ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -83,14 +86,13 @@ jobs:
           git config --local user.name "github-actions[bot]"
           git config --local core.quotepath false
           
-          # 並列実行時の衝突回避リトライループ
           MAX_RETRIES=10
           RETRY_COUNT=0
           while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
             git pull --rebase origin main
             if [ "$(find ./data -name "*.db" | wc -l)" -gt 0 ]; then
               git add "./data/**/*.db"
-              git commit -m "chore: Extract chunk ${{ matrix.chunk.idx }} (IDs: ${{ matrix.chunk.ids[:20] }}...)" || exit 0
+              git commit -m "chore: Extract chunk ${{ matrix.chunk.idx }}" || exit 0
               if git push origin main; then
                 echo "Push successful"
                 break
@@ -100,5 +102,5 @@ jobs:
               break
             fi
             RETRY_COUNT=$((RETRY_COUNT+1))
-            sleep $((RANDOM % 10 + 5))
+            sleep $((RANDOM % 20 + 10))
           done
