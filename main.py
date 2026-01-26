@@ -6,6 +6,9 @@ import shutil
 import traceback
 import urllib3
 import signal
+import json
+import argparse
+import calendar
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from tqdm import tqdm
@@ -42,10 +45,6 @@ RAW_XBRL_EXT_DIR = DATA_PATH / "raw/xbrl_doc_ext"
 RAW_XBRL_DIR.mkdir(parents=True, exist_ok=True)
 RAW_XBRL_EXT_DIR.mkdir(parents=True, exist_ok=True)
 
-# 取得期間設定（初期値：Matrixから上書きされる想定）
-START_DATE = os.getenv("EXTRACT_START", "2024-06-01")
-END_DATE = os.getenv("EXTRACT_END", "2024-06-30")
-
 # 抽出対象のロール設定
 FS_DICT = {
     'BS': ["_BalanceSheet", "_ConsolidatedBalanceSheet"],
@@ -59,28 +58,34 @@ ALL_ROLES = []
 for roles in FS_DICT.values():
     ALL_ROLES.extend(roles)
 
-# GitHub Actions環境ではコア数を最大限活用
 PARALLEL_WORKERS = os.cpu_count() or 2
-BATCH_PARALLEL_SIZE = 5 # 以前の8から、より安全な5に変更
+BATCH_PARALLEL_SIZE = 5
 
-# グローバル変数：終了信号検知時の保存用
-pending_save_data = {} # db_path -> list of (meta, df)
+pending_save_data = {}
 is_shutting_down = False
 
 def signal_handler(signum, frame):
-    """終了信号を受けた際の処理：現在完了しているバッチをDBに書き込んでから終了する"""
     global is_shutting_down
     if is_shutting_down: return
     is_shutting_down = True
-    print(f"\n[信号 {signum} を検知] 安全な終了処理を開始します。現在完了済みのデータを保存します...")
+    print(f"\n[信号 {signum} を検知] 安全な終了処理を開始します...")
     for db_p, data_list in pending_save_data.items():
         save_sector_batch_to_db(db_p, data_list)
-    print("保存完了。プログラムを終了します。")
     sys.exit(0)
 
-# 信号の登録（SIGTERM, SIGINT）
 signal.signal(signal.SIGTERM, signal_handler)
 signal.signal(signal.SIGINT, signal_handler)
+
+def get_last_day_of_month(date_str):
+    """日付をクランプする（例：6月31日 -> 6月30日）"""
+    try:
+        y, m, d = map(int, date_str.split('-'))
+        last_day = calendar.monthrange(y, m)[1]
+        if d > last_day:
+            return f"{y:04d}-{m:02d}-{last_day:02d}"
+        return date_str
+    except Exception:
+        return date_str
 
 def get_db_path(year, sector_label):
     safe_sector = str(sector_label).replace("/", "・").replace("\\", "・")
@@ -119,15 +124,12 @@ def save_sector_batch_to_db(db_path, batch_data):
         conn.close()
 
 def sanitize_zip(zip_path):
-    """解析に不要なファイルをZIPから削除（ixbrl/画像を間引く）"""
     temp_zip = zip_path.with_suffix('.tmp.zip')
     has_changes = False
     try:
         with ZipFile(zip_path, 'r') as zin:
             with ZipFile(temp_zip, 'w') as zout:
                 for item in zin.infolist():
-                    # 財務構造データに必要な拡張子のみ残す (.xbrl, .xml, .xsd)
-                    # .htm (ixbrl), .png, .jpg (画像), .pdf などはスキップ
                     if item.filename.lower().endswith(('.xbrl', '.xml', '.xsd')):
                         zout.writestr(item, zin.read(item.filename))
                     else:
@@ -144,9 +146,10 @@ def parse_worker(task):
     docid_str, row_dict, account_list = task
     try:
         zip_path = RAW_XBRL_DIR / f"{docid_str}.zip"
+        if not zip_path.exists():
+            return docid_str, None, None, "ZIP file not found"
+            
         extract_dir = RAW_XBRL_EXT_DIR / docid_str
-        
-        # 構造化データの抽出実行
         fs_df = get_fs_tbl(
             account_list_common_obj=account_list,
             docid=docid_str,
@@ -165,30 +168,54 @@ def parse_worker(task):
         if extract_dir.exists(): shutil.rmtree(extract_dir)
         return docid_str, doc_meta, fs_df, None
     except Exception as e:
+        # FileNotFoundError 等がシリアライズエラーにならないよう str 化
         return docid_str, None, None, str(e)
 
 def main():
     global pending_save_data
-    print(f"[{START_DATE} 〜 {END_DATE}] 抽出ミッション開始")
-    res_results = request_term(api_key=API_KEY, start_date_str=START_DATE, end_date_str=END_DATE)
-    
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--start", default=os.getenv("EXTRACT_START", "2024-06-01"))
+    parser.add_argument("--end", default=os.getenv("EXTRACT_END", "2024-06-30"))
+    parser.add_argument("--list-only", action="store_true")
+    parser.add_argument("--id-list", help="Comma separated docIDs to process")
+    args = parser.parse_args()
+
+    # 日付の補正
+    start_date = get_last_day_of_month(args.start)
+    end_date = get_last_day_of_month(args.end)
+
+    if not args.list_only:
+        print(f"[{start_date} 〜 {end_date}] 抽出ミッション開始")
+        
+    res_results = request_term(api_key=API_KEY, start_date_str=start_date, end_date_str=end_date)
     edinet_meta = edinet_response_metadata(tse_sector_url="https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls", tmp_path_str=str(DATA_PATH))
     edinet_meta.set_data(res_results)
     raw_df = edinet_meta.get_metadata_pandas_df()
+    
     if raw_df.empty:
-        print("指定期間内に書類が見つかりませんでした。")
+        if not args.list_only: print("書類が見つかりませんでした。")
         return
 
     yuho_df = edinet_meta.get_yuho_df()
     yuho_filtered = yuho_df[yuho_df['docTypeCode'] == '120'].copy()
     if yuho_filtered.empty:
-        print("対象書類がありません。")
+        if not args.list_only: print("対象書類がありません。")
         return
 
     if "docID" in yuho_filtered.columns: yuho_filtered.set_index("docID", inplace=True)
     yuho_filtered['submitYear'] = yuho_filtered['submitDateTime'].str[:4]
     yuho_filtered = yuho_filtered.sort_values(['submitYear', 'sector_label_33'])
-    
+
+    # リスト出力モード
+    if args.list_only:
+        print(json.dumps(yuho_filtered.index.tolist()))
+        return
+
+    # ID指定モード
+    if args.id_list:
+        target_ids = args.id_list.split(",")
+        yuho_filtered = yuho_filtered.loc[yuho_filtered.index.intersection(target_ids)]
+
     print(f"対象書類数: {len(yuho_filtered)}")
     print("共通タクソノミ準備中...")
     account_list = account_list_common(data_path=DATA_PATH, account_list_year="2024")
@@ -218,9 +245,8 @@ def main():
     with ProcessPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:
         for i in range(0, len(tasks_to_parse), BATCH_PARALLEL_SIZE):
             if is_shutting_down: break
-            batch_tasks = tasks_to_parse[i:i+BATCH_PARALLEL_SIZE]
+            batch_tasks = tasks_to_parse[i:i+BATCH_PARALLE_SIZE]
             
-            # 1. 順次ダウンロード & 軽量化
             for docid_str, row_info in batch_tasks:
                 zip_path = RAW_XBRL_DIR / f"{docid_str}.zip"
                 if not zip_path.exists():
@@ -228,14 +254,13 @@ def main():
                     print(f" -> DL中: {filer_name[:15]}... ({docid_str})")
                     res_doc = request_doc(api_key=API_KEY, docid=docid_str, out_filename_str=str(zip_path))
                     if res_doc.status == "success":
-                        sanitize_zip(zip_path) # 解析前に不要ファイルを間引く
+                        sanitize_zip(zip_path)
                     else:
                         if zip_path.exists(): os.remove(zip_path)
                     sleep(0.5)
 
-            # 2. 並列解析
             futures = [executor.submit(parse_worker, (d_id, row, account_list)) for d_id, row in batch_tasks]
-            pending_save_data = {} # バッチごとにリセット
+            pending_save_data = {}
             
             for future in as_completed(futures):
                 d_id, meta, df, err = future.result()
@@ -249,10 +274,9 @@ def main():
                 else:
                     print(f"    !!! 解析失敗 ({d_id}): {err}")
 
-            # 3. バッチ保存
             for db_p, data_list in pending_save_data.items():
                 save_sector_batch_to_db(db_p, data_list)
-            pending_save_data = {} # 正常保存完了
+            pending_save_data = {}
 
     pbar_total.close()
     print("ミッション完了")

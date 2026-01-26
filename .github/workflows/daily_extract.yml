@@ -15,56 +15,90 @@ on:
         default: '2024-06-30'
 
 jobs:
+  discovery:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - id: set-matrix
+        env:
+          EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
+          EXTRACT_START: ${{ github.event.inputs.start_date || '2024-06-01' }}
+          EXTRACT_END: ${{ github.event.inputs.end_date || '2024-06-30' }}
+        run: |
+          # 全書類IDをリスト取得
+          IDS=$(python main.py --list-only --start "$EXTRACT_START" --end "$EXTRACT_END")
+          # 4等分するJSONを生成
+          MATRIX=$(python -c "
+          import json, math
+          ids = json.loads('$IDS')
+          n = 4
+          size = math.ceil(len(ids) / n)
+          chunks = [ids[i:i + size] for i in range(0, len(ids), size)]
+          print(json.dumps([{'ids': ','.join(c), 'idx': i} for i, c in enumerate(chunks) if c]))
+          ")
+          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+
   extract:
+    needs: discovery
     runs-on: ubuntu-latest
     permissions:
       contents: write
     strategy:
       fail-fast: false
       matrix:
-        # 1ヶ月を週単位に分割して4並列で実行
-        period: [
-          {start: "01", end: "07"},
-          {start: "08", end: "14"},
-          {start: "15", end: "21"},
-          {start: "22", end: "31"}
-        ]
-    timeout-minutes: 360 # 6時間
+        chunk: ${{ fromJson(needs.discovery.outputs.matrix) }}
+    timeout-minutes: 360
     
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           submodules: 'recursive'
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: 'pip'
-
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+        run: pip install -r requirements.txt
 
       - name: Run Extraction
         env:
           EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
-          # Matrixから日付を生成
-          EXTRACT_START: "2024-06-${{ matrix.period.start }}"
-          EXTRACT_END: "2024-06-${{ matrix.period.end }}"
-        run: python main.py
+          EXTRACT_START: ${{ github.event.inputs.start_date || '2024-06-01' }}
+          EXTRACT_END: ${{ github.event.inputs.end_date || '2024-06-30' }}
+        run: python main.py --start "$EXTRACT_START" --end "$EXTRACT_END" --id-list "${{ matrix.chunk.ids }}"
 
       - name: Commit and Push DB
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git config --local core.quotepath false
-          # 他の並列ジョブとの衝突を避けるため、最新を取得してリベース
-          git pull --rebase origin main
-          if [ "$(find ./data -name "*.db" | wc -l)" -gt 0 ]; then
-            git add "./data/**/*.db"
-            git commit -m "chore: Extract data for ${{ matrix.period.start }}-${{ matrix.period.end }}" || echo "No changes"
-            git push origin main
-          fi
+          
+          # 並列実行時の衝突回避リトライループ
+          MAX_RETRIES=10
+          RETRY_COUNT=0
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            git pull --rebase origin main
+            if [ "$(find ./data -name "*.db" | wc -l)" -gt 0 ]; then
+              git add "./data/**/*.db"
+              git commit -m "chore: Extract chunk ${{ matrix.chunk.idx }} (IDs: ${{ matrix.chunk.ids[:20] }}...)" || exit 0
+              if git push origin main; then
+                echo "Push successful"
+                break
+              fi
+            else
+              echo "No files to commit"
+              break
+            fi
+            RETRY_COUNT=$((RETRY_COUNT+1))
+            sleep $((RANDOM % 10 + 5))
+          done
