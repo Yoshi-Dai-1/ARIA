@@ -17,6 +17,8 @@ on:
 jobs:
   extract:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -58,6 +60,7 @@ jobs:
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
+          git config --local core.quotepath false
           # 他の並列ジョブとの衝突を避けるため、最新を取得してリベース
           git pull --rebase origin main
           if [ "$(find ./data -name "*.db" | wc -l)" -gt 0 ]; then
