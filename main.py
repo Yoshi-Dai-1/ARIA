@@ -1,10 +1,10 @@
 import os
 import sys
 import pandas as pd
-import sqlite3
 import shutil
 import traceback
 import urllib3
+import requests
 import signal
 import json
 import argparse
@@ -16,6 +16,9 @@ from time import sleep
 from dotenv import load_dotenv
 from pathlib import Path
 from zipfile import ZipFile
+import pyarrow as pa
+import pyarrow.parquet as pq
+from huggingface_hub import HfApi
 
 # 警告の抑制
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -26,8 +29,9 @@ sys.path.insert(0, submodule_root)
 
 # 2. パッケージ形式でインポートする
 from edinet_xbrl_prep.edinet_api import request_term, request_doc, edinet_response_metadata
-from edinet_xbrl_prep.link_base_file_analyzer import account_list_common
+from edinet_xbrl_prep.link_base_file_analyzer import account_list_common as OriginalALC
 from edinet_xbrl_prep.fs_tbl import get_fs_tbl
+import requests
 
 # 環境変数の読み込み
 load_dotenv()
@@ -42,8 +46,10 @@ DATA_PATH = Path("./data")
 DATA_PATH.mkdir(exist_ok=True)
 RAW_XBRL_DIR = DATA_PATH / "raw/xbrl_doc"
 RAW_XBRL_EXT_DIR = DATA_PATH / "raw/xbrl_doc_ext"
+QUALITATIVE_DIR = DATA_PATH / "qualitative"
 RAW_XBRL_DIR.mkdir(parents=True, exist_ok=True)
 RAW_XBRL_EXT_DIR.mkdir(parents=True, exist_ok=True)
+QUALITATIVE_DIR.mkdir(parents=True, exist_ok=True)
 
 # 抽出対象のロール設定
 FS_DICT = {
@@ -61,7 +67,8 @@ for roles in FS_DICT.values():
 PARALLEL_WORKERS = os.cpu_count() or 2
 BATCH_PARALLEL_SIZE = 5
 
-pending_save_data = {}
+# SQLite コード削除に伴う変更
+# pending_save_data = {} # 廃止
 is_shutting_down = False
 
 def signal_handler(signum, frame):
@@ -69,9 +76,12 @@ def signal_handler(signum, frame):
     if is_shutting_down: return
     is_shutting_down = True
     print(f"\n[信号 {signum} を検知] 安全な終了処理を開始します...")
-    for db_p, data_list in pending_save_data.items():
-        save_sector_batch_to_db(db_p, data_list)
-    sys.exit(0)
+    if is_shutting_down: return
+    is_shutting_down = True
+    print(f"\n[信号 {signum} を検知] 安全な終了処理を開始します...")
+    # SQLite 保存処理は削除。Parquetはバッチ最後でまとめて処理するため、
+    # ここでは強制終了せず、メインループの break を待つ
+    # sys.exit(0) # main側で制御
 
 signal.signal(signal.SIGTERM, signal_handler)
 signal.signal(signal.SIGINT, signal_handler)
@@ -90,41 +100,7 @@ def get_last_day_of_month(date_str):
     except Exception:
         return date_str
 
-def get_db_path(year, sector_label):
-    safe_sector = str(sector_label).replace("/", "・").replace("\\", "・")
-    year_dir = DATA_PATH / str(year)
-    year_dir.mkdir(exist_ok=True)
-    return year_dir / f"{year}_{safe_sector}.db"
-
-def init_db(conn):
-    cursor = conn.cursor()
-    cursor.execute('PRAGMA synchronous = OFF')
-    cursor.execute('PRAGMA journal_mode = WAL')
-    cursor.execute('PRAGMA cache_size = -100000') 
-    cursor.execute('''CREATE TABLE IF NOT EXISTS documents (docID TEXT PRIMARY KEY, secCode TEXT, filerName TEXT, submitDateTime TEXT, docDescription TEXT, periodStart TEXT, periodEnd TEXT, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS financial_data (id INTEGER PRIMARY KEY AUTOINCREMENT, docID TEXT, secCode TEXT, filerName TEXT, key TEXT, data_str TEXT, period_start TEXT, period_end TEXT, instant_date TEXT, scenario TEXT, label_jp TEXT, label_en TEXT, unit TEXT, decimals TEXT, UNIQUE(secCode, key, period_start, period_end, instant_date, scenario))''')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_fin_docid ON financial_data(docID)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_fin_seccode ON financial_data(secCode)')
-    conn.commit()
-
-def save_sector_batch_to_db(db_path, batch_data):
-    if not batch_data: return
-    conn = sqlite3.connect(db_path)
-    init_db(conn)
-    cursor = conn.cursor()
-    try:
-        docs, fin_records = [], []
-        for doc_meta, fs_df in batch_data:
-            docs.append((doc_meta['docID'], doc_meta['secCode'], doc_meta['filerName'], doc_meta['submitDateTime'], doc_meta['docDescription'], doc_meta['periodStart'], doc_meta['periodEnd']))
-            for _, row in fs_df.iterrows():
-                fin_records.append((doc_meta['docID'], doc_meta['secCode'], doc_meta['filerName'], row.get('key'), str(row.get('data_str')), row.get('period_start'), row.get('period_end'), row.get('instant_date'), row.get('scenario'), row.get('label_jp'), row.get('label_en'), row.get('unit'), row.get('decimals')))
-        cursor.executemany('INSERT OR REPLACE INTO documents (docID, secCode, filerName, submitDateTime, docDescription, periodStart, periodEnd) VALUES (?, ?, ?, ?, ?, ?, ?)', docs)
-        cursor.executemany('INSERT OR REPLACE INTO financial_data (docID, secCode, filerName, key, data_str, period_start, period_end, instant_date, scenario, label_jp, label_en, unit, decimals) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', fin_records)
-        conn.commit()
-    except Exception as e:
-        print(f"DB保存エラー: {e}")
-    finally:
-        conn.close()
+# SQLite 関連関数 (get_db_path, init_db, save_sector_batch_to_db) 削除
 
 def sanitize_zip(zip_path):
     temp_zip = zip_path.with_suffix('.tmp.zip')
@@ -153,6 +129,12 @@ def parse_worker(task):
             return docid_str, None, None, "ZIP file not found"
             
         extract_dir = RAW_XBRL_EXT_DIR / docid_str
+        
+        # 役職別ロールの分類
+        qualitative_roles = []
+        for key in ['notes', 'report']:
+            qualitative_roles.extend(FS_DICT[key])
+        
         fs_df = get_fs_tbl(
             account_list_common_obj=account_list,
             docid=docid_str,
@@ -160,6 +142,22 @@ def parse_worker(task):
             temp_path_str=str(extract_dir),
             role_keyward_list=ALL_ROLES
         )
+        
+        # 数値データとテキストデータの分離
+        qualitative_df = fs_df[fs_df['role_name'].isin(qualitative_roles)].copy()
+        quantitative_df = fs_df[~fs_df['role_name'].isin(qualitative_roles)].copy()
+        
+        # 型変換 (Parquet保存時のエラー回避のため、object型は全てstrにする)
+        for df in [qualitative_df, quantitative_df]:
+            for col in df.columns:
+                if df[col].dtype == 'object':
+                    df[col] = df[col].astype(str)
+        
+        # テキストデータの保存 (Parquet)
+        if not qualitative_df.empty:
+            pq_path = QUALITATIVE_DIR / f"{docid_str}.parquet"
+            table = pa.Table.from_pandas(qualitative_df)
+            pq.write_table(table, pq_path, compression='zstd')
         
         doc_meta = {
             'docID': docid_str, 'secCode': row_dict.get('secCode'), 'filerName': row_dict.get('filerName'),
@@ -169,13 +167,13 @@ def parse_worker(task):
         }
         
         if extract_dir.exists(): shutil.rmtree(extract_dir)
-        return docid_str, doc_meta, fs_df, None
+        return docid_str, doc_meta, quantitative_df, None
     except Exception as e:
         # FileNotFoundError 等がシリアライズエラーにならないよう str 化
         return docid_str, None, None, str(e)
 
 def main():
-    global pending_save_data
+    global is_shutting_down
     parser = argparse.ArgumentParser()
     parser.add_argument("--start", default=os.getenv("EXTRACT_START", "2024-06-01"))
     parser.add_argument("--end", default=os.getenv("EXTRACT_END", "2024-06-30"))
@@ -231,36 +229,113 @@ def main():
         yuho_filtered = yuho_filtered.loc[valid_ids]
 
     print(f"対象書類数: {len(yuho_filtered)}")
-    print("共通タクソノミ準備中...")
-    account_list = account_list_common(data_path=DATA_PATH, account_list_year="2024")
+    
+    hf_token = os.getenv("HF_TOKEN")
+    hf_repo = os.getenv("HF_REPO") # 例: "user/edinet-data"
+
+    # タクソノミURLを外部ファイルから読み込み、ライブラリのハードコード値をオーバーライド
+    taxonomy_urls_path = Path("taxonomy_urls.json")
+    if taxonomy_urls_path.exists():
+        with open(taxonomy_urls_path, "r", encoding="utf-8") as f:
+            taxonomy_urls = json.load(f)
+        
+        # ライブラリの内部関数で使用される download_link_dict を動的に更新
+        # account_list_common._download_taxonomy の中身を直接書き換えるのは難しいため
+        # インスタンス生成前に辞書を保持する
+        print(f"タクソノミURLリストを読み込みました ({len(taxonomy_urls)} 件)")
+    else:
+        taxonomy_urls = {}
+        print("警告: taxonomy_urls.json が見つかりません。ライブラリのデフォルト値を使用します。")
+
+    # ライブラリのダウンロードメソッドをモンキーパッチして、外部URLを優先するように変更
+    def patched_download_taxonomy(self):
+        # 外部ファイル (taxonomy_urls) にあればそれを使用、なければ内部のデフォルトを使用
+        if hasattr(self, 'account_list_year') and self.account_list_year in taxonomy_urls:
+            url = taxonomy_urls[self.account_list_year]
+        else:
+            # ライブラリ内部のハードコード値をフォールバックとして保持
+            link_dict = {
+                '2024':"https://www.fsa.go.jp/search/20231211/1c_Taxonomy.zip",
+                "2023":"https://www.fsa.go.jp/search/20221108/1c_Taxonomy.zip",
+                "2022":"https://www.fsa.go.jp/search/20211109/1c_Taxonomy.zip",
+                "2021":"https://www.fsa.go.jp/search/20201110/1c_Taxonomy.zip",
+                "2020":"https://www.fsa.go.jp/search/20191101/1c_Taxonomy.zip",
+                "2019":"https://www.fsa.go.jp/search/20190228/1c_Taxonomy.zip",
+                "2018":"https://www.fsa.go.jp/search/20180228/1c_Taxonomy.zip",
+                "2017":"https://www.fsa.go.jp/search/20170228/1c.zip",
+                "2016":"https://www.fsa.go.jp/search/20160314/1c.zip",
+                "2015":"https://www.fsa.go.jp/search/20150310/1c.zip",
+                "2014":"https://www.fsa.go.jp/search/20140310/1c.zip"
+            }
+            url = link_dict.get(self.account_list_year)
+            
+        if not url:
+            raise KeyError(f"Taxonomy URL not found for year: {self.account_list_year}")
+            
+        r = requests.get(url, stream=True)
+        with self.taxonomy_file.open(mode="wb") as f:
+            for chunk in r.iter_content(1024):
+                f.write(chunk)
+
+    # クラスメソッドを差し替え
+    OriginalALC._download_taxonomy = patched_download_taxonomy
 
     tasks_to_parse = []
-    current_db_path, processed_docids = None, set()
+    loaded_account_lists = {}
 
     for docid, row in yuho_filtered.iterrows():
         docid_str = str(docid)
-        db_p = get_db_path(row['submitYear'], row.get('sector_label_33', 'その他'))
         
-        if current_db_path != db_p:
-            processed_docids = set()
-            if db_p.exists():
-                conn_check = sqlite3.connect(db_p)
-                if conn_check.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents'").fetchone():
-                    processed_docids = {str(r[0]) for r in conn_check.execute('SELECT docID FROM documents').fetchall()}
-                conn_check.close()
-        current_db_path = db_p
+        # タクソノミ年度の判定 (3月31日ルール)
+        period_end = str(row.get('periodEnd', ''))
+        try:
+            py, pm, pd_day = map(int, period_end.split('-'))
+            if (pm > 3) or (pm == 3 and pd_day >= 31):
+                taxonomy_year = str(py)
+            else:
+                taxonomy_year = str(py - 1)
+        except:
+            taxonomy_year = row['submitYear']
+            
+        if taxonomy_year not in loaded_account_lists:
+            print(f"共通タクソノミ準備中 ({taxonomy_year}年版)...")
+            try:
+                # URLリストに存在するかチェック
+                if taxonomy_year not in taxonomy_urls:
+                    print(f"【警告】{taxonomy_year}年版の共通タクソノミURLが taxonomy_urls.json に未登録です。")
+                    print(f"この年度の書類（{docid_str}）の解析をスキップします。URLリストに以下のURLを追加してください。")
+                    print(f"URL参考: https://www.fsa.go.jp/search/YYYYMMDD/1c_Taxonomy.zip")
+                    continue
+                
+                # account_list_common のインスタンス作成
+                # パッチ適用済みのクラスを使用
+                obj = OriginalALC(data_path=DATA_PATH, account_list_year=taxonomy_year)
+                
+                loaded_account_lists[taxonomy_year] = obj
+            except Exception as e:
+                print(f"【エラー】タクソノミ取得失敗 ({taxonomy_year}年版): {e}")
+                continue
         
-        if docid_str not in processed_docids:
-            tasks_to_parse.append((docid_str, row.to_dict()))
+        account_list = loaded_account_lists.get(taxonomy_year)
+        if not account_list:
+            continue
+        
+        # SQLiteチェックを廃止し、全てタスクに追加
+        tasks_to_parse.append((docid_str, row.to_dict()))
+
+    # 結果集約用コンテナ
+    all_financial_rows = []
+    processed_doc_info = [] # (docID, submitYear, sector)
 
     print(f"実処理対象: {len(tasks_to_parse)} 件 (並列数: {PARALLEL_WORKERS})")
-    pbar_total = tqdm(total=len(tasks_to_parse), desc="進捗")
-
+    
+    # バッチ実行
     with ProcessPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:
         for i in range(0, len(tasks_to_parse), BATCH_PARALLEL_SIZE):
             if is_shutting_down: break
             batch_tasks = tasks_to_parse[i:i+BATCH_PARALLEL_SIZE]
             
+            # ダウンロード
             for docid_str, row_info in batch_tasks:
                 zip_path = RAW_XBRL_DIR / f"{docid_str}.zip"
                 if not zip_path.exists():
@@ -273,27 +348,156 @@ def main():
                         if zip_path.exists(): os.remove(zip_path)
                     sleep(0.5)
 
-            futures = [executor.submit(parse_worker, (d_id, row, account_list)) for d_id, row in batch_tasks]
-            pending_save_data = {}
+            # 解析実行 (account_listオブジェクトを渡す)
+            futures_map = {}
+            for d_id, row in batch_tasks:
+                # 年度判定の再実行（tasks_to_parse作成時と同じロジック）
+                period_end = str(row.get('periodEnd', ''))
+                try:
+                    py, pm, pd_day = map(int, period_end.split('-'))
+                    if (pm > 3) or (pm == 3 and pd_day >= 31):
+                        t_year = str(py)
+                    else:
+                        t_year = str(py - 1)
+                except:
+                    t_year = row['submitYear']
+
+                acc_obj = loaded_account_lists.get(t_year)
+                if acc_obj:
+                    f = executor.submit(parse_worker, (d_id, row, acc_obj))
+                    futures_map[f] = (d_id, row)
+
+            for future in as_completed(futures_map):
+                d_id, row = futures_map[future]
+                try:
+                    res_id, res_meta, res_quant_df, err = future.result()
+                    if err:
+                        print(f"解析エラー ({d_id}): {err}")
+                    else:
+                        # 数値データの蓄積
+                        if res_quant_df is not None and not res_quant_df.empty:
+                            all_financial_rows.append(res_quant_df)
+                        
+                        processed_doc_info.append({
+                            "submitYear": row['submitYear'],
+                            "sector": row.get('sector_label_33', 'その他'),
+                            "docID": d_id
+                        })
+                        
+                        # ZIP削除
+                        z_path = RAW_XBRL_DIR / f"{d_id}.zip"
+                        if z_path.exists(): os.remove(z_path)
+
+                except Exception as e:
+                    print(f"Future Result Error ({d_id}): {e}")
+
+    # =========================================================
+    # 集約と Parquet 保存・アップロード
+    # =========================================================
+    
+    if not processed_doc_info:
+        print("処理されたデータはありません。")
+        return
+
+    # DataFrame化
+    info_df = pd.DataFrame(processed_doc_info)
+    
+    # (年度, 業種) ごとにグループ化
+    groups = info_df.groupby(['submitYear', 'sector'])
+    
+    # HfApi インスタンス (トークンがある場合のみ)
+    api = HfApi() if hf_token and hf_repo else None
+    if not api:
+        print("HF_TOKEN または HF_REPO が未設定のため、ローカル保存のみ行います。")
+
+    print("\n[保存処理] Parquetファイルの作成とアップロードを開始します...")
+    
+    for (year, sector), group in groups:
+        target_docids = set(group['docID'])
+        safe_sector = str(sector).replace("/", "・").replace("\\", "・")
+        
+        # ファイル名の定義 (start_date, end_date を含める)
+        file_base_name = f"{year}_{safe_sector}_{args.start.replace('-','')}_{args.end.replace('-','')}"
+        
+        # 1. 数値データ (Financial Values)
+        # ==============================
+        if all_financial_rows:
+            target_dfs = [df for df in all_financial_rows if df['docID'].iloc[0] in target_docids]
             
-            for future in as_completed(futures):
-                d_id, meta, df, err = future.result()
-                pbar_total.update(1)
-                if not err:
-                    db_p = get_db_path(meta['submitDateTime'][:4], meta['sector_label_33'])
-                    if db_p not in pending_save_data: pending_save_data[db_p] = []
-                    pending_save_data[db_p].append((meta, df))
-                    z_path = RAW_XBRL_DIR / f"{d_id}.zip"
-                    if z_path.exists(): os.remove(z_path)
-                else:
-                    print(f"    !!! 解析失敗 ({d_id}): {err}")
+            if target_dfs:
+                merged_quant_df = pd.concat(target_dfs, ignore_index=True)
+                
+                # 型の調整
+                for col in merged_quant_df.columns:
+                    if merged_quant_df[col].dtype == 'object':
+                        merged_quant_df[col] = merged_quant_df[col].astype(str)
+                
+                pq_val_path = DATA_PATH / f"{file_base_name}_values.parquet"
+                table = pa.Table.from_pandas(merged_quant_df)
+                pq.write_table(table, pq_val_path, compression='zstd')
+                print(f"作成: {pq_val_path} ({len(merged_quant_df)} rows)")
+                
+                # Upload
+                if api:
+                    print(f" -> Uploading {pq_val_path.name}...")
+                    try:
+                        api.upload_file(
+                            path_or_fileobj=pq_val_path,
+                            path_in_repo=f"data/{year}/{safe_sector}/{pq_val_path.name}",
+                            repo_id=hf_repo,
+                            repo_type="dataset",
+                            token=hf_token
+                        )
+                    except Exception as e:
+                        print(f"Upload Error: {e}")
+                
+        # 2. テキストデータ (Qualitative Text)
+        # ==================================
+        text_dfs = []
+        for d_id in target_docids:
+            p_path = QUALITATIVE_DIR / f"{d_id}.parquet"
+            if p_path.exists():
+                try:
+                    df_text = pd.read_parquet(p_path)
+                    text_dfs.append(df_text)
+                except:
+                    pass
+        
+        if text_dfs:
+            merged_text_df = pd.concat(text_dfs, ignore_index=True)
+            # 型調整
+            for col in merged_text_df.columns:
+                if merged_text_df[col].dtype == 'object':
+                    merged_text_df[col] = merged_text_df[col].astype(str)
 
-            for db_p, data_list in pending_save_data.items():
-                save_sector_batch_to_db(db_p, data_list)
-            pending_save_data = {}
+            pq_text_path = DATA_PATH / f"{file_base_name}_text.parquet"
+            table = pa.Table.from_pandas(merged_text_df)
+            pq.write_table(table, pq_text_path, compression='zstd')
+            print(f"作成: {pq_text_path} ({len(merged_text_df)} rows)")
+            
+            # Upload
+            if api:
+                print(f" -> Uploading {pq_text_path.name}...")
+                try:
+                    api.upload_file(
+                        path_or_fileobj=pq_text_path,
+                        path_in_repo=f"data/{year}/{safe_sector}/{pq_text_path.name}",
+                        repo_id=hf_repo,
+                        repo_type="dataset",
+                        token=hf_token
+                    )
+                except Exception as e:
+                    print(f"Upload Error: {e}")
 
-    pbar_total.close()
-    print("ミッション完了")
+    # クリーンアップ (一時ファイル)
+    if QUALITATIVE_DIR.exists():
+        shutil.rmtree(QUALITATIVE_DIR)
+        QUALITATIVE_DIR.mkdir()
+    if RAW_XBRL_DIR.exists():
+        shutil.rmtree(RAW_XBRL_DIR)
+        RAW_XBRL_DIR.mkdir()
+
+    print("全ての処理が完了しました。")
 
 if __name__ == "__main__":
     main()
