@@ -30,9 +30,9 @@ class EdinetEngine:
         engine_self = self
 
         def patched_download_taxonomy(self_alc):
+            # (中略: 既存のパッチ内容)
             year = getattr(self_alc, "account_list_year", None)
             url = engine_self.taxonomy_urls.get(year)
-
             if not url:
                 link_dict = {
                     "2024": "https://www.fsa.go.jp/search/20231211/1c_Taxonomy.zip",
@@ -53,6 +53,20 @@ class EdinetEngine:
                 for chunk in r.iter_content(1024):
                     f.write(chunk)
 
+        def patched_alc_init(self_alc, account_list_year, data_path):
+            """
+            TypeError: unsupported operand type(s) for /: 'str' and 'str'
+            を解決するための初期化パッチ。data_path を確実に Path オブジェクトにする。
+            """
+            self_alc.account_list_year = account_list_year
+            # ここが修正の核心: data_path を Path オブジェクトに変換して保持する
+            dp = Path(data_path)
+            self_alc.data_path = dp
+            self_alc.taxonomy_file = dp / "taxonomy_{}.zip".format(account_list_year)
+            self_alc.taxonomy_path = dp / "taxonomy_{}".format(account_list_year)
+            self_alc.log_dict = {}
+
+        account_list_common.__init__ = patched_alc_init
         account_list_common._download_taxonomy = patched_download_taxonomy
 
     def fetch_metadata(self, start_date: str, end_date: str) -> List[Dict]:
