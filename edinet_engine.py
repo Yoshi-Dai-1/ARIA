@@ -1,19 +1,12 @@
-import os
-import sys
 from pathlib import Path
 from typing import Dict, List
 
 import requests
 from loguru import logger
 
-# サブモジュールのインポート設定
-submodule_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "edinet_xbrl_prep"))
-sys.path.insert(0, submodule_root)
-
-# サブモジュールからのインポート
-from edinet_xbrl_prep.edinet_api import edinet_response_metadata, request_term  # noqa: E402
-from edinet_xbrl_prep.link_base_file_analyzer import account_list_common  # noqa: E402
-
+# サブモジュールからのインポート (動的パス追加を廃止し、正規の階層で指定)
+from edinet_xbrl_prep.edinet_xbrl_prep.edinet_api import edinet_response_metadata, request_term
+from edinet_xbrl_prep.edinet_xbrl_prep.link_base_file_analyzer import account_list_common
 from models import EdinetDocument  # noqa: E402
 
 

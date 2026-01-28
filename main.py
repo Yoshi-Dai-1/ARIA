@@ -3,25 +3,19 @@ import json
 import os
 import shutil
 import signal
-import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
 
-# パス設定をインポートの直前（標準ライブラリの次）に移動
-submodule_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "edinet_xbrl_prep"))
-if submodule_root not in sys.path:
-    sys.path.insert(0, submodule_root)
-
 import pandas as pd
-
-# サブモジュールからのインポート
-from edinet_xbrl_prep.fs_tbl import get_fs_tbl
 from loguru import logger
 
 # モジュールのインポート
 from catalog_manager import CatalogManager
 from edinet_engine import EdinetEngine
+
+# サブモジュールからのインポート (動的パス追加を廃止し、正規の階層で指定)
+from edinet_xbrl_prep.edinet_xbrl_prep.fs_tbl import get_fs_tbl
 from history_engine import HistoryEngine
 from master_merger import MasterMerger
 
