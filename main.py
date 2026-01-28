@@ -48,8 +48,6 @@ def parse_worker(args):
     docid, row_dict, account_list, zip_path = args
     extract_dir = TEMP_DIR / docid
     try:
-        # get_fs_tbl を使用して解析 (定量データのみを想定)
-        # サブモジュールの仕様に基づき、適切なロールキーワードを指定
         roles = ["BS", "PL", "CF", "SS"]
         df = get_fs_tbl(
             account_list_common_obj=account_list,
@@ -62,7 +60,6 @@ def parse_worker(args):
         if df is not None and not df.empty:
             df["docid"] = docid
             df["submitDateTime"] = row_dict.get("submitDateTime", "")
-            # 型の安定化
             for col in df.columns:
                 if df[col].dtype == "object":
                     df[col] = df[col].astype(str)
@@ -79,7 +76,7 @@ def main():
     parser = argparse.ArgumentParser(description="Integrated Disclosure Data Lakehouse 2.0")
     parser.add_argument("--start", type=str, help="YYYY-MM-DD")
     parser.add_argument("--end", type=str, help="YYYY-MM-DD")
-    parser.add_argument("--id_list", type=str, help="Comma separated docIDs", default=None)
+    parser.add_argument("--id-list", type=str, help="Comma separated docIDs", default=None)
     parser.add_argument("--list-only", action="store_true", help="Output metadata as JSON for GHA matrix")
     args = parser.parse_args()
 
@@ -91,44 +88,21 @@ def main():
         logger.critical("EDINET_API_KEY が設定されていません。")
         return
 
-    # 日付のデフォルト設定 (直近30日)
     if not args.start:
         args.start = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
     if not args.end:
         args.end = datetime.now().strftime("%Y-%m-%d")
 
-    # ロガー設定
     log_dir = Path("logs")
     log_dir.mkdir(exist_ok=True)
     logger.add(log_dir / "pipeline_{time}.log", rotation="10 MB", level="INFO")
 
-    # エンジン初期化
     edinet = EdinetEngine(api_key, DATA_PATH)
     catalog = CatalogManager(hf_repo, hf_token, DATA_PATH)
     merger = MasterMerger(hf_repo, hf_token, DATA_PATH)
     history = HistoryEngine(DATA_PATH)
 
-    # 1. メタデータ取得
-    all_meta = edinet.fetch_metadata(args.start, args.end)
-    if not all_meta:
-        if args.list_only:
-            print("JSON_MATRIX_DATA: []")
-        return
-
-    # GHAマトリックス用出力
-    if args.list_only:
-        matrix_data = []
-        for row in all_meta:
-            docid = row["docID"]
-            if catalog.is_processed(docid):
-                continue
-            matrix_data.append({"id": docid, "sector": catalog.get_sector(row.get("secCode", "")[:4])})
-        print(f"JSON_MATRIX_DATA: {json.dumps(matrix_data)}")
-        return
-
-    logger.info("=== Data Lakehouse 2.0 実行開始 ===")
-
-    # 2. 市場マスタと履歴の更新
+    # 1. 市場マスタと履歴の更新 (リスト出力時も業種判定のために必要)
     if not args.id_list:
         try:
             jpx_master = history.fetch_jpx_master()
@@ -143,7 +117,28 @@ def main():
         except Exception as e:
             logger.error(f"市場履歴更新中にエラーが発生しました: {e}")
 
-    # 3. 処理対象の選定
+    # 2. メタデータ取得
+    all_meta = edinet.fetch_metadata(args.start, args.end)
+    if not all_meta:
+        if args.list_only:
+            print("JSON_MATRIX_DATA: []")
+        return
+
+    # 3. GHAマトリックス用出力
+    if args.list_only:
+        matrix_data = []
+        for row in all_meta:
+            docid = row["docID"]
+            if catalog.is_processed(docid):
+                continue
+            # マスタ更新後なので適切な業種が取得可能
+            matrix_data.append({"id": docid, "sector": catalog.get_sector(row.get("secCode", "")[:4])})
+        print(f"JSON_MATRIX_DATA: {json.dumps(matrix_data)}")
+        return
+
+    logger.info("=== Data Lakehouse 2.0 実行開始 ===")
+
+    # 4. 処理対象の選定
     tasks = []
     new_catalog_records = []
     loaded_acc = {}
@@ -162,7 +157,6 @@ def main():
         raw_zip = raw_dir / f"{docid}.zip"
         raw_pdf = raw_dir / f"{docid}.pdf"
 
-        # 取得
         zip_ok = edinet.download_doc(docid, raw_zip, 1) if row.get("xbrlFlag") == "1" else False
         pdf_ok = edinet.download_doc(docid, raw_pdf, 2) if row.get("pdfFlag") == "1" else False
 
@@ -192,7 +186,7 @@ def main():
     if new_catalog_records:
         catalog.update_catalog(new_catalog_records)
 
-    # 4. 並列解析
+    # 5. 並列解析
     all_quant_dfs = []
     processed_infos = []
 
@@ -218,7 +212,7 @@ def main():
                             {"docID": did, "sector": catalog.get_sector(meta_row.get("secCode", "")[:4])}
                         )
 
-    # 5. マスターマージ
+    # 6. マスターマージ
     if all_quant_dfs:
         logger.info("マスターマージを開始します...")
         full_quant_df = pd.concat(all_quant_dfs, ignore_index=True)
