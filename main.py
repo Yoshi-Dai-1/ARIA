@@ -240,11 +240,8 @@ def main():
         if has_xbrl:
             zip_ok = edinet.download_doc(docid, raw_zip, 1)
             if zip_ok:
-                # RAWアップロードの実行 (Hugging Face 上の raw/ 層を構築)
-                repo_zip_path = f"raw/edinet/{y}/{m}/{docid}.zip"
-                if not catalog.upload_raw(raw_zip, repo_zip_path):
-                    logger.error(f"RAW(XBRL)アップロード失敗: {docid}")
-                    zip_ok = False
+                # RAWアップロードはバッチ化するため即時実行しない
+                pass
             else:
                 logger.error(f"XBRLダウンロード失敗: {docid} | {title}")
 
@@ -252,11 +249,8 @@ def main():
         if has_pdf:
             pdf_ok = edinet.download_doc(docid, raw_pdf, 2)
             if pdf_ok:
-                # RAWアップロードの実行 (Hugging Face 上の raw/ 層を構築)
-                repo_pdf_path = f"raw/edinet/{y}/{m}/{docid}.pdf"
-                if not catalog.upload_raw(raw_pdf, repo_pdf_path):
-                    logger.error(f"RAW(PDF)アップロード失敗: {docid}")
-                    pdf_ok = False
+                # RAWアップロードはバッチ化するため即時実行しない
+                pass
             else:
                 logger.error(f"PDFダウンロード失敗: {docid} | {title}")
 
@@ -313,11 +307,46 @@ def main():
         if not args.id_list and processed_count % 50 == 0:
             logger.info(f"ダウンロード進捗: {processed_count} / {len(all_meta)} 件完了")
 
+            # 【Smart Batching】50件ごとにRAWフォルダを一括アップロード
+            # raw/edinet/YYYY/MM 分をアップロードする形になるが、フォルダ構造を維持する必要がある
+            # upload_raw_folder は指定フォルダの中身をそのままHFへ同期する
+            # ここでは RAW_BASE_DIR (data/raw) 全体を raw/ としてアップロードするのが最も単純
+            try:
+                logger.info(f"バッチアップロード開始 (Chunk: {processed_count})")
+                # 【重要】アップロード成功時のみカタログを更新する (失敗時は次回実行時に再処理させるため)
+                if catalog.upload_raw_folder(RAW_BASE_DIR, path_in_repo="raw"):
+                    if new_catalog_records:
+                        catalog.update_catalog(new_catalog_records)
+                        # カタログ登録成功後にリストをクリア
+                        new_catalog_records = []
+                else:
+                    logger.warning(
+                        "バッチアップロードに失敗したため、カタログ更新をスキップしました (次回再処理されます)"
+                    )
+                    # new_catalog_records は保持したままだと次のバッチで重複する可能性があるが、
+                    # 現在のループ設計では new_catalog_records は累積されず、ここでクリアしないと
+                    # 次の50件と混ざってしまう。
+                    # しかし「失敗した分」はカタログに載せたくないので、リストからは捨てるのが正しい。
+                    # (カタログに載らなければ次回 is_processed=False になり再取得されるため)
+                    new_catalog_records = []
+
+            except Exception as e:
+                logger.error(f"バッチアップロード失敗: {e}")
+                # 例外時も同様にリストを破棄して次回再処理に回す
+                new_catalog_records = []
+
     # 解析対象外の書類（PDFのみ、種別違い等）をこのタイミングで一度カタログ保存
-    if new_catalog_records:
-        logger.info(f"解析対象外の書類 {len(new_catalog_records)} 件をカタログに登録します。")
-        catalog.update_catalog(new_catalog_records)
-        new_catalog_records = []
+    # ただし、ここでもアップロードされていないファイルへの参照をカタログに載せるのはリスクがある。
+    # 解析対象外も upload_raw_folder に含まれるため、最終バッチとして処理するのが適切。
+
+    # 最終的な一括アップロード（残り分）
+    logger.info("最終バッチアップロードを開始します...")
+    if catalog.upload_raw_folder(RAW_BASE_DIR, path_in_repo="raw"):
+        if new_catalog_records:
+            logger.info(f"残りの書類 {len(new_catalog_records)} 件をカタログに登録します。")
+            catalog.update_catalog(new_catalog_records)
+    else:
+        logger.error("最終アップロードに失敗したため、残りのカタログ更新をスキップしました。")
 
     if skipped_types:
         logger.info(f"解析スキップ内訳 (Yuho以外): {skipped_types}")

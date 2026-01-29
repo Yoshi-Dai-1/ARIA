@@ -144,13 +144,48 @@ class CatalogManager:
                     if isinstance(e, HfHubHTTPError) and e.response.status_code == 429:
                         wait_time = int(e.response.headers.get("Retry-After", 60)) + 5
                         logger.warning(
-                            f"Rate limit exceeded for RAW. Waiting {wait_time}s before retry ({attempt + 1}/{max_retries})..."
+                            f"Rate limit exceeded for RAW. Waiting {wait_time}s... ({attempt + 1}/{max_retries})"
                         )
                         time.sleep(wait_time)
                         continue
 
                     logger.error(f"RAWアップロード失敗: {repo_path} - {e}")
                     return False
+            return False
+            return False
+        return True
+
+    def upload_raw_folder(self, folder_path: Path, path_in_repo: str) -> bool:
+        """フォルダ単位での一括アップロード (リトライ付)"""
+        if not folder_path.exists():
+            return True  # アップロード対象なしは成功とみなす
+
+        if self.api:
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    self.api.upload_folder(
+                        folder_path=str(folder_path),
+                        path_in_repo=path_in_repo,
+                        repo_id=self.hf_repo,
+                        repo_type="dataset",
+                        token=self.hf_token,
+                    )
+                    logger.success(f"一括アップロード成功: {path_in_repo} (from {folder_path})")
+                    return True
+                except Exception as e:
+                    if isinstance(e, HfHubHTTPError) and e.response.status_code == 429:
+                        wait_time = int(e.response.headers.get("Retry-After", 60)) + 5
+                        logger.warning(
+                            f"Folder Upload Rate limit exceeded. Waiting {wait_time}s... ({attempt + 1}/{max_retries})"
+                        )
+                        time.sleep(wait_time)
+                        continue
+
+                    logger.warning(f"アップロード一時エラー: {e} - Retrying ({attempt + 1}/{max_retries})...")
+                    time.sleep(10)
+
+            logger.error(f"一括アップロード失敗 (Give up): {path_in_repo}")
             return False
         return True
 
