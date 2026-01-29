@@ -107,6 +107,28 @@ class CatalogManager:
                 return False
         return True
 
+    def upload_raw(self, local_path: Path, repo_path: str) -> bool:
+        """ローカルの生データを Hugging Face の raw/ フォルダにアップロード"""
+        if not local_path.exists():
+            logger.error(f"ファイルが存在しないためアップロードできません: {local_path}")
+            return False
+
+        if self.api:
+            try:
+                self.api.upload_file(
+                    path_or_fileobj=str(local_path),
+                    path_in_repo=repo_path,
+                    repo_id=self.hf_repo,
+                    repo_type="dataset",
+                    token=self.hf_token,
+                )
+                logger.debug(f"RAWアップロード成功: {repo_path}")
+                return True
+            except Exception as e:
+                logger.error(f"RAWアップロード失敗: {repo_path} - {e}")
+                return False
+        return True
+
     def update_listing_history(self, new_events: pd.DataFrame) -> bool:
         if new_events.empty:
             return True

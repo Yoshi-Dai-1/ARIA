@@ -233,13 +233,25 @@ def main():
         zip_ok = False
         if has_xbrl:
             zip_ok = edinet.download_doc(docid, raw_zip, 1)
-            if not zip_ok:
+            if zip_ok:
+                # RAWアップロードの実行 (Hugging Face 上の raw/ 層を構築)
+                repo_zip_path = f"raw/edinet/{y}/{m}/{docid}.zip"
+                if not catalog.upload_raw(raw_zip, repo_zip_path):
+                    logger.error(f"RAW(XBRL)アップロード失敗: {docid}")
+                    zip_ok = False
+            else:
                 logger.error(f"XBRLダウンロード失敗: {docid} | {title}")
 
         pdf_ok = False
         if has_pdf:
             pdf_ok = edinet.download_doc(docid, raw_pdf, 2)
-            if not pdf_ok:
+            if pdf_ok:
+                # RAWアップロードの実行 (Hugging Face 上の raw/ 層を構築)
+                repo_pdf_path = f"raw/edinet/{y}/{m}/{docid}.pdf"
+                if not catalog.upload_raw(raw_pdf, repo_pdf_path):
+                    logger.error(f"RAW(PDF)アップロード失敗: {docid}")
+                    pdf_ok = False
+            else:
                 logger.error(f"PDFダウンロード失敗: {docid} | {title}")
 
         file_status = []
