@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
+import urllib3
 from loguru import logger
 
 # モジュールのインポート
@@ -122,7 +123,7 @@ def main():
     # 【投資特化】証券コードがない（非上場企業）を即座に除外
     initial_count = len(all_meta)
     all_meta = [row for row in all_meta if row.get("secCode") and len(str(row.get("secCode", "")).strip()) >= 5]
-    if initial_count > len(all_meta):
+    if initial_count > len(all_meta) and not args.id_list:
         logger.info(f"非上場・投資対象外の書類を {initial_count - len(all_meta)} 件スキップしました。")
 
     # 2. GHAマトリックス用出力
@@ -139,9 +140,22 @@ def main():
 
     logger.info("=== Data Lakehouse 2.0 実行開始 ===")
 
+    # 1. 警告抑制と環境チェック (関数内で実行することで E402 警告を回避)
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    try:
+        import multimethod
+
+        v = [int(x) for x in multimethod.__version__.split(".")]
+        if v[0] < 1 or (v[0] == 1 and v[1] < 10):
+            logger.warning(f"multimethod バージョン不一致の恐れ: {multimethod.__version__}")
+    except Exception:
+        pass
+
     # 4. 処理対象の選定
     tasks = []
     new_catalog_records = []
+    # 【カタログ整合性】ダウンロード直後ではなく、解析結果に基づき登録するよう設計変更
+    potential_catalog_records = {}  # docid -> record_base
     loaded_acc = {}
 
     target_ids = args.id_list.split(",") if args.id_list else None
@@ -158,39 +172,44 @@ def main():
         raw_zip = raw_dir / f"{docid}.zip"
         raw_pdf = raw_dir / f"{docid}.pdf"
 
+        # ダウンロード実行 (解析不要な書類もダウンロードは行う)
         zip_ok = edinet.download_doc(docid, raw_zip, 1) if row.get("xbrlFlag") == "1" else False
         pdf_ok = edinet.download_doc(docid, raw_pdf, 2) if row.get("pdfFlag") == "1" else False
 
-        new_catalog_records.append(
-            {
-                "doc_id": docid,
-                "source": "EDINET",
-                "code": row.get("secCode", "")[:4],
-                "edinet_code": row.get("edinetCode", ""),
-                "company_name": row.get("filerName", "Unknown"),
-                "doc_type": row.get("docTypeCode", ""),
-                "title": row.get("docDescription", ""),
-                "submit_at": row.get("submitDateTime", ""),
-                "raw_zip_path": f"raw/edinet/{y}/{m}/{docid}.zip" if zip_ok else "",
-                "pdf_path": f"raw/edinet/{y}/{m}/{docid}.pdf" if pdf_ok else "",
-                "processed_status": "success",
-            }
-        )
+        # カタログ情報のベースを保持
+        potential_catalog_records[docid] = {
+            "doc_id": docid,
+            "source": "EDINET",
+            "code": row.get("secCode", "")[:4],
+            "edinet_code": row.get("edinetCode", ""),
+            "company_name": row.get("filerName", "Unknown"),
+            "doc_type": row.get("docTypeCode", ""),
+            "title": row.get("docDescription", ""),
+            "submit_at": row.get("submitDateTime", ""),
+            "raw_zip_path": f"raw/edinet/{y}/{m}/{docid}.zip" if zip_ok else "",
+            "pdf_path": f"raw/edinet/{y}/{m}/{docid}.pdf" if pdf_ok else "",
+            "processed_status": "success",
+        }
 
+        # 解析タスクの追加 (XBRL がある場合のみ)
         if row.get("docTypeCode") in ["120", "130"] and zip_ok:
             ty = row["submitDateTime"][:4]
             if ty not in loaded_acc:
                 loaded_acc[ty] = edinet.get_account_list(ty)
             if loaded_acc[ty]:
                 tasks.append((docid, row, loaded_acc[ty], raw_zip))
+        else:
+            # 解析対象外の書類は、ダウンロード完了時点でカタログ登録対象にする
+            new_catalog_records.append(potential_catalog_records[docid])
 
         # 50件ごとに進捗を報告
-        processed_count = len(new_catalog_records)
-        if processed_count % 50 == 0:
+        processed_count = len(potential_catalog_records)
+        if not args.id_list and processed_count % 50 == 0:
             logger.info(f"ダウンロード進捗: {processed_count} / {len(all_meta)} 件完了")
 
-    if new_catalog_records:
-        catalog.update_catalog(new_catalog_records)
+    # 注意: ここでの一括 update_catalog(new_catalog_records) を廃止しました。
+    # 解析が必要ない書類のみ、ここで暫定的に登録するか。
+    # 今回は「解析が成功したものだけ」をカタログに刻むというあなたの指示に基づき、並列解析後に集約します。
 
     # 5. 並列解析
     all_quant_dfs = []
@@ -210,12 +229,21 @@ def main():
                     did, quant_df, err = f.result()
                     if err:
                         logger.error(f"解析失敗: {did} - {err}")
+                        # 失敗した書類はカタログに登録しない
                     elif quant_df is not None:
                         all_quant_dfs.append(quant_df)
                         meta_row = next(m for m in all_meta if m["docID"] == did)
                         processed_infos.append(
                             {"docID": did, "sector": catalog.get_sector(meta_row.get("secCode", "")[:4])}
                         )
+                        # 【カタログ整合性】解析成功後のタイミングで記録を追加
+                        if did in potential_catalog_records:
+                            new_catalog_records.append(potential_catalog_records[did])
+
+                # バッチごとにカタログを逐次更新（長時間実行時の安全のため）
+                if new_catalog_records:
+                    catalog.update_catalog(new_catalog_records)
+                    new_catalog_records = []
 
                 # 10件（1バブル）ごとに進捗を報告
                 done_count = i + len(batch)
