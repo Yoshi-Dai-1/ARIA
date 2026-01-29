@@ -55,7 +55,8 @@ def parse_worker(args):
         )
 
         logger.debug(
-            f"XBRLパース完了: {docid} | Status: {log_dict.get('get_xbrl_status')} | RowCount: {len(xbrl_df) if xbrl_df is not None else 0}"
+            f"XBRLパース完了: {docid} | Status: {log_dict.get('get_xbrl_status')} | "
+            f"RowCount: {len(xbrl_df) if xbrl_df is not None else 0}"
         )
         if log_dict.get("get_xbrl_error_message"):
             logger.warning(f"XBRLパース警告: {docid} - {log_dict.get('get_xbrl_error_message')}")
@@ -315,7 +316,8 @@ def main():
                     did, quant_df, err = f.result()
                     if err:
                         logger.error(f"解析失敗: {did} - 理由: {err}")
-                        # 万が一の解析失敗時も、ダウンロード自体は成功しているためカタログには「解析失敗」として残すか検討が必要
+                        # 万が一の解析失敗時も、ダウンロード自体は成功しているため
+                        # カタログには「解析失敗」として残すか検討が必要
                         # ここでは、整合性のために potential_catalog_records から記録を取得してカタログ登録に回す
                         if did in potential_catalog_records:
                             rec = potential_catalog_records[did]
@@ -342,7 +344,8 @@ def main():
 
                 done_count = i + len(batch)
                 logger.info(
-                    f"解析進捗: {min(done_count, len(tasks))} / {len(tasks)} 件完了 (抽出成功累積: {len(all_quant_dfs)})"
+                    f"解析進捗: {min(done_count, len(tasks))} / {len(tasks)} 件完了 "
+                    f"(抽出成功累積: {len(all_quant_dfs)})"
                 )
     new_catalog_records = []
 
