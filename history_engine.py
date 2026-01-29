@@ -31,8 +31,13 @@ class HistoryEngine:
         logger.success(f"JPXマスタ取得完了: {len(df)} 銘柄")
         return df[["code", "company_name", "sector", "market"]]
 
-    def generate_listing_events(self, old_master: pd.DataFrame, new_master: pd.DataFrame) -> pd.DataFrame:
-        """マスタの差分から上場・廃止イベントを生成"""
+    def generate_listing_events(
+        self,
+        old_master: pd.DataFrame,
+        new_master: pd.DataFrame,
+        old_history: pd.DataFrame = None,
+    ) -> pd.DataFrame:
+        """マスタの差分から上場・廃止イベントを生成 (再上場判定含む)"""
         if old_master.empty:
             return pd.DataFrame()
 
@@ -42,13 +47,22 @@ class HistoryEngine:
         events = []
         today = datetime.now().strftime("%Y-%m-%d")
 
-        # 新規上場
+        # 過去に廃止されたコードのセットを作成
+        delisted_codes = set()
+        if old_history is not None and not old_history.empty:
+            delisted_items = old_history[old_history["type"] == "DELISTING"]
+            delisted_codes = set(delisted_items["code"])
+
+        # 新規上場 (または再上場)
         for code in new_codes - old_codes:
-            events.append({"code": code, "type": "LISTING", "event_date": today, "note": "Newly Listed"})
+            event_type = "RE-LISTING" if code in delisted_codes else "LISTING"
+            # 理由の手動管理は廃止。システム判定のみを記録。
+            events.append({"code": code, "type": event_type, "event_date": today})
 
         # 廃止
         for code in old_codes - new_codes:
-            events.append({"code": code, "type": "DELISTING", "event_date": today, "note": "Delisted / Merged"})
+            # 理由は自動取得不可のため記録しない
+            events.append({"code": code, "type": "DELISTING", "event_date": today})
 
         return pd.DataFrame(events)
 
@@ -57,16 +71,31 @@ class HistoryEngine:
         # 実際にはCSVのパーシングが必要だが、ここでは空リストまたは簡易取得を想定
         return pd.DataFrame(columns=["code"])
 
-    def generate_index_events(self, index_name: str, old_list: pd.DataFrame, new_list: pd.DataFrame) -> pd.DataFrame:
-        """指数採用・除外イベント生成"""
+    def generate_index_events(
+        self,
+        index_name: str,
+        old_list: pd.DataFrame,
+        new_list: pd.DataFrame,
+        old_history: pd.DataFrame = None,
+    ) -> pd.DataFrame:
+        """指数採用・除外イベント生成 (再採用判定含む)"""
         old_set = set(old_list["code"]) if not old_list.empty else set()
         new_set = set(new_list["code"]) if not new_list.empty else set()
 
         events = []
         today = datetime.now().strftime("%Y-%m-%d")
 
+        # 過去に除外されたコードのセット
+        removed_codes = set()
+        if old_history is not None and not old_history.empty:
+            # 同一指数の過去の除外履歴を検索
+            removed_items = old_history[(old_history["index_name"] == index_name) & (old_history["type"] == "REMOVE")]
+            removed_codes = set(removed_items["code"])
+
         for code in new_set - old_set:
-            events.append({"index_name": index_name, "code": code, "type": "ADD", "event_date": today})
+            event_type = "RE-INCLUSION" if code in removed_codes else "ADD"
+            events.append({"index_name": index_name, "code": code, "type": event_type, "event_date": today})
+
         for code in old_set - new_set:
             events.append({"index_name": index_name, "code": code, "type": "REMOVE", "event_date": today})
 

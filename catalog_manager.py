@@ -143,6 +143,14 @@ class CatalogManager:
         history = pd.concat([history, new_events], ignore_index=True).drop_duplicates()
         return self._save_and_upload("index", history)
 
+    def get_listing_history(self) -> pd.DataFrame:
+        """現在の上場履歴マスタを取得"""
+        return self._load_parquet("listing")
+
+    def get_index_history(self) -> pd.DataFrame:
+        """現在の指数採用履歴マスタを取得"""
+        return self._load_parquet("index")
+
     def update_stocks_master(self, new_master: pd.DataFrame):
         """マスタ更新 (Pydantic バリデーション実施)"""
         if new_master.empty:
