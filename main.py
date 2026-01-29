@@ -121,9 +121,30 @@ def main():
 
     # 【投資特化】証券コードがない（非上場企業）を即座に除外
     initial_count = len(all_meta)
-    all_meta = [row for row in all_meta if row.get("secCode") and len(str(row.get("secCode", "")).strip()) >= 5]
+
+    # フィルタリング理由の追跡ログ
+    filtered_meta = []
+    skipped_reasons = {"no_sec_code": 0, "invalid_length": 0}
+
+    for row in all_meta:
+        sec_code = str(row.get("secCode", "")).strip()
+        if not sec_code:
+            skipped_reasons["no_sec_code"] += 1
+            continue
+        if len(sec_code) < 5:
+            skipped_reasons["invalid_length"] += 1
+            # 56件の書類漏れなどの追跡用
+            logger.debug(f"書類スキップ (コード短縮): {row.get('docID')} - {sec_code}")
+            continue
+        filtered_meta.append(row)
+
+    all_meta = filtered_meta
     if initial_count > len(all_meta) and not args.id_list:
-        logger.info(f"非上場・投資対象外の書類を {initial_count - len(all_meta)} 件スキップしました。")
+        logger.info(
+            f"フィルタリング結果: 初期 {initial_count} 件 -> 保持 {len(all_meta)} 件 "
+            f"(証券コードなし: {skipped_reasons['no_sec_code']} 件, "
+            f"コード不正/短縮: {skipped_reasons['invalid_length']} 件)"
+        )
 
     # 2. GHAマトリックス用出力
     if args.list_only:
