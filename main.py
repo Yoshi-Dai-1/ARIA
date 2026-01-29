@@ -180,6 +180,8 @@ def main():
 
     target_ids = args.id_list.split(",") if args.id_list else None
 
+    # 解析タスクの追加 (XBRL がある Yuho/Shihanki のみ)
+    skipped_types = {}
     for row in all_meta:
         docid = row["docID"]
         if target_ids and docid not in target_ids:
@@ -197,7 +199,7 @@ def main():
         pdf_ok = edinet.download_doc(docid, raw_pdf, 2) if row.get("pdfFlag") == "1" else False
 
         # カタログ情報のベースを保持
-        potential_catalog_records[docid] = {
+        record = {
             "doc_id": docid,
             "source": "EDINET",
             "code": row.get("secCode", "")[:4],
@@ -210,26 +212,40 @@ def main():
             "pdf_path": f"raw/edinet/{y}/{m}/{docid}.pdf" if pdf_ok else "",
             "processed_status": "success",
         }
+        potential_catalog_records[docid] = record
 
-        # 解析タスクの追加 (XBRL がある場合のみ)
-        if row.get("docTypeCode") in ["120", "130"] and zip_ok:
+        # 解析タスクの判定
+        # 120: 有価証券報告書, 121: 訂正有価証券報告書
+        dtc = row.get("docTypeCode")
+        title = row.get("docDescription", "名称不明")
+
+        if dtc in ["120", "121"] and zip_ok:
             ty = row["submitDateTime"][:4]
             if ty not in loaded_acc:
                 loaded_acc[ty] = edinet.get_account_list(ty)
             if loaded_acc[ty]:
                 tasks.append((docid, row, loaded_acc[ty], raw_zip))
+                logger.info(f"【解析対象】: {docid} | {title}")
         else:
-            # 解析対象外の書類は、ダウンロード完了時点でカタログ登録対象にする
-            new_catalog_records.append(potential_catalog_records[docid])
+            reason = "XBRLなし" if not zip_ok else f"対象外種別({dtc})"
+            logger.info(f"【スキップ】: {docid} | {title} | 理由: {reason}")
+            skipped_types[dtc] = skipped_types.get(dtc, 0) + 1
+            # 解析対象外（臨時報告書など）も正常に処理されたものとしてカタログに積む
+            new_catalog_records.append(record)
 
         # 50件ごとに進捗を報告
         processed_count = len(potential_catalog_records)
         if not args.id_list and processed_count % 50 == 0:
             logger.info(f"ダウンロード進捗: {processed_count} / {len(all_meta)} 件完了")
 
-    # 注意: ここでの一括 update_catalog(new_catalog_records) を廃止しました。
-    # 解析が必要ない書類のみ、ここで暫定的に登録するか。
-    # 今回は「解析が成功したものだけ」をカタログに刻むというあなたの指示に基づき、並列解析後に集約します。
+    # 解析対象外の書類をこのタイミングで一度カタログ保存
+    if new_catalog_records:
+        logger.info(f"解析不要な書類 {len(new_catalog_records)} 件をカタログに登録します。")
+        catalog.update_catalog(new_catalog_records)
+        new_catalog_records = []
+
+    if skipped_types:
+        logger.info(f"解析スキップ内訳 (Yuho/Shihanki以外): {skipped_types}")
 
     # 5. 並列解析
     all_quant_dfs = []
@@ -271,15 +287,26 @@ def main():
                     f"解析進捗: {min(done_count, len(tasks))} / {len(tasks)} 件完了 (成功累積: {len(all_quant_dfs)})"
                 )
 
-    # 6. マスターマージ
+    # 6. マスターマージ & カタログ確定
     if all_quant_dfs:
         logger.info("マスターマージを開始します...")
         full_quant_df = pd.concat(all_quant_dfs, ignore_index=True)
         info_df = pd.DataFrame(processed_infos)
+
+        # セクターごとにアップロード成功を確認してから、そのセクターに属する書類をカタログに登録
         for sector in info_df["sector"].unique():
             sec_docids = info_df[info_df["sector"] == sector]["docID"].tolist()
             sec_quant = full_quant_df[full_quant_df["docid"].isin(sec_docids)]
-            merger.merge_and_upload(sector, "financial_values", sec_quant)
+
+            # データアップロード成功時のみカタログに反映（後判定）
+            if merger.merge_and_upload(sector, "financial_values", sec_quant):
+                target_records = [v for k, v in potential_catalog_records.items() if k in sec_docids]
+                if target_records:
+                    catalog.update_catalog(target_records)
+            else:
+                logger.error(
+                    f"データの保存に失敗したため、カタログ登録をスキップしました: Sector={sector}, IDs={sec_docids}"
+                )
 
     logger.success("=== パイプライン完了 ===")
 

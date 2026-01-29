@@ -59,10 +59,10 @@ class CatalogManager:
             return False
         return doc_id in self.catalog_df["doc_id"].values
 
-    def update_catalog(self, new_records: List[Dict]):
+    def update_catalog(self, new_records: List[Dict]) -> bool:
         """カタログを更新 (Pydanticバリデーション実施)"""
         if not new_records:
-            return
+            return True
 
         validated = []
         for rec in new_records:
@@ -72,15 +72,15 @@ class CatalogManager:
                 logger.error(f"カタログレコードのバリデーション失敗 (doc_id: {rec.get('doc_id')}): {e}")
 
         if not validated:
-            return
+            return False
 
         new_df = pd.DataFrame(validated)
         self.catalog_df = pd.concat([self.catalog_df, new_df], ignore_index=True).drop_duplicates(
             subset=["doc_id"], keep="last"
         )
-        self._save_and_upload("catalog", self.catalog_df)
+        return self._save_and_upload("catalog", self.catalog_df)
 
-    def _save_and_upload(self, key: str, df: pd.DataFrame):
+    def _save_and_upload(self, key: str, df: pd.DataFrame) -> bool:
         filename = self.paths[key]
         local_file = self.data_path / Path(filename).name
 
@@ -101,22 +101,25 @@ class CatalogManager:
                     token=self.hf_token,
                 )
                 logger.success(f"アップロード成功: {filename}")
+                return True
             except Exception as e:
                 logger.error(f"アップロード失敗: {filename} - {e}")
+                return False
+        return True
 
-    def update_listing_history(self, new_events: pd.DataFrame):
+    def update_listing_history(self, new_events: pd.DataFrame) -> bool:
         if new_events.empty:
-            return
+            return True
         history = self._load_parquet("listing")
         history = pd.concat([history, new_events], ignore_index=True).drop_duplicates()
-        self._save_and_upload("listing", history)
+        return self._save_and_upload("listing", history)
 
-    def update_index_history(self, new_events: pd.DataFrame):
+    def update_index_history(self, new_events: pd.DataFrame) -> bool:
         if new_events.empty:
-            return
+            return True
         history = self._load_parquet("index")
         history = pd.concat([history, new_events], ignore_index=True).drop_duplicates()
-        self._save_and_upload("index", history)
+        return self._save_and_upload("index", history)
 
     def update_stocks_master(self, new_master: pd.DataFrame):
         """マスタ更新 (Pydantic バリデーション実施)"""

@@ -12,10 +12,10 @@ class MasterMerger:
         self.data_path = data_path
         self.api = HfApi() if hf_repo and hf_token else None
 
-    def merge_and_upload(self, sector: str, master_type: str, new_data: pd.DataFrame):
+    def merge_and_upload(self, sector: str, master_type: str, new_data: pd.DataFrame) -> bool:
         """業種別にParquetをロード・結合・アップロード"""
         if new_data.empty:
-            return
+            return True
 
         safe_sector = str(sector).replace("/", "・").replace("\\", "・")
         repo_path = f"master/{master_type}/sector={safe_sector}/data.parquet"
@@ -57,5 +57,8 @@ class MasterMerger:
                     token=self.hf_token,
                 )
                 logger.success(f"Master更新成功: {safe_sector} ({master_type})")
+                return True
             except Exception as e:
                 logger.error(f"Masterアップロード失敗: {safe_sector} - {e}")
+                return False
+        return True
