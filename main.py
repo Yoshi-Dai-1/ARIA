@@ -122,20 +122,23 @@ def main():
     merger = MasterMerger(hf_repo, hf_token, DATA_PATH)
     history = HistoryEngine(DATA_PATH)
 
-    # 1. 市場マスタと履歴の更新 (リスト出力時も業種判定のために必要)
-    if not args.id_list:
-        try:
-            jpx_master = history.fetch_jpx_master()
+    # 1. 市場マスタと履歴の更新 (リスト出力時や業種判定のために必須)
+    # 【重要】ジョブ分割時(id_listなし)だけでなく、常に最新のマスタを参照できるように修正
+    try:
+        jpx_master = history.fetch_jpx_master()
+        if not jpx_master.empty:
             listing_events = history.generate_listing_events(catalog.master_df, jpx_master)
+            # カタログ内の master_df を最新化 (業種判定の精度に直結)
             catalog.update_stocks_master(jpx_master)
-            catalog.update_listing_history(listing_events)
 
-            nk_list = history.fetch_nikkei_225_events()
-            index_events = history.generate_index_events("Nikkei225", pd.DataFrame(), nk_list)
-            catalog.update_index_history(index_events)
-            logger.info("市場マスタ・履歴の更新が完了しました。")
-        except Exception as e:
-            logger.error(f"市場履歴更新中にエラーが発生しました: {e}")
+            if not args.id_list:
+                catalog.update_listing_history(listing_events)
+                nk_list = history.fetch_nikkei_225_events()
+                index_events = history.generate_index_events("Nikkei225", pd.DataFrame(), nk_list)
+                catalog.update_index_history(index_events)
+                logger.info("市場マスタ・履歴の更新が完了しました。")
+    except Exception as e:
+        logger.error(f"市場履歴更新中にエラーが発生しました: {e}")
 
     # 1. メタデータ取得
     all_meta = edinet.fetch_metadata(args.start, args.end)
@@ -354,6 +357,7 @@ def main():
     new_catalog_records = []
 
     # 6. マスターマージ & カタログ確定
+    all_success = True
     if all_quant_dfs:
         logger.info("マスターマージを開始します...")
         full_quant_df = pd.concat(all_quant_dfs, ignore_index=True)
@@ -368,13 +372,19 @@ def main():
             if merger.merge_and_upload(sector, "financial_values", sec_quant):
                 target_records = [v for k, v in potential_catalog_records.items() if k in sec_docids]
                 if target_records:
-                    catalog.update_catalog(target_records)
+                    if not catalog.update_catalog(target_records):
+                        all_success = False
             else:
                 logger.error(
                     f"データの保存に失敗したため、カタログ登録をスキップしました: Sector={sector}, IDs={sec_docids}"
                 )
+                all_success = False
 
-    logger.success("=== パイプライン完了 ===")
+    if all_success:
+        logger.success("=== パイプライン完了 (正常終了) ===")
+    else:
+        logger.error("=== パイプライン完了 (一部のアップロードに失敗しました) ===")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
