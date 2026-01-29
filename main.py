@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import signal
+import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -68,12 +69,22 @@ def parse_worker(args):
 
 
 def main():
+    # 原因追跡のため、受け取った生の引数をログに出力（デバッグ用）
+    logger.debug(f"起動引数: {sys.argv}")
+
     parser = argparse.ArgumentParser(description="Integrated Disclosure Data Lakehouse 2.0")
     parser.add_argument("--start", type=str, help="YYYY-MM-DD")
     parser.add_argument("--end", type=str, help="YYYY-MM-DD")
-    parser.add_argument("--id-list", type=str, help="Comma separated docIDs", default=None)
+    # ハイフン形式とアンダースコア形式の両方を受け入れ、destを統一
+    parser.add_argument("--id-list", "--id_list", type=str, dest="id_list", help="Comma separated docIDs", default=None)
     parser.add_argument("--list-only", action="store_true", help="Output metadata as JSON for GHA matrix")
-    args = parser.parse_args()
+
+    try:
+        args = parser.parse_args()
+    except SystemExit as e:
+        if e.code != 0:
+            logger.error(f"引数解析エラー (exit code {e.code}): 渡された引数が不正です。 sys.argv={sys.argv}")
+        raise e
 
     api_key = os.getenv("EDINET_API_KEY")
     hf_token = os.getenv("HF_TOKEN")

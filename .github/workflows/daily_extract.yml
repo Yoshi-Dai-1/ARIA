@@ -73,23 +73,24 @@ jobs:
                   print('matrix=[]')
                   sys.exit(0)
               
-              # 証券コードがある書類のみを対象に設定
-              filtered_data = [item for item in data if item.get('sector') != 'その他']
+              # 【修正】全書類（824件など）を対象にする。
+              # 以前は 'その他' を除外していたため56件の漏れが発生していた。
+              filtered_data = data
               
               if not filtered_data:
-                  sys.stderr.write('上場銘柄の書類が0件でした。\n')
+                  sys.stderr.write('処理対象の書類が0件でした。\n')
                   print('matrix=[]')
                   sys.exit(0)
               
               sec_map = {}
               for item in filtered_data:
-                  s = item['sector']
+                  s = item.get('sector', 'その他')
                   sec_map.setdefault(s, []).append(item['id'])
               
               # 書き込み競合回避のため、業種単位でバケットに分ける
               sorted_sectors = sorted(sec_map.keys(), key=lambda x: len(sec_map[x]), reverse=True)
               # ARG_MAX 回避のため、ジョブの分割数を増やし、1つの引数が長くなりすぎないように調整
-              n_jobs = 20  # 分割数を2倍に増加
+              n_jobs = 20
               buckets = [[] for _ in range(n_jobs)]
               bucket_counts = [0] * n_jobs
               res_meta = [{} for _ in range(n_jobs)]
@@ -107,9 +108,6 @@ jobs:
                   sectors_str = ', '.join(res_meta[i]['sectors'])
                   display_sectors = (sectors_str[:50] + '...') if len(sectors_str) > 50 else sectors_str
                   
-                  # 1つの引数に渡すIDが多すぎる場合、さらにサブ分割することも検討可能だが、
-                  # まずは分割数を増やして対応。各IDは約12文字(S+11桁)。
-                  # 1ジョブあたり200件程度なら2.4KBとなり、ARG_MAX(通常128KB以上)には十分収まる。
                   res.append({
                       'ids': ','.join(b),
                       'idx': i,
@@ -117,7 +115,7 @@ jobs:
                       'sectors': display_sectors
                   })
               
-              sys.stderr.write(f'対象期間内の上場銘柄書類数: {len(filtered_data)} 件\n')
+              sys.stderr.write(f'対象期間内の総処理対象書類数: {len(filtered_data)} 件\n')
               print(f'matrix={json.dumps(res)}')
           except Exception as e:
               import traceback
