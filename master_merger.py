@@ -66,7 +66,7 @@ class MasterMerger:
                     if isinstance(e, HfHubHTTPError) and e.response.status_code == 429:
                         wait_time = int(e.response.headers.get("Retry-After", 60)) + 5
                         logger.warning(
-                            f"Master Rate limit exceeded. Waiting {wait_time}s before retry ({attempt + 1}/{max_retries})..."
+                            f"Master Rate limit exceeded. Waiting {wait_time}s... ({attempt + 1}/{max_retries})"
                         )
                         time.sleep(wait_time)
                         continue
