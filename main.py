@@ -248,7 +248,20 @@ def main():
     log_dir.mkdir(exist_ok=True)
     logger.add(log_dir / "pipeline_{time}.log", rotation="10 MB", level="INFO")
 
-    edinet = EdinetEngine(api_key, DATA_PATH)
+    # タクソノミURL定義の読み込み
+    taxonomy_urls_path = Path("taxonomy_urls.json")
+    taxonomy_urls = {}
+    if taxonomy_urls_path.exists():
+        try:
+            with open(taxonomy_urls_path, "r", encoding="utf-8") as f:
+                taxonomy_urls = json.load(f)
+            logger.info(f"タクソノミURL定義を読み込みました: {len(taxonomy_urls)} 件")
+        except Exception as e:
+            logger.error(f"タクソノミURL定義の読み込みに失敗しました: {e}")
+    else:
+        logger.warning(f"タクソノミURL定義が見つかりません: {taxonomy_urls_path}")
+
+    edinet = EdinetEngine(api_key, DATA_PATH, taxonomy_urls=taxonomy_urls)
     catalog = CatalogManager(hf_repo, hf_token, DATA_PATH)
     merger = MasterMerger(hf_repo, hf_token, DATA_PATH)
 
