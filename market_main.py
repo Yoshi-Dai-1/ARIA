@@ -11,7 +11,7 @@ from catalog_manager import CatalogManager
 from market_engine import MarketDataEngine
 
 # 設定
-DATA_PATH = Path("data")
+DATA_PATH = Path("data").resolve()
 TEMP_DIR = DATA_PATH / "temp"
 
 
@@ -26,6 +26,9 @@ def run_market_pipeline(target_date: str):
         sys.exit(1)
 
     # 初期化
+    DATA_PATH.mkdir(parents=True, exist_ok=True)
+    TEMP_DIR.mkdir(parents=True, exist_ok=True)
+
     engine = MarketDataEngine(DATA_PATH)
     catalog = CatalogManager(hf_repo, hf_token, DATA_PATH)  # 再利用
 
@@ -50,6 +53,31 @@ def run_market_pipeline(target_date: str):
         if "rec" in merged_master.columns:
             merged_master.drop(columns=["rec"], inplace=True)
 
+        # 型を強制（文字列化を防ぐ）
+        if merged_master["is_active"].dtype == "object":
+            # 'False' (文字列) を確実に False (bool) にするために lowercase で判定
+            merged_master["is_active"] = (
+                merged_master["is_active"]
+                .astype(str)
+                .str.lower()
+                .map(
+                    {
+                        "true": True,
+                        "false": False,
+                        "1": True,
+                        "0": False,
+                        "1.0": True,
+                        "0.0": False,
+                        "none": True,
+                        "nan": True,
+                    }
+                )
+                .fillna(True)
+                .astype(bool)
+            )
+        else:
+            merged_master["is_active"] = merged_master["is_active"].astype(bool)
+
         # Listing Events生成
         # old_listing = catalog.get_listing_history() # 既存履歴
         # events = engine.update_listing_history(current_master, new_master, old_listing)
@@ -62,7 +90,7 @@ def run_market_pipeline(target_date: str):
 
         # Save Master
         if catalog._save_and_upload("master", merged_master):
-            logger.success(f"Stock Master Updated. Active: {merged_master['is_active'].sum()}")
+            logger.success(f"Stock Master Updated. Active: {merged_master['is_active'].astype(int).sum()}")
 
         # Save History
         if not listing_events.empty:

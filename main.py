@@ -19,7 +19,7 @@ from edinet_xbrl_prep.edinet_xbrl_prep.fs_tbl import get_fs_tbl
 from master_merger import MasterMerger
 
 # 設定
-DATA_PATH = Path("data")
+DATA_PATH = Path("data").resolve()
 RAW_BASE_DIR = DATA_PATH / "raw"
 TEMP_DIR = DATA_PATH / "temp"
 PARALLEL_WORKERS = 4
@@ -135,9 +135,35 @@ def run_merger(catalog, merger, run_id):
         if "rec" in merged_master.columns:
             merged_master.drop(columns=["rec"], inplace=True)
 
+        # 型を強制（文字列化を防ぐ）
+        # 'True'/'False' 文字列も考慮した安全な変換
+        if merged_master["is_active"].dtype == "object":
+            # 'False' (文字列) を確実に False (bool) にするために lowercase で判定
+            merged_master["is_active"] = (
+                merged_master["is_active"]
+                .astype(str)
+                .str.lower()
+                .map(
+                    {
+                        "true": True,
+                        "false": False,
+                        "1": True,
+                        "0": False,
+                        "1.0": True,
+                        "0.0": False,
+                        "none": True,
+                        "nan": True,
+                    }
+                )
+                .fillna(True)
+                .astype(bool)
+            )
+        else:
+            merged_master["is_active"] = merged_master["is_active"].astype(bool)
+
         if catalog._save_and_upload("master", merged_master):
             logger.success(
-                f"Global Stock Master Updated (Active: {merged_master['is_active'].sum()} / "
+                f"Global Stock Master Updated (Active: {merged_master['is_active'].astype(int).sum()} / "
                 f"Total: {len(merged_master)})"
             )
         else:

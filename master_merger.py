@@ -12,6 +12,7 @@ class MasterMerger:
         self.hf_repo = hf_repo
         self.hf_token = hf_token
         self.data_path = data_path
+        self.data_path.mkdir(parents=True, exist_ok=True)
         self.api = HfApi() if hf_repo and hf_token else None
 
     def merge_and_upload(
@@ -74,8 +75,11 @@ class MasterMerger:
 
         for col in combined_df.columns:
             if combined_df[col].dtype == "object":
-                combined_df[col] = combined_df[col].astype(str)
+                # ブール値が含まれる場合は文字列化を避ける
+                if not combined_df[col].apply(lambda x: isinstance(x, bool)).any():
+                    combined_df[col] = combined_df[col].astype(str)
 
+        local_file.parent.mkdir(parents=True, exist_ok=True)
         combined_df.to_parquet(local_file, compression="zstd", index=False)
 
         if self.api:

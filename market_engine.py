@@ -30,15 +30,23 @@ class NikkeiStrategy(IndexStrategy):
         self.url = "https://indexes.nikkei.co.jp/nkave/statistics/datalist/constituent?list=225&type=csv"
         self.headers = {
             "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/91.0.4472.124 Safari/537.36"
-            )
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+            ),
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"
+            ),
+            "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Referer": "https://indexes.nikkei.co.jp/",
         }
 
+    @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=2, min=4, max=20))
     def fetch_data(self) -> pd.DataFrame:
         logger.info("日経225構成銘柄を取得中...")
         # Nikkeiは403 Forbidden対策でUser-Agent必須
-        r = requests.get(self.url, headers=self.headers)
+        r = requests.get(self.url, headers=self.headers, timeout=60)
         r.raise_for_status()
 
         # Shift-JISでデコード

@@ -210,5 +210,6 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO: ${{ vars.HF_REPO }}
         run: |
+          mkdir -p data
           # Merger Mode: 全デルタを集約・マージしてGlobal更新
           python main.py --mode merger --run-id "${{ github.run_id }}"

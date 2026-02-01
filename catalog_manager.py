@@ -16,6 +16,7 @@ class CatalogManager:
         self.hf_repo = hf_repo
         self.hf_token = hf_token
         self.data_path = data_path
+        self.data_path.mkdir(parents=True, exist_ok=True)
         self.api = HfApi() if hf_repo and hf_token else None
 
         # ファイルパス定義
@@ -117,7 +118,9 @@ class CatalogManager:
         # 型の安定化
         for col in df.columns:
             if df[col].dtype == "object":
-                df[col] = df[col].astype(str)
+                # ブール値が含まれる場合は文字列化を避ける
+                if not df[col].apply(lambda x: isinstance(x, bool)).any():
+                    df[col] = df[col].astype(str).replace("None", "")
 
         df.to_parquet(local_file, index=False, compression="zstd")
 
@@ -138,14 +141,12 @@ class CatalogManager:
                     # HfHubHTTPErrorの型チェックを行い、429の場合のみリトライ
                     if isinstance(e, HfHubHTTPError) and e.response.status_code == 429:
                         wait_time = int(e.response.headers.get("Retry-After", 60)) + 5
-                        logger.warning(
-                            f"Rate limit exceeded. Waiting {wait_time}s before retry ({attempt + 1}/{max_retries})..."
-                        )
+                        logger.warning(f"Rate limit exceeded. Waiting {wait_time}s before retry ({attempt + 1}/5)...")
                         time.sleep(wait_time)
                         continue
 
-                    logger.error(f"アップロード失敗: {filename} - {e}")
-                    return False
+                    logger.warning(f"アップロード一時エラー: {filename} - {e} - Retrying ({attempt + 1}/5)...")
+                    time.sleep(10 * (attempt + 1))
             return False
         return True
 
@@ -171,15 +172,12 @@ class CatalogManager:
                 except Exception as e:
                     if isinstance(e, HfHubHTTPError) and e.response.status_code == 429:
                         wait_time = int(e.response.headers.get("Retry-After", 60)) + 5
-                        logger.warning(
-                            f"Rate limit exceeded for RAW. Waiting {wait_time}s... ({attempt + 1}/{max_retries})"
-                        )
+                        logger.warning(f"Rate limit exceeded for RAW. Waiting {wait_time}s... ({attempt + 1}/5)")
                         time.sleep(wait_time)
                         continue
 
-                    logger.error(f"RAWアップロード失敗: {repo_path} - {e}")
-                    return False
-            return False
+                    logger.warning(f"RAWアップロード一時エラー: {repo_path} - {e} - Retrying ({attempt + 1}/5)...")
+                    time.sleep(10 * (attempt + 1))
             return False
         return True
 
