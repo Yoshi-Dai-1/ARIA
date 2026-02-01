@@ -16,7 +16,6 @@ from edinet_engine import EdinetEngine
 
 # サブモジュールからのインポート (動的パス追加を廃止し、正規の階層で指定)
 from edinet_xbrl_prep.edinet_xbrl_prep.fs_tbl import get_fs_tbl
-from history_engine import HistoryEngine
 from master_merger import MasterMerger
 
 # 設定
@@ -104,13 +103,42 @@ def run_merger(catalog, merger, run_id):
     all_masters_success = True
 
     # --- A. Stock Master ---
+    # --- A. Stock Master ---
     if "master" in deltas and not deltas["master"].empty:
         new_master = deltas["master"]
-        merged_master = pd.concat([catalog.master_df, new_master], ignore_index=True).drop_duplicates(
+        # JPX最新リストにあるコードのセット
+        active_codes = set(new_master["code"])
+
+        # 既存マスタの is_active を更新
+        # 1. 既存にあるが新規にない -> is_active=False (上場廃止)
+        # 2. 既存にあり新規にもある -> is_active=True (継続)
+        current_master = catalog.master_df.copy()
+        if not current_master.empty:
+            if "is_active" not in current_master.columns:
+                current_master["is_active"] = True  # カラムがない場合は初期化
+
+            # 既存レコードのステータス更新
+            current_master["is_active"] = current_master["code"].isin(active_codes)
+
+        # 新規データの is_active は当然 True
+        new_master["is_active"] = True
+
+        # マージ (既存の状態更新済みデータ + 新規データ)
+        # 新規データが優先されるが、上場廃止になった銘柄は active_codes に含まれないため
+        # new_master にはその銘柄のレコード自体が存在しない。
+        # したがって、current_master 側の False になったレコードが生き残る。
+        merged_master = pd.concat([current_master, new_master], ignore_index=True).drop_duplicates(
             subset=["code"], keep="last"
         )
+
+        # recカラムなどのクリーンアップ（もしあれば）
+        if "rec" in merged_master.columns:
+            merged_master.drop(columns=["rec"], inplace=True)
+
         if catalog._save_and_upload("master", merged_master):
-            logger.success("Global Stock Master Updated")
+            logger.success(
+                f"Global Stock Master Updated (Active: {merged_master['is_active'].sum()} / Total: {len(merged_master)})"
+            )
         else:
             logger.error("❌ Failed to update Global Stock Master")
             all_masters_success = False
@@ -223,7 +251,6 @@ def main():
     edinet = EdinetEngine(api_key, DATA_PATH)
     catalog = CatalogManager(hf_repo, hf_token, DATA_PATH)
     merger = MasterMerger(hf_repo, hf_token, DATA_PATH)
-    history = HistoryEngine(DATA_PATH)
 
     # 【追加】Mergerモード分岐
     if args.mode == "merger":
@@ -231,35 +258,6 @@ def main():
         return
 
     # Workerモード（以下、既存ロジックだがDelta保存に変更）
-
-    # 1. 市場マスタと履歴の更新 (Worker: Delta保存)
-    try:
-        jpx_master = history.fetch_jpx_master()
-        if not jpx_master.empty:
-            # 過去の履歴を取得して再上場判定に使用（参照のみなのでOK）
-            old_listing = catalog.get_listing_history()
-            listing_events = history.generate_listing_events(catalog.master_df, jpx_master, old_listing)
-
-            nk_list = history.fetch_nikkei_225_events()
-            old_index = catalog.get_index_history()
-            index_events = history.generate_index_events("Nikkei225", pd.DataFrame(), nk_list, old_index)
-
-            # 【修正】Workerモード: Delta保存
-            # 失敗したら即終了してリトライさせる
-            if not catalog.save_delta("master", jpx_master, run_id, chunk_id):
-                logger.error("❌ Master Delta保存失敗")
-                return
-            if not catalog.save_delta("listing", listing_events, run_id, chunk_id):
-                logger.error("❌ Listing History Delta保存失敗")
-                return
-            if not catalog.save_delta("index", index_events, run_id, chunk_id):
-                logger.error("❌ Index History Delta保存失敗")
-                return
-
-            logger.info("✅ 市場マスタ・履歴のDelta保存完了")
-    except Exception as e:
-        logger.error(f"❌ 市場履歴更新処理中にエラーが発生しました: {e}")
-        return
 
     # 1. メタデータ取得
     all_meta = edinet.fetch_metadata(args.start, args.end)
@@ -350,7 +348,8 @@ def main():
             continue
 
         y, m = row["submitDateTime"][:4], row["submitDateTime"][5:7]
-        raw_dir = RAW_BASE_DIR / "edinet" / y / m
+        # 【修正】パス最適化: raw/edinet/year=YYYY/month=MM/
+        raw_dir = RAW_BASE_DIR / "edinet" / f"year={y}" / f"month={m}"
         raw_dir.mkdir(parents=True, exist_ok=True)
         raw_zip = raw_dir / f"{docid}.zip"
         raw_pdf = raw_dir / f"{docid}.pdf"
@@ -363,7 +362,6 @@ def main():
         if has_xbrl:
             zip_ok = edinet.download_doc(docid, raw_zip, 1)
             if zip_ok:
-                # RAWアップロードはバッチ化するため即時実行しない
                 pass
             else:
                 logger.error(f"XBRLダウンロード失敗: {docid} | {title}")
@@ -372,7 +370,6 @@ def main():
         if has_pdf:
             pdf_ok = edinet.download_doc(docid, raw_pdf, 2)
             if pdf_ok:
-                # RAWアップロードはバッチ化するため即時実行しない
                 pass
             else:
                 logger.error(f"PDFダウンロード失敗: {docid} | {title}")
@@ -394,8 +391,8 @@ def main():
             "doc_type": row.get("docTypeCode", ""),
             "title": title,
             "submit_at": row.get("submitDateTime", ""),
-            "raw_zip_path": f"raw/edinet/{y}/{m}/{docid}.zip" if zip_ok else "",
-            "pdf_path": f"raw/edinet/{y}/{m}/{docid}.pdf" if pdf_ok else "",
+            "raw_zip_path": f"raw/edinet/year={y}/month={m}/{docid}.zip" if zip_ok else "",
+            "pdf_path": f"raw/edinet/year={y}/month={m}/{docid}.pdf" if pdf_ok else "",
             "processed_status": "success" if (zip_ok or pdf_ok) else "failure",
         }
         potential_catalog_records[docid] = record

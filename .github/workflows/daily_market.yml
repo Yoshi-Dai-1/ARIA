@@ -1,0 +1,39 @@
+name: Daily Market Data
+
+on:
+  schedule:
+    - cron: '0 21 * * *'  # 毎日日本時間 06:00 (UTC 21:00)
+  workflow_dispatch:
+    inputs:
+      target_date:
+        description: 'Target Date (YYYY-MM-DD)'
+        required: false
+
+jobs:
+  update_market_data:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run Market Data Pipeline
+        env:
+          EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }} # 念のため
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_REPO: ${{ vars.HF_REPO }}
+        run: |
+          if [ "${{ inputs.target_date }}" != "" ]; then
+            python market_main.py --target-date "${{ inputs.target_date }}"
+          else
+            python market_main.py
+          fi

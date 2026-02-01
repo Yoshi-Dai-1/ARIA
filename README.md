@@ -14,36 +14,51 @@
 
 ## 特徴
 
-- **完全自動化**: GitHub Actionsによる毎日の自動データ収集
-- **完全無料**: オープンソース、永続的に無料で利用可能
-- **データレイクハウス**: RAW/Master/Metaの3層アーキテクチャ
-- **Hugging Face統合**: データセット `Yoshi-Dai/financial-lakehouse` で公開
-- **投資判断支援**: 財務諸表、定性情報、市場履歴を統合分析
+- **Work Class Robustness**: 中間デルタファイルとMaster First戦略による完全なデータ整合性
+- **Parallel Processing**: GitHub Actions Matrixによる高速並列データ収集 (Worker/Mergerアーキテクチャ)
+- **Market Data Pipeline**: EDINETとは独立した市場データ収集エンジン (Nikkei 225, TOPIX対応)
+- **Hugging Face Integration**: データセット `[YOUR_USERNAME]/financial-lakehouse` で公開
 
-## データソース
+## アーキテクチャ
 
-- **EDINET**: 金融庁が運営する有価証券報告書等の開示システム
-- **JPX**: 日本取引所グループの銘柄マスタ
-- **Nikkei 225**: 日経平均株価の構成銘柄履歴
+本プロジェクトは2つの独立したパイプラインで構成されています。
+
+
+### 1. EDINET Data Pipeline (`main.py`)
+有価証券報告書などの開示書類を収集・解析します。
+- **Worker Mode**: 書類をダウンロード・解析し、中間Deltaファイルを作成。
+- **Merger Mode**: 全Workerの成果物を統合し、整合性を検証した上でMaster/Catalogを更新。
+
+### 2. Market Data Pipeline (`market_main.py`)
+市場データ（株価指数、銘柄マスタ）を管理します。
+- **Stock Master**: JPX公式サイトから最新銘柄リストを取得し、上場・廃止・再上場を自動判定。
+- **Indices**: 日経225、TOPIXの構成銘柄とウエイトを毎日Snapshotとして保存 (Shift-JIS/403回避対応済)。
 
 ## データ構造
 
+Hugging Face上のデータ構造はスケーラビリティを考慮して設計されています。
+
 ```
 financial-lakehouse/
-├── raw/                    # 生データ（ZIP, PDF）
+├── raw/                            # 生データ（ZIP, PDF）
 │   └── edinet/
-│       └── YYYY/MM/
-├── catalog/                # ドキュメントインデックス
+│       └── year=YYYY/month=MM/     # 年月パーティション
+├── catalog/                        # ドキュメントインデックス
 │   └── documents_index.parquet
-├── meta/                   # メタデータ
-│   ├── stocks_master.parquet
-│   ├── listing_history.parquet
-│   └── index_history.parquet
-└── master/                 # 分析用マスタデータ
-    ├── financial_values/   # 財務数値（BS, PL, CF, SS）
-    │   └── sector=XXX/
-    └── qualitative_text/   # 定性情報（注記）
-        └── sector=XXX/
+├── meta/                           # メタデータ
+│   ├── stocks_master.parquet       # 証券コード, 銘柄名, is_activeフラグ
+│   ├── listing_history.parquet     # 上場・廃止・再上場イベント履歴
+│   └── index_history.parquet       # 指数採用・除外イベント履歴
+├── master/                         # 分析用マスタデータ
+│   ├── financial_values/           # 財務数値（BS, PL, CF, SS）
+│   │   └── sector=XXX/
+│   ├── qualitative_text/           # 定性情報（注記）
+│   │   └── sector=XXX/
+│   └── indices/                    # 指数構成データ
+│       ├── Nikkei225/
+│       │   └── constituents/year=YYYY/data_YYYYMMDD.parquet
+│       └── TOPIX/
+│           └── constituents/year=YYYY/data_YYYYMMDD.parquet
 ```
 
 ## 使い方
@@ -51,48 +66,33 @@ financial-lakehouse/
 ### 環境変数の設定
 
 ```bash
-HF_REPO=Yoshi-Dai/financial-lakehouse
+EDINET_API_KEY=your_api_key
+HF_REPO=[YOUR_USERNAME]/financial-lakehouse
 HF_TOKEN=your_huggingface_token
 ```
 
-### データ収集の実行
+### 1. EDINETデータ収集 (通常フロー)
+
+基本的にはGitHub Actionsで自動実行されますが、手動実行も可能です。
 
 ```bash
-# 特定期間のデータを収集
-python main.py --start 2024-01-01 --end 2024-01-31
+# Workerモード (解析とDelta作成)
+python main.py --mode worker --run-id <RUN_ID> --chunk-id <CHUNK_ID> --start 2024-06-01 --end 2024-06-01
 
-# 特定の書類IDを指定
-python main.py --id-list S100XXXX,S100YYYY
+# Mergerモード (統合とMaster更新)
+python main.py --mode merger --run-id <RUN_ID>
 ```
 
-## ローカルフォルダ名の変更手順
+### 2. 市場データ収集
 
-プロジェクトフォルダ名を `new-project` から `aria` に変更する場合:
+毎日 06:00 JST に自動実行され、前日分のデータを取得します。
 
-### 1. フォルダ名の変更
+```bash
+# 昨日分のデータを取得 (デフォルト)
+python market_main.py
 
-```powershell
-# PowerShellで実行
-cd C:\projects
-Rename-Item -Path "new-project" -NewName "aria"
-```
-
-### 2. 必要な手続き
-
-フォルダ名変更後、以下の手続きは**不要**です:
-- ✅ Gitリポジトリは自動的に新しいパスで動作します
-- ✅ Python仮想環境（venv）も自動的に新しいパスで動作します
-- ✅ 環境変数（HF_REPO, HF_TOKEN）はフォルダ名に依存しません
-
-ただし、以下の点を確認してください:
-- VSCodeやIDEで開いている場合は、新しいパスで再度開き直してください
-- ターミナルで作業中の場合は、新しいパスに移動してください: `cd C:\projects\aria`
-
-### 3. 動作確認
-
-```powershell
-cd C:\projects\aria
-python main.py --list-only --start 2024-01-01 --end 2024-01-01
+# 特定日を指定して取得 (過去データの補完など)
+python market_main.py --target-date 2024-06-01
 ```
 
 ## ライセンス

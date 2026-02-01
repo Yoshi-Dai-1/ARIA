@@ -21,6 +21,7 @@ pyarrow
 huggingface_hub
 urllib3
 openpyxl
+tenacity
 python-dotenv
 pydantic
 loguru
