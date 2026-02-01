@@ -1,3 +1,4 @@
+import os
 import sys
 import traceback
 from pathlib import Path
@@ -21,9 +22,9 @@ def verify_patch():
 
     try:
         print("EdinetEngine を初期化しています...")
-        # APIキーはダミーでも初期化は通るはずですが、エラーになる場合は適宜修正が必要です
-        # EdinetEngineの__init__でlogger.infoが呼ばれるため、ログ設定が必要かもしれません
-        engine = EdinetEngine("dummy_api_key", Path("data"), taxonomy_urls=taxonomy_urls)
+        # EDINET_API_KEYが環境変数に設定されていることを想定
+        api_key = os.getenv("EDINET_API_KEY", "dummy_api_key_for_test")
+        _ = EdinetEngine(api_key, Path("data"), taxonomy_urls=taxonomy_urls)
     except Exception as e:
         print(f"EdinetEngine初期化エラー: {e}")
         traceback.print_exc()

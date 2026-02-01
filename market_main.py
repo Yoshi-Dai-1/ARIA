@@ -116,7 +116,7 @@ def run_market_pipeline(target_date: str):
                 # ここでは engine の責務として一時的にダウンロードする。
 
                 # HfApiは catalog.api が持っている
-                local_prev = TEMP_DIR / f"{index_name}_{prev_date}.parquet"
+                # local_prev = TEMP_DIR / f"{index_name}_{prev_date}.parquet"
 
                 # ダウンロード試行
                 try:
@@ -168,7 +168,7 @@ def run_market_pipeline(target_date: str):
                             df_hist_current = pd.read_parquet(dl_hist_path)
                         else:
                             df_hist_current = pd.DataFrame()
-                    except:
+                    except Exception:
                         df_hist_current = pd.DataFrame()
 
                     # Merge

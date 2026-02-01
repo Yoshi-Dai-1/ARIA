@@ -50,7 +50,8 @@ class EdinetEngine:
         def patched_download_taxonomy(obj):
             """モンキーパッチされたタクソノミダウンロードメソッド"""
             year = obj.account_list_year
-            # taxonomy_urls に定義があればそれを使う、なければオリジナルの辞書（ハードコード）にフォールバック...したいが
+            # taxonomy_urls に定義があればそれを使う、なければオリジナルの辞書（ハードコード）に
+            # フォールバック...したいが
             # オリジナルのメソッドは内部で辞書を定義しているため、外から注入できない。
             # したがって、ここでURL解決ロジックを上書きする。
 

@@ -137,7 +137,8 @@ def run_merger(catalog, merger, run_id):
 
         if catalog._save_and_upload("master", merged_master):
             logger.success(
-                f"Global Stock Master Updated (Active: {merged_master['is_active'].sum()} / Total: {len(merged_master)})"
+                f"Global Stock Master Updated (Active: {merged_master['is_active'].sum()} / "
+                f"Total: {len(merged_master)})"
             )
         else:
             logger.error("❌ Failed to update Global Stock Master")
@@ -463,7 +464,8 @@ def main():
 
                         if catalog.save_delta("catalog", df_cat, run_id, chunk_id):
                             logger.success(
-                                f"✅ バッチ処理完了: RAW + Catalog Delta保存 (解析対象外: {len(new_catalog_records)} 件)"
+                                f"✅ バッチ処理完了: RAW + Catalog Delta保存 (解析対象外: "
+                                f"{len(new_catalog_records)} 件)"
                             )
                             new_catalog_records = []
                         else:

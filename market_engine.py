@@ -29,7 +29,10 @@ class NikkeiStrategy(IndexStrategy):
     def __init__(self):
         self.url = "https://indexes.nikkei.co.jp/nkave/statistics/datalist/constituent?list=225&type=csv"
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/91.0.4472.124 Safari/537.36"
+            )
         }
 
     def fetch_data(self) -> pd.DataFrame:
@@ -198,8 +201,8 @@ class MarketDataEngine:
         events = []
 
         # 辞書化 {code: weight}
-        old_map = dict(zip(old_const["code"], old_const["weight"])) if not old_const.empty else {}
-        new_map = dict(zip(new_const["code"], new_const["weight"])) if not new_const.empty else {}
+        old_map = dict(zip(old_const["code"], old_const["weight"], strict=False)) if not old_const.empty else {}
+        new_map = dict(zip(new_const["code"], new_const["weight"], strict=False)) if not new_const.empty else {}
 
         old_keys = set(old_map.keys())
         new_keys = set(new_map.keys())
