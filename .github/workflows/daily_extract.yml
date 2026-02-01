@@ -54,6 +54,14 @@ jobs:
           [[ -n "${{ github.event.inputs.end_date }}" ]] && END_DATE="${{ github.event.inputs.end_date }}"
           echo "start_date=$START_DATE" >> $GITHUB_OUTPUT
           echo "end_date=$END_DATE" >> $GITHUB_OUTPUT
+      - name: Update Market Master (to ensure sectors for discovery)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_REPO: ${{ vars.HF_REPO }}
+        run: |
+          # マトリックス分割に必要な業種情報を最新にするため、Market Pipeline を実行
+          python market_main.py
+          
       - id: set-matrix
         env:
           EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}

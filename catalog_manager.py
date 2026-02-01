@@ -38,6 +38,9 @@ class CatalogManager:
                 repo_id=self.hf_repo, filename=filename, repo_type="dataset", token=self.hf_token
             )
             df = pd.read_parquet(local_path)
+            # 【重要】マスタの場合、codeカラムを確実に文字列化（前方一致や検索の安定化）
+            if key == "master" and "code" in df.columns:
+                df["code"] = df["code"].astype(str).str.strip()
             logger.debug(f"ロード成功: {filename} ({len(df)} rows)")
             return df
         except RepositoryNotFoundError:

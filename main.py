@@ -314,8 +314,11 @@ def main():
             docid = row["docID"]
             if catalog.is_processed(docid):
                 continue
+
+            # クレンジング済みの証券コードを使用
+            raw_sec_code = str(row.get("secCode", "")).strip()[:4]
             # マスタ更新後なので適切な業種が取得可能
-            matrix_data.append({"id": docid, "sector": catalog.get_sector(row.get("secCode", "")[:4])})
+            matrix_data.append({"id": docid, "sector": catalog.get_sector(raw_sec_code)})
         print(f"JSON_MATRIX_DATA: {json.dumps(matrix_data)}")
         return
 
