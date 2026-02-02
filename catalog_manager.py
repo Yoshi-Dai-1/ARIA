@@ -349,13 +349,7 @@ class CatalogManager:
             logger.warning("API初期化されていないためデルタ収集不可")
             return {}
 
-        deltas = {
-            "catalog": [],
-            "master": [],
-            "listing": [],
-            "index": [],
-            "name": [],
-        }
+        deltas = {}
 
         try:
             # フォルダ内の全ファイルをリスト
@@ -387,8 +381,8 @@ class CatalogManager:
                         continue
 
                     # キー判別
-                    key = None
                     fname = Path(remote_path).name
+                    key = None
                     if fname == "documents_index.parquet":
                         key = "catalog"
                     elif fname == "stocks_master.parquet":
@@ -400,11 +394,9 @@ class CatalogManager:
                     elif fname == "name_history.parquet":
                         key = "name"
                     elif fname.startswith("financial_values_"):
-                        # financial_values_{sector}.parquet
                         sector = fname.replace("financial_values_", "").replace(".parquet", "")
                         key = f"financial_{sector}"
                     elif fname.startswith("qualitative_text_"):
-                        # qualitative_text_{sector}.parquet
                         sector = fname.replace("qualitative_text_", "").replace(".parquet", "")
                         key = f"text_{sector}"
 
@@ -423,6 +415,7 @@ class CatalogManager:
             merged = {}
             for key, df_list in deltas.items():
                 if df_list:
+                    # 全てのDFのカラムを共通化（型不整合対策）
                     merged[key] = pd.concat(df_list, ignore_index=True)
                 else:
                     merged[key] = pd.DataFrame()
@@ -438,14 +431,14 @@ class CatalogManager:
             return
 
         try:
-            # 古いフォルダの削除
-            if cleanup_old:
-                files = self.api.list_repo_files(repo_id=self.hf_repo, repo_type="dataset")
-                delta_root = "temp/deltas"
+            files = self.api.list_repo_files(repo_id=self.hf_repo, repo_type="dataset")
+            delta_root = "temp/deltas"
 
-                # 削除対象のパス収集
+            # 古いフォルダの削除 (24時間以上経過したものを対象とする)
+            if cleanup_old:
+                now = time.time()
                 delete_ops = []
-                seen_runs = set()
+                expired_runs = set()
 
                 for f in files:
                     if not f.startswith(delta_root):
@@ -455,39 +448,43 @@ class CatalogManager:
                         continue
                     r_id = parts[2]
 
-                    if r_id != run_id:  # 今回以外のID
-                        delete_ops.append(f)
-                        seen_runs.add(r_id)
+                    # run_id が数値（timestamp）である前提で古いものを判定
+                    try:
+                        timestamp = int(r_id)
+                        if (now - timestamp) > 86400:  # 24時間以上
+                            delete_ops.append(f)
+                            expired_runs.add(r_id)
+                    except ValueError:
+                        # 数値でないフォルダは無視するか、別の基準で消す
+                        pass
 
                 if delete_ops:
-                    logger.info(f"古い一時ファイルを削除中... Targets: {seen_runs}")
-                    # 50件ずつバッチ削除
+                    logger.info(f"古い一時フォルダを清掃中... (24時間以上経過: {len(expired_runs)} runs)")
                     for i in range(0, len(delete_ops), 50):
                         batch = delete_ops[i : i + 50]
                         self.api.create_commit(
                             repo_id=self.hf_repo,
                             repo_type="dataset",
                             operations=[{"path_in_repo": p, "operation": "delete"} for p in batch],
-                            commit_message="Cleanup old deltas",
+                            commit_message="Automatic garbage collection of old deltas",
                         )
 
             # 今回のフォルダ削除（全完了後用）
             else:
-                logger.info(f"今回の一時ファイルを削除中... {run_id}")
-                files = self.api.list_repo_files(repo_id=self.hf_repo, repo_type="dataset")
-                delta_root = f"temp/deltas/{run_id}"
-                delete_ops = [f for f in files if f.startswith(delta_root)]
+                target_prefix = f"{delta_root}/{run_id}"
+                delete_ops = [f for f in files if f.startswith(target_prefix)]
 
                 if delete_ops:
-                    # 50件ずつバッチ削除
+                    logger.info(f"今回の一時ファイルを削除中... {run_id} ({len(delete_ops)} files)")
                     for i in range(0, len(delete_ops), 50):
                         batch = delete_ops[i : i + 50]
                         self.api.create_commit(
                             repo_id=self.hf_repo,
                             repo_type="dataset",
                             operations=[{"path_in_repo": p, "operation": "delete"} for p in batch],
-                            commit_message=f"Cleanup current deltas: {run_id}",
+                            commit_message=f"Cleanup successfully merged deltas: {run_id}",
                         )
+                    logger.success(f"Cleanup completed: {run_id}")
 
         except Exception as e:
             logger.error(f"クリーンアップ失敗: {e}")

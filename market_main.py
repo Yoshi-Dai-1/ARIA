@@ -97,6 +97,10 @@ def run_market_pipeline(target_date: str):
             merged_hist = pd.concat([old_listing, listing_events], ignore_index=True).drop_duplicates()
             if catalog._save_and_upload("listing", merged_hist):
                 logger.success(f"Listing History Updated. Events: {len(listing_events)}")
+        elif old_listing.empty:
+            # 初回実行時：イベントがなくても空の履歴ファイルを作成
+            if catalog._save_and_upload("listing", old_listing):
+                logger.info("Listing History Initialized (Empty)")
 
     except Exception as e:
         logger.error(f"Stock Master更新失敗: {e}")
@@ -206,6 +210,12 @@ def run_market_pipeline(target_date: str):
                     df_hist_new.to_parquet(local_hist, index=False, compression="zstd")
                     catalog.upload_raw(local_hist, hist_path)
                     logger.success(f"History Updated: {index_name} (+{len(diff_events)} events)")
+                elif df_hist_current.empty:
+                    # 初回実行時：変更がなくても空の履歴ファイルを作成
+                    local_hist = DATA_PATH / f"{index_name}_history.parquet"
+                    df_hist_current.to_parquet(local_hist, index=False, compression="zstd")
+                    catalog.upload_raw(local_hist, hist_path)
+                    logger.info(f"History Initialized (Empty): {index_name}")
                 else:
                     logger.info(f"No changes detected for {index_name}")
 

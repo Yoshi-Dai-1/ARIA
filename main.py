@@ -95,23 +95,23 @@ def run_merger(catalog, merger, run_id):
         logger.warning("有効なデルタデータが見つかりませんでした (No valid chunks found).")
         # データがない場合はクリーンアップして終了（何も更新していないので安全）
         catalog.cleanup_deltas(run_id, cleanup_old=False)
-        return
+        # データがない場合でも、後続のクリーンアップロジックで処理されるように return を削除
+        # catalog.cleanup_deltas(run_id, cleanup_old=False) # この行は削除
 
     # 3. マージとGlobal更新 (Strategy: Master/Data First -> Catalog Last)
     # これにより、Catalogが進んでMasterが更新されない（データロスト）を防ぐ。
 
     all_masters_success = True
+    processed_count = 0
 
     # --- A. Stock Master ---
-    # --- A. Stock Master ---
     if "master" in deltas and not deltas["master"].empty:
+        processed_count += 1
         new_master = deltas["master"]
         # JPX最新リストにあるコードのセット
         active_codes = set(new_master["code"])
 
         # 既存マスタの is_active を更新
-        # 1. 既存にあるが新規にない -> is_active=False (上場廃止)
-        # 2. 既存にあり新規にもある -> is_active=True (継続)
         current_master = catalog.master_df.copy()
         if not current_master.empty:
             if "is_active" not in current_master.columns:
@@ -124,9 +124,6 @@ def run_merger(catalog, merger, run_id):
         new_master["is_active"] = True
 
         # マージ (既存の状態更新済みデータ + 新規データ)
-        # 新規データが優先されるが、上場廃止になった銘柄は active_codes に含まれないため
-        # new_master にはその銘柄のレコード自体が存在しない。
-        # したがって、current_master 側の False になったレコードが生き残る。
         merged_master = pd.concat([current_master, new_master], ignore_index=True).drop_duplicates(
             subset=["code"], keep="last"
         )
@@ -136,7 +133,6 @@ def run_merger(catalog, merger, run_id):
             merged_master.drop(columns=["rec"], inplace=True)
 
         # 型を強制（文字列化を防ぐ）
-        # 'True'/'False' 文字列も考慮した安全な変換
         if merged_master["is_active"].dtype == "object":
             # 'False' (文字列) を確実に False (bool) にするために lowercase で判定
             merged_master["is_active"] = (
@@ -173,6 +169,7 @@ def run_merger(catalog, merger, run_id):
     # --- B. History (listing, index, name) ---
     for key in ["listing", "index", "name"]:
         if key in deltas and not deltas[key].empty:
+            processed_count += 1
             new_hist = deltas[key]
             current_hist = catalog._load_parquet(key)
             merged_hist = pd.concat([current_hist, new_hist], ignore_index=True).drop_duplicates()
@@ -184,10 +181,8 @@ def run_merger(catalog, merger, run_id):
 
     # --- C. Financial / Text (Sector based) ---
     for key, sector_df in deltas.items():
-        if key.startswith("financial_") or key.startswith("text_"):
-            if sector_df.empty:
-                continue
-
+        if (key.startswith("financial_") or key.startswith("text_")) and not sector_df.empty:
+            processed_count += 1
             # キーからセクター名復元
             sector = key.replace("financial_", "").replace("text_", "")
             m_type = "financial_values" if key.startswith("financial_") else "qualitative_text"
@@ -198,10 +193,10 @@ def run_merger(catalog, merger, run_id):
                 all_masters_success = False
 
     # --- D. Catalog Update (Commit Log) ---
-    # Master系の更新が全て成功した場合のみ、Catalogを更新する
     catalog_updated = False
     if all_masters_success:
         if "catalog" in deltas and not deltas["catalog"].empty:
+            processed_count += 1
             new_df = deltas["catalog"]
             merged_catalog = pd.concat([catalog.catalog_df, new_df], ignore_index=True).drop_duplicates(
                 subset=["doc_id"], keep="last"
@@ -210,22 +205,22 @@ def run_merger(catalog, merger, run_id):
                 logger.success(f"Global Catalog Updated (Total: {len(merged_catalog)} rows)")
                 catalog_updated = True
             else:
-                logger.error("❌ Failed to update Global Catalog (Data was updated but commit log failed)")
-                # ここでの失敗は「データはあるがカタログにない」状態。
-                # リトライで重複排除されるため、データロストよりはマシ。
+                logger.error("❌ Failed to update Global Catalog")
         else:
             catalog_updated = True  # Catalog自体の更新がない場合は成功とみなす
     else:
         logger.error("⛔ Master更新に失敗があるため、Catalog更新をスキップしました (データ整合性保護)")
 
-    # 4. クリーンアップ (条件付き)
-    # 全て正常に完了した場合のみ、今回のデルタを削除する
-    # 失敗した場合はデルタを残し、トラブルシューティングや（将来的な）自動リトライの余地を残す
+    if processed_count == 0:
+        logger.info("処理対象のデータはありませんでした。クリーンアップのみ実行します。")
+
+    # 4. クリーンアップ
+    # 更新に成功したか、あるいはそもそも処理対象がなかった場合に実行
     if all_masters_success and catalog_updated:
         catalog.cleanup_deltas(run_id, cleanup_old=False)
         logger.info("=== Merger Process Completed Successfully ===")
     else:
-        logger.warning("⚠️ 一部の処理に失敗したため、Deltaファイルを保持しました。")
+        logger.warning("⚠️ 処理の失敗（または整合性不備）を検知したため、今回のDeltaファイルを保持します。")
         logger.info("=== Merger Process Completed with Errors ===")
 
 
