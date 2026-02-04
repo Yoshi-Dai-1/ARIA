@@ -17,3 +17,4 @@ data/20*/
 
 # 環境設定
 .env
+.DS_Store
