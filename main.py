@@ -375,6 +375,7 @@ def main():
 
     # 解析タスクの追加 (XBRL がある Yuho/Shihanki のみ)
     # 開発者ブログの指定 + 追加ロール (CF, SS, Notes)
+    # サブモジュール作成者の記事に基づくロール定義の適正化
     fs_dict = {
         "BS": ["_BalanceSheet", "_ConsolidatedBalanceSheet"],
         "PL": ["_StatementOfIncome", "_ConsolidatedStatementOfIncome"],
@@ -384,9 +385,10 @@ def main():
         "report": ["_CabinetOfficeOrdinanceOnDisclosure"],
     }
 
-    # ロール定義の分離
-    quant_roles = fs_dict["BS"] + fs_dict["PL"] + fs_dict["CF"] + fs_dict["SS"] + fs_dict["report"]
-    text_roles = fs_dict["notes"]
+    # 【修正】定量データと定性データの分離を適正化
+    # 定性注記（notes）は qualitative_text へ、財務諸表本体は financial_values へ
+    quant_roles = fs_dict["BS"] + fs_dict["PL"] + fs_dict["CF"] + fs_dict["SS"]
+    text_roles = fs_dict["report"] + fs_dict["notes"]
 
     for row in all_meta:
         docid = row["docID"]
@@ -455,22 +457,49 @@ def main():
         is_yuho = dtc == "120" and ord_c == "010" and form_c == "030000"
 
         if is_yuho and zip_ok:
-            ty = row["submitDateTime"][:4]
-            if ty not in loaded_acc:
-                loaded_acc[ty] = edinet.get_account_list(ty)
-            if loaded_acc[ty]:
+            try:
+                # 【重要】提出日ではなく、XBRL内部の名前空間から「事業年度」基準で年を特定
+                import shutil
+
+                from edinet_xbrl_prep.edinet_xbrl_prep.fs_tbl import linkbasefile
+
+                # 判定用の一時ディレクトリ（自動削除用）
+                detect_dir = TEMP_DIR / f"detect_{docid}"
+                lb = linkbasefile(zip_file_str=str(raw_zip), temp_path_str=str(detect_dir))
+                lb.read_linkbase_file()
+                ty = lb.detect_account_list_year()
+
+                if ty == "-":
+                    raise ValueError(f"XBRL名前空間から事業年度（タクソノミ版）を特定できませんでした。({docid})")
+
+                if ty not in loaded_acc:
+                    acc = edinet.get_account_list(ty)
+                    if not acc:
+                        raise ValueError(
+                            f"タクソノミ版 '{ty}' は taxonomy_urls.json に未定義、または取得に失敗しました。"
+                        )
+                    loaded_acc[ty] = acc
+
                 # 数値データのタスク
                 tasks.append((docid, row, loaded_acc[ty], raw_zip, quant_roles, "financial_values"))
                 # テキストデータのタスク
                 tasks.append((docid, row, loaded_acc[ty], raw_zip, text_roles, "qualitative_text"))
 
-                parsing_target_ids.add(docid)  # 解析対象としてマーク
-                logger.info(f"【解析対象】: {docid} | {title} | {status_str}")
+                parsing_target_ids.add(docid)
+                logger.info(f"【解析対象】: {docid} | 事業年度: {ty} | {title}")
+            except Exception as e:
+                logger.error(f"【解析中止】タクソノミ判定失敗 ({docid}): {e}")
+                record["processed_status"] = "failure"
+                new_catalog_records.append(record)
+                continue
+            finally:
+                if detect_dir.exists():
+                    shutil.rmtree(detect_dir)
         else:
-            reason = "非解析対象（有報以外）" if not is_yuho else "XBRLなし"
+            codes_info = f"[Type:{dtc}, Ord:{ord_c}, Form:{form_c}]"
+            reason = f"非解析対象 {codes_info}" if not is_yuho else f"XBRLなし {codes_info}"
             logger.info(f"【スキップ】: {docid} | {title} | {status_str} | 理由: {reason}")
             skipped_types[dtc] = skipped_types.get(dtc, 0) + 1
-            # 解析対象外は、RAWファイルの存在のみでCatalog登録OKなので、ここに追加
             new_catalog_records.append(record)
 
         # バッチ管理用にIDを追加
@@ -562,42 +591,52 @@ def main():
 
     if all_quant_dfs:
         logger.info("数値データ(financial_values)のマージを開始します...")
-        full_quant_df = pd.concat(all_quant_dfs, ignore_index=True)
-        for sector in sectors:
-            sec_docids = info_df[info_df["sector"] == sector]["docID"].tolist()
-            sec_quant = full_quant_df[full_quant_df["docid"].isin(sec_docids)]
-            # 【修正】Master更新はWorkerモード(Delta)で実行
-            merger.merge_and_upload(
-                sector,
-                "financial_values",
-                sec_quant,
-                worker_mode=True,
-                catalog_manager=catalog,
-                run_id=run_id,
-                chunk_id=chunk_id,
-                defer=True,
-            )
+        try:
+            full_quant_df = pd.concat(all_quant_dfs, ignore_index=True)
+            for sector in sectors:
+                sec_docids = info_df[info_df["sector"] == sector]["docID"].tolist()
+                sec_quant = full_quant_df[full_quant_df["docid"].isin(sec_docids)]
+                if sec_quant.empty:
+                    continue
+                # 【修正】Master更新はWorkerモード(Delta)で実行
+                merger.merge_and_upload(
+                    sector,
+                    "financial_values",
+                    sec_quant,
+                    worker_mode=True,
+                    catalog_manager=catalog,
+                    run_id=run_id,
+                    chunk_id=chunk_id,
+                    defer=True,
+                )
+        except Exception as e:
+            logger.error(f"数値データマージ失敗: {e}")
+            all_success = False
 
     if all_text_dfs:
         logger.info("テキストデータ(qualitative_text)のマージを開始します...")
-        full_text_df = pd.concat(all_text_dfs, ignore_index=True)
-        for sector in sectors:
-            sec_docids = info_df[info_df["sector"] == sector]["docID"].tolist()
-            sec_text = full_text_df[full_text_df["docid"].isin(sec_docids)]
-            if not merger.merge_and_upload(
-                sector,
-                "qualitative_text",
-                sec_text,
-                worker_mode=True,
-                catalog_manager=catalog,
-                run_id=run_id,
-                chunk_id=chunk_id,
-                defer=True,
-            ):
-                # エラーログは出すが、一括アップロードを試みるため success フラグは維持するか検討
-                # ここでは従来のまま
-                all_success = False
-                logger.error(f"❌ Master更新失敗: {sector} (qualitative_text)")
+        try:
+            full_text_df = pd.concat(all_text_dfs, ignore_index=True)
+            for sector in sectors:
+                sec_docids = info_df[info_df["sector"] == sector]["docID"].tolist()
+                sec_text = full_text_df[full_text_df["docid"].isin(sec_docids)]
+                if sec_text.empty:
+                    continue
+                if not merger.merge_and_upload(
+                    sector,
+                    "qualitative_text",
+                    sec_text,
+                    worker_mode=True,
+                    catalog_manager=catalog,
+                    run_id=run_id,
+                    chunk_id=chunk_id,
+                    defer=True,
+                ):
+                    all_success = False
+                    logger.error(f"❌ Master更新失敗: {sector} (qualitative_text)")
+        except Exception as e:
+            logger.error(f"テキストデータマージ失敗: {e}")
+            all_success = False
 
     # 【追加】解析対象ドキュメントのCatalog Delta保存 (解析結果反映後)
     parsing_catalog_records = []
@@ -636,7 +675,7 @@ def main():
     if all_success:
         # RAWフォルダの一括アップロード (ここで 1 コミット)
         logger.info("ファイルを一括アップロードしています...")
-        catalog.upload_raw_folder(RAW_BASE_DIR, path_in_repo="raw")
+        catalog.upload_raw_folder(RAW_BASE_DIR, path_in_repo="raw", defer=True)
 
         # デルタと成功フラグを一括コミット (ここで 1 コミット)
         catalog.mark_chunk_success(run_id, chunk_id, defer=True)

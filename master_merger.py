@@ -70,6 +70,8 @@ class MasterMerger:
             combined_df = combined_df.sort_values("submitDateTime", ascending=False)
 
         combined_df = combined_df.drop_duplicates(subset=subset, keep="first")
+        if "rec" in combined_df.columns:
+            combined_df = combined_df.drop_duplicates(subset=subset, keep="first").drop(columns=["rec"])
 
         # 3. 保存とアップロード
         local_file = self.data_path / f"master_{safe_sector}_{master_type}.parquet"

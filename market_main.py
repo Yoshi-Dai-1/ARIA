@@ -98,9 +98,13 @@ def run_market_pipeline(target_date: str):
         # Save History (Deferred)
         if not listing_events.empty:
             merged_hist = pd.concat([old_listing, listing_events], ignore_index=True).drop_duplicates()
+            # rec 削除
+            if "rec" in merged_hist.columns:
+                merged_hist.drop(columns=["rec"], inplace=True)
             catalog._save_and_upload("listing", merged_hist, defer=True)
             logger.info("Listing History updated in buffer.")
         elif old_listing.empty:
+            # 初回初期化: 空のDFをアップロード（ファイル自体は作成する）
             catalog._save_and_upload("listing", old_listing, defer=True)
             logger.info("Listing History initialized in buffer.")
 
@@ -213,7 +217,7 @@ def run_market_pipeline(target_date: str):
                     catalog.upload_raw(local_hist, hist_path, defer=True)
                     logger.info(f"History staged: {index_name}")
                 elif df_hist_current.empty:
-                    # 初回実行時
+                    # 初回実行時: 空でもファイルを作成してアップロード
                     local_hist = DATA_PATH / f"{index_name}_history.parquet"
                     df_hist_current.to_parquet(local_hist, index=False, compression="zstd")
                     catalog.upload_raw(local_hist, hist_path, defer=True)

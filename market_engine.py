@@ -27,61 +27,54 @@ class NikkeiStrategy(IndexStrategy):
     """日経225 (Nikkei Source)"""
 
     def __init__(self):
-        self.url = "https://indexes.nikkei.co.jp/nkave/statistics/datalist/constituent?list=225&type=csv"
-        # 403 Forbidden 対策: よりブラウザに近いヘッダセットを使用
+        # ユーザー指定のアーカイブ版URL (403を回避しやすい)
+        self.url = "https://indexes.nikkei.co.jp/nkave/archives/file/nikkei_stock_average_weight_jp.csv"
         self.headers = {
             "User-Agent": (
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
             ),
-            "Accept": (
-                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,"
-                "image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
-            ),
+            "Accept": "text/csv,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
-            "Cache-Control": "no-cache",
-            "Pragma": "no-cache",
-            "Referer": "https://indexes.nikkei.co.jp/nkave/statistics/datalist/constituent?list=225&type=csv",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "same-origin",
-            "Sec-Fetch-User": "?1",
-            "Upgrade-Insecure-Requests": "1",
         }
 
     @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=2, min=4, max=20))
     def fetch_data(self) -> pd.DataFrame:
-        logger.info("日経225構成銘柄を取得中...")
+        logger.info("日経225構成銘柄を取得中 (Archive CSV)...")
         try:
             r = requests.get(self.url, headers=self.headers, timeout=60)
             if r.status_code != 200:
                 logger.error(f"日経225取得エラー: HTTP {r.status_code}")
+                # HTTP 403 の場合は詳細なメッセージを出す
+                if r.status_code == 403:
+                    logger.error("日経新聞社サイトからアクセスが拒絶されました (403)。")
                 r.raise_for_status()
         except requests.exceptions.RequestException as e:
             logger.error(f"日経225リクエスト失敗: {e}")
             raise
 
         # Shift-JISでデコード
-        # 想定CSV: 日付,コード,銘柄名,業種,構成比率(%)
-        # ヘッダ行があるか確認が必要だが、pandasで読むのが安全
         try:
-            # skiprowsなどは実際のCSVに合わせて調整。通常は1行目がヘッダ。
+            # アーカイブCSV形式: 1行目がヘッダ。日付,銘柄名,コード,業種,ウエイト
             df = pd.read_csv(io.BytesIO(r.content), encoding="shift_jis")
 
-            # カラム名マッピングの推測 (CSVが日本語ヘッダの場合)
-            # "コード", "構成比率(%)" などを探す
+            # 日経新聞のCSVは末尾に「データ取得元...」などの説明行が入ることがあるため、
+            # コードが数値として解釈できる行のみを残す
             code_col = next((c for c in df.columns if "コード" in c), None)
-            weight_col = next((c for c in df.columns if "構成比率" in c or "Weight" in c), None)
+            weight_col = next((c for c in df.columns if "ウエイト" in c or "Weight" in c), None)
 
             if not code_col or not weight_col:
                 raise ValueError(f"必須カラムが見つかりません。Columns: {df.columns}")
 
-            df = df[[code_col, weight_col]].rename(columns={code_col: "code", weight_col: "weight"})
+            # クリーニング
+            df = df.dropna(subset=[code_col, weight_col])
 
-            # 型変換
-            df["code"] = df["code"].astype(str).str.strip()
+            # コードを文字列化 (4桁想定)
+            df["code"] = df[code_col].astype(str).str.replace(".0", "", regex=False).str.strip()
+            # 4桁未満の場合は左パディング (例: 1 -> 0001 は稀だが念のため)
+            df = df[df["code"].str.match(r"^\d+$")]
 
-            # Weight: "2.51%" -> 0.0251
+            # ウエイトのパース
             def parse_weight(x):
                 if isinstance(x, str):
                     clean = x.replace("%", "").strip()
@@ -90,7 +83,7 @@ class NikkeiStrategy(IndexStrategy):
                     return float(clean) / 100.0
                 return float(x)
 
-            df["weight"] = df["weight"].apply(parse_weight)
+            df["weight"] = df[weight_col].apply(parse_weight)
 
             logger.success(f"日経225データ取得成功: {len(df)} 件")
             return df[["code", "weight"]]
@@ -117,7 +110,8 @@ class TopixStrategy(IndexStrategy):
 
             # 想定カラム: 日付,銘柄名,コード,業種,TOPIXに占める個別銘柄のウエイト,ニューインデックス区分
             code_col = next((c for c in df.columns if "コード" in c), None)
-            weight_col = next((c for c in df.columns if "ウエイト" in c), None)
+            # JPXの「ＴＯＰＩＸに占める個別銘柄のウエイト」などに対応するため、キーワードで検索
+            weight_col = next((c for c in df.columns if "ウエイト" in c.lower()), None)
 
             if not code_col or not weight_col:
                 raise ValueError(f"TOPIX必須カラム欠落: {df.columns}")

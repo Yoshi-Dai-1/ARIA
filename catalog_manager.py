@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Dict, List
 
 import pandas as pd
-from huggingface_hub import CommitOperationAdd, HfApi, hf_hub_download
+from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi, hf_hub_download
 from huggingface_hub.utils import EntryNotFoundError, HfHubHTTPError, RepositoryNotFoundError
 from loguru import logger
 
@@ -33,7 +33,7 @@ class CatalogManager:
         self.master_df = self._load_parquet("master")
 
         # 【追加】バッチコミット用バッファ
-        self._commit_operations = []
+        self._commit_operations = {}  # パスをキーとした辞書 (一回のコミットでパスの重複を避ける)
         logger.info("CatalogManager を初期化しました。")
 
     def _load_parquet(self, key: str) -> pd.DataFrame:
@@ -130,9 +130,13 @@ class CatalogManager:
 
         if self.api:
             if defer:
-                # バッファに追加して終了
-                self._commit_operations.append(
-                    CommitOperationAdd(path_in_repo=filename, path_or_fileobj=str(local_file))
+                # 【重要】rec カラム（インデックス残骸）の完全排除
+                if "rec" in df.columns:
+                    df = df.drop(columns=["rec"])
+
+                # バッファに追加して終了 (最新のもので上書き)
+                self._commit_operations[filename] = CommitOperationAdd(
+                    path_in_repo=filename, path_or_fileobj=str(local_file)
                 )
                 logger.debug(f"コミットバッファに追加: {filename}")
                 return True
@@ -180,8 +184,8 @@ class CatalogManager:
 
         if self.api:
             if defer:
-                self._commit_operations.append(
-                    CommitOperationAdd(path_in_repo=repo_path, path_or_fileobj=str(local_path))
+                self._commit_operations[repo_path] = CommitOperationAdd(
+                    path_in_repo=repo_path, path_or_fileobj=str(local_path)
                 )
                 logger.debug(f"RAWコミットバッファに追加: {repo_path}")
                 return True
@@ -210,12 +214,23 @@ class CatalogManager:
             return False
         return True
 
-    def upload_raw_folder(self, folder_path: Path, path_in_repo: str) -> bool:
+    def upload_raw_folder(self, folder_path: Path, path_in_repo: str, defer: bool = False) -> bool:
         """フォルダ単位での一括アップロード (リトライ付)"""
         if not folder_path.exists():
             return True  # アップロード対象なしは成功とみなす
 
         if self.api:
+            if defer:
+                # フォルダ内の各ファイルを個別にバッファに追加
+                for f in folder_path.glob("**/*"):
+                    if f.is_file():
+                        r_path = f"{path_in_repo}/{f.relative_to(folder_path)}"
+                        self._commit_operations[r_path] = CommitOperationAdd(
+                            path_in_repo=r_path, path_or_fileobj=str(f)
+                        )
+                logger.debug(f"RAWフォルダをコミットバッファに追加: {path_in_repo}")
+                return True
+
             max_retries = 5  # 3回から5回に強化
             for attempt in range(max_retries):
                 try:
@@ -403,6 +418,8 @@ class CatalogManager:
             valid_chunks = 0
             for chunk_id, file_list in chunks.items():
                 if not any(f.endswith("_SUCCESS") for f in file_list):
+                    # 【整合性強化】HF Hubの結果整合性を考慮し、1回見つからなくても別のファイルリスト取得を試みることが望ましいが
+                    # ここでは一旦警告に留める
                     logger.warning(f"⚠️ 未完了のチャンクをスキップ: {chunk_id}")
                     continue
 
@@ -432,13 +449,26 @@ class CatalogManager:
                         key = f"text_{sector}"
 
                     if key:
-                        local_path = hf_hub_download(
-                            repo_id=self.hf_repo, filename=remote_path, repo_type="dataset", token=self.hf_token
-                        )
-                        df = pd.read_parquet(local_path)
-                        if key not in deltas:
-                            deltas[key] = []
-                        deltas[key].append(df)
+                        attempts = 2
+                        for att in range(attempts):
+                            try:
+                                local_path = hf_hub_download(
+                                    repo_id=self.hf_repo, filename=remote_path, repo_type="dataset", token=self.hf_token
+                                )
+                                df = pd.read_parquet(local_path)
+                                # 【重要】rec カラム排除
+                                if "rec" in df.columns:
+                                    df = df.drop(columns=["rec"])
+                                if key not in deltas:
+                                    deltas[key] = []
+                                deltas[key].append(df)
+                                break
+                            except Exception as e:
+                                if att == attempts - 1:
+                                    logger.error(f"❌ デルタ読み込み失敗 ({remote_path}): {e}")
+                                    raise
+                                logger.warning(f"デルタ読み込み再試行中... ({att + 1}) {remote_path}")
+                                time.sleep(5)
 
             logger.info(f"有効なチャンク数: {valid_chunks} / {len(chunks)}")
 
@@ -462,17 +492,19 @@ class CatalogManager:
             return True
 
         max_retries = 8  # リトライ回数を増やして競合に備える
+        ops_list = list(self._commit_operations.values())
+
         for attempt in range(max_retries):
             try:
                 self.api.create_commit(
                     repo_id=self.hf_repo,
                     repo_type="dataset",
-                    operations=self._commit_operations,
+                    operations=ops_list,
                     commit_message=message,
                     token=self.hf_token,
                 )
-                logger.success(f"✅ バッチコミット成功: {len(self._commit_operations)} 操作")
-                self._commit_operations = []  # クリア
+                logger.success(f"✅ バッチコミット成功: {len(ops_list)} 操作")
+                self._commit_operations = {}  # クリア
                 return True
             except Exception as e:
                 # 429 レート制限
@@ -535,10 +567,12 @@ class CatalogManager:
                     logger.info(f"古い一時フォルダを清掃中... (24時間以上経過: {len(expired_runs)} runs)")
                     for i in range(0, len(delete_ops), 50):
                         batch = delete_ops[i : i + 50]
+                        # 削除操作オブジェクトのリストを作成
+                        del_ops = [CommitOperationDelete(path_in_repo=p) for p in batch]
                         self.api.create_commit(
                             repo_id=self.hf_repo,
                             repo_type="dataset",
-                            operations=[{"path_in_repo": p, "operation": "delete"} for p in batch],
+                            operations=del_ops,
                             commit_message="Automatic garbage collection of old deltas",
                         )
 
@@ -551,10 +585,11 @@ class CatalogManager:
                     logger.info(f"今回の一時ファイルを削除中... {run_id} ({len(delete_ops)} files)")
                     for i in range(0, len(delete_ops), 50):
                         batch = delete_ops[i : i + 50]
+                        del_ops = [CommitOperationDelete(path_in_repo=p) for p in batch]
                         self.api.create_commit(
                             repo_id=self.hf_repo,
                             repo_type="dataset",
-                            operations=[{"path_in_repo": p, "operation": "delete"} for p in batch],
+                            operations=del_ops,
                             commit_message=f"Cleanup successfully merged deltas: {run_id}",
                         )
                     logger.success(f"Cleanup completed: {run_id}")

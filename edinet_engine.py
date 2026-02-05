@@ -41,8 +41,6 @@ class EdinetEngine:
         # closureで self.taxonomy_urls を参照できるようにする
         from edinet_xbrl_prep.edinet_xbrl_prep.link_base_file_analyzer import account_list_common
 
-        original_download_taxonomy = account_list_common._download_taxonomy
-
         # インスタンスメソッドとして呼ばれるため、第一引数は self (account_list_commonのインスタンス)
         # self.taxonomy_urls は EdinetEngine のインスタンス変数なので、クロージャでキャプチャする
         captured_taxonomy_urls = self.taxonomy_urls
@@ -50,27 +48,16 @@ class EdinetEngine:
         def patched_download_taxonomy(obj):
             """モンキーパッチされたタクソノミダウンロードメソッド"""
             year = obj.account_list_year
-            # taxonomy_urls に定義があればそれを使う、なければオリジナルの辞書（ハードコード）に
-            # フォールバック...したいが
-            # オリジナルのメソッドは内部で辞書を定義しているため、外から注入できない。
-            # したがって、ここでURL解決ロジックを上書きする。
-
-            # taxonomy_urls からURLを取得
+            # taxonomy_urls に定義があればそれを使う
             url = captured_taxonomy_urls.get(str(year))
 
             if not url:
-                # 定義がない場合は既存のロジック（ハードコード辞書）に任せたいが、
-                # オリジナルメソッドを呼ぶとハードコード辞書が使われる。
-                # ただし、オリジナルメソッドは URL を引数で取れず、内部で辞書を持っている。
-                # 仕方ないので、定義がある場合のみ上書きし、ない場合はオリジナルを呼ぶ。
-                logger.info(f"タクソノミURL定義が見つからないため、デフォルト動作を使用します (Year: {year})")
-                return original_download_taxonomy(obj)
+                # 【重要】定義がない場合はエラーとする (フォールバック禁止)
+                msg = f"タクソノミURL定義が見つかりません (Year: {year})。taxonomy_urls.json を確認してください。"
+                logger.error(msg)
+                raise ValueError(msg)
 
             logger.info(f"タクソノミURL定義を使用します (Year: {year}): {url}")
-
-            # 以下、オリジナルメソッドのダウンロード処理と同等の実装
-            # requests.get はこのファイルの冒頭で import されているモジュールを使う
-            # obj.taxonomy_file は account_list_common のインスタンス変数
 
             try:
                 # ダウンロード (timeout指定を追加して堅牢化)
@@ -82,7 +69,6 @@ class EdinetEngine:
                 logger.success(f"タクソノミファイルのダウンロードに成功しました: {url}")
             except Exception as e:
                 logger.error(f"タクソノミファイルのダウンロードに失敗しました (Year: {year}, URL: {url}): {e}")
-                # 失敗した場合はオリジナルを試すべきか？ -> 二重ダウンロードになるので避ける。エラーで終了させる。
                 raise e
 
         account_list_common._download_taxonomy = patched_download_taxonomy
