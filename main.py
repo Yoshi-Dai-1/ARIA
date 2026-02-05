@@ -561,7 +561,11 @@ def main():
                         if t_type == "financial_values":
                             all_quant_dfs.append(res_df)
                         elif t_type == "qualitative_text":
-                            all_text_dfs.append(res_df)
+                            # 【整合性強化】テキストデータのみに限定 (BlockFlag=1)
+                            # 注記等には数値データ(0)も含まれるため、定義に忠実にフィルタリング
+                            txt_only = res_df[res_df["isTextBlock_flag"] == 1]
+                            if not txt_only.empty:
+                                all_text_dfs.append(txt_only)
 
                         # processed_infos はセクター判定用。重複を防ぐため docid ごとに一度だけ追加したいが
                         # リスト内包表記で docid を抽出するので重複しても問題ない、または

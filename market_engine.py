@@ -82,7 +82,7 @@ class NikkeiStrategy(IndexStrategy):
                     clean = x.replace("%", "").strip()
                     if not clean:
                         return 0.0
-                    return float(clean) / 100.0
+                    return float(clean)
                 return float(x)
 
             df["weight"] = df[weight_col].apply(parse_weight)
@@ -128,7 +128,7 @@ class TopixStrategy(IndexStrategy):
                     clean = x.replace("%", "").strip()
                     if not clean:
                         return 0.0
-                    return float(clean) / 100.0
+                    return float(clean)
                 return float(x)
 
             df["weight"] = df["weight"].apply(parse_weight)
