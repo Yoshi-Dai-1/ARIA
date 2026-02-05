@@ -1,11 +1,11 @@
-import time
 import random
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List
 
 import pandas as pd
-from huggingface_hub import HfApi, hf_hub_download, CommitOperationAdd
+from huggingface_hub import CommitOperationAdd, HfApi, hf_hub_download
 from huggingface_hub.utils import EntryNotFoundError, HfHubHTTPError, RepositoryNotFoundError
 from loguru import logger
 
@@ -159,8 +159,11 @@ class CatalogManager:
 
                     # その他のHTTPエラー (5xx等) もリトライ対象にする
                     if isinstance(e, HfHubHTTPError) and e.response.status_code >= 500:
-                        wait_time = 10 * (attempt + 1)
-                        logger.warning(f"HF Server Error ({e.response.status_code}). Waiting {wait_time}s... ({attempt + 1}/5)")
+                        wait_time = 15 * (attempt + 1)
+                        logger.warning(
+                            f"Master HF Server Error ({e.response.status_code}). "
+                            f"Waiting {wait_time}s... ({attempt + 1}/5)"
+                        )
                         time.sleep(wait_time)
                         continue
 
@@ -339,7 +342,9 @@ class CatalogManager:
             return str(row.iloc[0]["sector"])
         return "その他"
 
-    def save_delta(self, key: str, df: pd.DataFrame, run_id: str, chunk_id: str, custom_filename: str = None, defer: bool = False) -> bool:
+    def save_delta(
+        self, key: str, df: pd.DataFrame, run_id: str, chunk_id: str, custom_filename: str = None, defer: bool = False
+    ) -> bool:
         """デルタファイルを保存してアップロード (Worker用)"""
         if df.empty:
             return True
@@ -481,7 +486,9 @@ class CatalogManager:
                 if isinstance(e, HfHubHTTPError) and e.response.status_code == 409:
                     # 指数バックオフ + ジッター
                     wait_time = (2**attempt) + (random.uniform(0, 5))
-                    logger.warning(f"Commit Conflict (409). Retrying in {wait_time:.2f}s... ({attempt + 1}/{max_retries})")
+                    logger.warning(
+                        f"Commit Conflict (409). Retrying in {wait_time:.2f}s... ({attempt + 1}/{max_retries})"
+                    )
                     time.sleep(wait_time)
                     continue
 

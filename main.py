@@ -584,7 +584,7 @@ def main():
         for sector in sectors:
             sec_docids = info_df[info_df["sector"] == sector]["docID"].tolist()
             sec_text = full_text_df[full_text_df["docid"].isin(sec_docids)]
-            merger.merge_and_upload(
+            if not merger.merge_and_upload(
                 sector,
                 "qualitative_text",
                 sec_text,
@@ -593,7 +593,7 @@ def main():
                 run_id=run_id,
                 chunk_id=chunk_id,
                 defer=True,
-            )
+            ):
                 # エラーログは出すが、一括アップロードを試みるため success フラグは維持するか検討
                 # ここでは従来のまま
                 all_success = False

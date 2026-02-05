@@ -2,7 +2,7 @@ import time
 from pathlib import Path
 
 import pandas as pd
-from huggingface_hub import HfApi, hf_hub_download
+from huggingface_hub import CommitOperationAdd, HfApi, hf_hub_download
 from huggingface_hub.utils import HfHubHTTPError
 from loguru import logger
 
@@ -106,16 +106,17 @@ class MasterMerger:
                 except Exception as e:
                     if isinstance(e, HfHubHTTPError) and e.response.status_code == 429:
                         wait_time = int(e.response.headers.get("Retry-After", 60)) + 5
-                        logger.warning(
-                            f"Master Rate limit exceeded. Waiting {wait_time}s... ({attempt + 1}/5)"
-                        )
+                        logger.warning(f"Master Rate limit exceeded. Waiting {wait_time}s... ({attempt + 1}/5)")
                         time.sleep(wait_time)
                         continue
 
                     # 5xx エラー等もリトライ対象に追加
                     if isinstance(e, HfHubHTTPError) and e.response.status_code >= 500:
                         wait_time = 15 * (attempt + 1)
-                        logger.warning(f"Master HF Server Error ({e.response.status_code}). Waiting {wait_time}s... ({attempt + 1}/5)")
+                        logger.warning(
+                            f"Master HF Server Error ({e.response.status_code}). "
+                            f"Waiting {wait_time}s... ({attempt + 1}/5)"
+                        )
                         time.sleep(wait_time)
                         continue
 
