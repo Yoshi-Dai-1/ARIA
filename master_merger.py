@@ -24,6 +24,7 @@ class MasterMerger:
         catalog_manager=None,
         run_id: str = None,
         chunk_id: str = None,
+        defer: bool = False,
     ) -> bool:
         """業種別にParquetをロード・結合・アップロード"""
         if new_data.empty:
@@ -47,7 +48,7 @@ class MasterMerger:
             # ただし、念のため "master" を渡しておく。
 
             return catalog_manager.save_delta(
-                key="master", df=new_data, run_id=run_id, chunk_id=chunk_id, custom_filename=filename
+                key="master", df=new_data, run_id=run_id, chunk_id=chunk_id, custom_filename=filename, defer=defer
             )
 
         repo_path = f"master/{master_type}/sector={safe_sector}/data.parquet"
@@ -83,7 +84,14 @@ class MasterMerger:
         combined_df.to_parquet(local_file, compression="zstd", index=False)
 
         if self.api:
-            max_retries = 3
+            if defer and catalog_manager:
+                catalog_manager._commit_operations.append(
+                    CommitOperationAdd(path_in_repo=repo_path, path_or_fileobj=str(local_file))
+                )
+                logger.debug(f"Master更新をバッファに追加: {safe_sector}")
+                return True
+
+            max_retries = 5  # 3回から5回に強化
             for attempt in range(max_retries):
                 try:
                     self.api.upload_file(
@@ -99,8 +107,15 @@ class MasterMerger:
                     if isinstance(e, HfHubHTTPError) and e.response.status_code == 429:
                         wait_time = int(e.response.headers.get("Retry-After", 60)) + 5
                         logger.warning(
-                            f"Master Rate limit exceeded. Waiting {wait_time}s... ({attempt + 1}/{max_retries})"
+                            f"Master Rate limit exceeded. Waiting {wait_time}s... ({attempt + 1}/5)"
                         )
+                        time.sleep(wait_time)
+                        continue
+
+                    # 5xx エラー等もリトライ対象に追加
+                    if isinstance(e, HfHubHTTPError) and e.response.status_code >= 500:
+                        wait_time = 15 * (attempt + 1)
+                        logger.warning(f"Master HF Server Error ({e.response.status_code}). Waiting {wait_time}s... ({attempt + 1}/5)")
                         time.sleep(wait_time)
                         continue
 

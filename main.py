@@ -7,6 +7,9 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
 
+# HF Hub のプログレスバーを非表示にする (GHAログの視認性向上のため)
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+
 import pandas as pd
 from dotenv import load_dotenv
 from loguru import logger
@@ -478,65 +481,14 @@ def main():
         if not args.id_list and processed_count % 50 == 0:
             logger.info(f"ダウンロード進捗: {processed_count} / {len(all_meta)} 件完了")
 
-            # 【Smart Batching】50件ごとにRAWフォルダを一括アップロード
-            # raw/edinet/YYYY/MM 分をアップロードする形になるが、フォルダ構造を維持する必要がある
-            # upload_raw_folder は指定フォルダの中身をそのままHFへ同期する
-            # ここでは RAW_BASE_DIR (data/raw) 全体を raw/ としてアップロードするのが最も単純
-            try:
-                logger.info(f"バッチアップロード開始 (Chunk: {processed_count})")
+            # 【Smart Batching】以前は50件ごとにアップロードしていましたが、
+            # HFのコミット制限(128回/時)を回避するため、Workerでは最後に一度だけ行います。
+            pass
 
-                # 【修正】RAWアップロード成功を確認
-                raw_upload_ok = catalog.upload_raw_folder(RAW_BASE_DIR, path_in_repo="raw")
-
-                if raw_upload_ok:
-                    current_batch_docids = []  # 成功したらクリア
-
-                    if new_catalog_records:
-                        # 【修正】Workerモード: Catalog Delta保存
-                        df_cat = pd.DataFrame(new_catalog_records)
-
-                        if catalog.save_delta("catalog", df_cat, run_id, chunk_id):
-                            logger.success(
-                                f"✅ バッチ処理完了: RAW + Catalog Delta保存 (解析対象外: "
-                                f"{len(new_catalog_records)} 件)"
-                            )
-                            new_catalog_records = []
-                        else:
-                            logger.error("❌ Catalog Delta保存失敗（次回再処理されます）")
-                            new_catalog_records = []  # 失敗分は破棄
-                else:
-                    # RAWアップロード失敗
-                    logger.warning(f"❌ RAWアップロード失敗: {len(current_batch_docids)} 件の整合性が損なわれました")
-                    upload_failed_docids.update(current_batch_docids)
-                    current_batch_docids = []  # 記録したのでクリア
-                    new_catalog_records = []
-
-            except Exception as e:
-                logger.error(f"❌ バッチアップロード失敗: {e}")
-                # 例外時も同様にリストを破棄して次回再処理に回す
-                new_catalog_records = []
-
-    # 解析対象外の書類（PDFのみ、種別違い等）をこのタイミングで一度カタログ保存
-    # ただし、ここでもアップロードされていないファイルへの参照をカタログに載せるのはリスクがある。
-    # 解析対象外も upload_raw_folder に含まれるため、最終バッチとして処理するのが適切。
-
-    # 最終的な一括アップロード（残り分）
-    logger.info("最終バッチアップロードを開始します...")
-    final_upload_ok = catalog.upload_raw_folder(RAW_BASE_DIR, path_in_repo="raw")
-
-    if final_upload_ok:
-        if new_catalog_records:
-            logger.info(f"残りの書類 {len(new_catalog_records)} 件をDelta保存します。")
-            df_cat = pd.DataFrame(new_catalog_records)
-            if not catalog.save_delta("catalog", df_cat, run_id, chunk_id):
-                logger.error("❌ 最終Catalog Delta保存に失敗しました（次回再処理されます）")
-    else:
-        logger.error("❌ 最終アップロードに失敗したため、残りのカタログ更新をスキップしました。")
-        # 最終バッチに含まれていたID失敗リストに追加
-        upload_failed_docids.update(current_batch_docids)
-
-    if skipped_types:
-        logger.info(f"解析スキップ内訳 (Yuho以外): {skipped_types}")
+    # 解析対象外の書類などのDelta保存(遅延実行)
+    if new_catalog_records:
+        df_cat = pd.DataFrame(new_catalog_records)
+        catalog.save_delta("catalog", df_cat, run_id, chunk_id, defer=True)
 
     # 5. 並列解析
     all_quant_dfs = []
@@ -547,7 +499,7 @@ def main():
         logger.info(f"解析対象: {len(tasks) // 2} 書類 (Task数: {len(tasks)})")
 
         # 解析スキップの内訳に有報(120)などが混ざっていないか、最終確認用ログ
-        check_yuho_in_skip = [k for k in skipped_types.keys() if k in ["120", "121"]]
+        check_yuho_in_skip = [k for k in skipped_types.keys() if k in ["120"]]
         if check_yuho_in_skip:
             logger.warning(f"注意: 解析対象であるはずの種別がスキップされています: {check_yuho_in_skip}")
 
@@ -615,7 +567,7 @@ def main():
             sec_docids = info_df[info_df["sector"] == sector]["docID"].tolist()
             sec_quant = full_quant_df[full_quant_df["docid"].isin(sec_docids)]
             # 【修正】Master更新はWorkerモード(Delta)で実行
-            if not merger.merge_and_upload(
+            merger.merge_and_upload(
                 sector,
                 "financial_values",
                 sec_quant,
@@ -623,9 +575,8 @@ def main():
                 catalog_manager=catalog,
                 run_id=run_id,
                 chunk_id=chunk_id,
-            ):
-                all_success = False
-                logger.error(f"❌ Master更新失敗: {sector} (financial_values)")
+                defer=True,
+            )
 
     if all_text_dfs:
         logger.info("テキストデータ(qualitative_text)のマージを開始します...")
@@ -633,7 +584,7 @@ def main():
         for sector in sectors:
             sec_docids = info_df[info_df["sector"] == sector]["docID"].tolist()
             sec_text = full_text_df[full_text_df["docid"].isin(sec_docids)]
-            if not merger.merge_and_upload(
+            merger.merge_and_upload(
                 sector,
                 "qualitative_text",
                 sec_text,
@@ -641,7 +592,10 @@ def main():
                 catalog_manager=catalog,
                 run_id=run_id,
                 chunk_id=chunk_id,
-            ):
+                defer=True,
+            )
+                # エラーログは出すが、一括アップロードを試みるため success フラグは維持するか検討
+                # ここでは従来のまま
                 all_success = False
                 logger.error(f"❌ Master更新失敗: {sector} (qualitative_text)")
 
@@ -662,9 +616,7 @@ def main():
     if parsing_catalog_records:
         logger.info(f"解析対象書類のCatalog Deltaを保存します ({len(parsing_catalog_records)} 件)")
         df_cat = pd.DataFrame(parsing_catalog_records)
-        if not catalog.save_delta("catalog", df_cat, run_id, chunk_id):
-            logger.error("❌ 解析対象Catalog Delta保存に失敗しました")
-            all_success = False
+        catalog.save_delta("catalog", df_cat, run_id, chunk_id, defer=True)
 
     # 【修正】all_success が False の場合の処理を追加
     if not all_success:
@@ -682,14 +634,19 @@ def main():
         pass
 
     if all_success:
-        # 【追加】全成功時、Successフラグを作成
-        if catalog.mark_chunk_success(run_id, chunk_id):
-            logger.success(f"=== Worker完了: Success Flag Created ({run_id}/{chunk_id}) ===")
+        # RAWフォルダの一括アップロード (ここで 1 コミット)
+        logger.info("ファイルを一括アップロードしています...")
+        catalog.upload_raw_folder(RAW_BASE_DIR, path_in_repo="raw")
+
+        # デルタと成功フラグを一括コミット (ここで 1 コミット)
+        catalog.mark_chunk_success(run_id, chunk_id, defer=True)
+        if catalog.push_commit(f"Worker Success: {run_id}/{chunk_id}"):
+            logger.success(f"=== Worker完了: 全データをアップロードしました ({run_id}/{chunk_id}) ===")
         else:
-            logger.error("❌ Success Flag Creation Failed (Job will be treated as failure)")
+            logger.error("❌ 最終コミットに失敗しました")
             sys.exit(1)
     else:
-        logger.error("=== パイプライン完了 (一部のアップロードに失敗しました) ===")
+        logger.error("=== パイプライン停止 (Master保存エラー等) ===")
         sys.exit(1)
 
 

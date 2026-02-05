@@ -28,26 +28,32 @@ class NikkeiStrategy(IndexStrategy):
 
     def __init__(self):
         self.url = "https://indexes.nikkei.co.jp/nkave/statistics/datalist/constituent?list=225&type=csv"
+        # 403 Forbidden 対策: よりブラウザに近いヘッダセットを使用
         self.headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
-            ),
-            "Accept": (
-                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"
-            ),
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
             "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
             "Cache-Control": "no-cache",
             "Pragma": "no-cache",
-            "Referer": "https://indexes.nikkei.co.jp/",
+            "Referer": "https://indexes.nikkei.co.jp/nkave/statistics/datalist/constituent?list=225&type=csv",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
         }
 
     @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=2, min=4, max=20))
     def fetch_data(self) -> pd.DataFrame:
         logger.info("日経225構成銘柄を取得中...")
-        # Nikkeiは403 Forbidden対策でUser-Agent必須
-        r = requests.get(self.url, headers=self.headers, timeout=60)
-        r.raise_for_status()
+        try:
+            r = requests.get(self.url, headers=self.headers, timeout=60)
+            if r.status_code != 200:
+                logger.error(f"日経225取得エラー: HTTP {r.status_code}")
+                r.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"日経225リクエスト失敗: {e}")
+            raise
 
         # Shift-JISでデコード
         # 想定CSV: 日付,コード,銘柄名,業種,構成比率(%)

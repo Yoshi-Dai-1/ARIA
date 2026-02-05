@@ -1,8 +1,12 @@
 import argparse
 import os
 import sys
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
+
+# HF Hub のプログレスバーを非表示にする (GHAログの視認性向上のため)
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 
 import pandas as pd
 from loguru import logger
@@ -88,19 +92,18 @@ def run_market_pipeline(target_date: str):
         old_listing = catalog.get_listing_history()
         listing_events = engine.update_listing_history(catalog.master_df, new_master, old_listing)
 
-        # Save Master
-        if catalog._save_and_upload("master", merged_master):
-            logger.success(f"Stock Master Updated. Active: {merged_master['is_active'].astype(int).sum()}")
+        # Save Master (Deferred)
+        catalog._save_and_upload("master", merged_master, defer=True)
+        logger.info("Master updated in buffer.")
 
-        # Save History
+        # Save History (Deferred)
         if not listing_events.empty:
             merged_hist = pd.concat([old_listing, listing_events], ignore_index=True).drop_duplicates()
-            if catalog._save_and_upload("listing", merged_hist):
-                logger.success(f"Listing History Updated. Events: {len(listing_events)}")
+            catalog._save_and_upload("listing", merged_hist, defer=True)
+            logger.info("Listing History updated in buffer.")
         elif old_listing.empty:
-            # 初回実行時：イベントがなくても空の履歴ファイルを作成
-            if catalog._save_and_upload("listing", old_listing):
-                logger.info("Listing History Initialized (Empty)")
+            catalog._save_and_upload("listing", old_listing, defer=True)
+            logger.info("Listing History initialized in buffer.")
 
     except Exception as e:
         logger.error(f"Stock Master更新失敗: {e}")
@@ -128,8 +131,8 @@ def run_market_pipeline(target_date: str):
             local_snap = DATA_PATH / f"{index_name}_{target_date}.parquet"
             df_new.to_parquet(local_snap, index=False, compression="zstd")
 
-            catalog.upload_raw(local_snap, snap_path)
-            logger.info(f"Snapshot Saved: {snap_path}")
+            catalog.upload_raw(local_snap, snap_path, defer=True)
+            logger.info(f"Snapshot staged: {snap_path}")
 
             # C. Update History (Events)
             # 前日のSnapshotを探す
@@ -206,16 +209,16 @@ def run_market_pipeline(target_date: str):
                     # Merge
                     df_hist_new = pd.concat([df_hist_current, diff_events], ignore_index=True).drop_duplicates()
 
-                    # Save
+                    # Save (Deferred)
                     df_hist_new.to_parquet(local_hist, index=False, compression="zstd")
-                    catalog.upload_raw(local_hist, hist_path)
-                    logger.success(f"History Updated: {index_name} (+{len(diff_events)} events)")
+                    catalog.upload_raw(local_hist, hist_path, defer=True)
+                    logger.info(f"History staged: {index_name}")
                 elif df_hist_current.empty:
-                    # 初回実行時：変更がなくても空の履歴ファイルを作成
+                    # 初回実行時
                     local_hist = DATA_PATH / f"{index_name}_history.parquet"
                     df_hist_current.to_parquet(local_hist, index=False, compression="zstd")
-                    catalog.upload_raw(local_hist, hist_path)
-                    logger.info(f"History Initialized (Empty): {index_name}")
+                    catalog.upload_raw(local_hist, hist_path, defer=True)
+                    logger.info(f"History initialized: {index_name}")
                 else:
                     logger.info(f"No changes detected for {index_name}")
 
@@ -227,7 +230,12 @@ def run_market_pipeline(target_date: str):
             logger.error(f"{index_name} 更新失敗: {e}")
             # 個別指数の失敗は他を止めない
 
-    logger.info("=== Market Data Pipeline Completed ===")
+    # Final Push
+    if catalog.push_commit(f"Market Data Update: {target_date}"):
+        logger.success("=== Market Data Pipeline Completed ===")
+    else:
+        logger.error("=== Market Data Pipeline Failed (Push Error) ===")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

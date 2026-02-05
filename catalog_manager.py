@@ -1,10 +1,11 @@
 import time
+import random
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List
 
 import pandas as pd
-from huggingface_hub import HfApi, hf_hub_download
+from huggingface_hub import HfApi, hf_hub_download, CommitOperationAdd
 from huggingface_hub.utils import EntryNotFoundError, HfHubHTTPError, RepositoryNotFoundError
 from loguru import logger
 
@@ -30,6 +31,9 @@ class CatalogManager:
 
         self.catalog_df = self._load_parquet("catalog")
         self.master_df = self._load_parquet("master")
+
+        # 【追加】バッチコミット用バッファ
+        self._commit_operations = []
         logger.info("CatalogManager を初期化しました。")
 
     def _load_parquet(self, key: str) -> pd.DataFrame:
@@ -111,7 +115,7 @@ class CatalogManager:
             logger.error("❌ カタログのアップロードに失敗したため、メモリ上の状態を保持します")
             return False
 
-    def _save_and_upload(self, key: str, df: pd.DataFrame) -> bool:
+    def _save_and_upload(self, key: str, df: pd.DataFrame, defer: bool = False) -> bool:
         filename = self.paths[key]
         local_file = self.data_path / Path(filename).name
 
@@ -125,7 +129,15 @@ class CatalogManager:
         df.to_parquet(local_file, index=False, compression="zstd")
 
         if self.api:
-            max_retries = 3
+            if defer:
+                # バッファに追加して終了
+                self._commit_operations.append(
+                    CommitOperationAdd(path_in_repo=filename, path_or_fileobj=str(local_file))
+                )
+                logger.debug(f"コミットバッファに追加: {filename}")
+                return True
+
+            max_retries = 5  # 強化
             for attempt in range(max_retries):
                 try:
                     self.api.upload_file(
@@ -145,19 +157,33 @@ class CatalogManager:
                         time.sleep(wait_time)
                         continue
 
+                    # その他のHTTPエラー (5xx等) もリトライ対象にする
+                    if isinstance(e, HfHubHTTPError) and e.response.status_code >= 500:
+                        wait_time = 10 * (attempt + 1)
+                        logger.warning(f"HF Server Error ({e.response.status_code}). Waiting {wait_time}s... ({attempt + 1}/5)")
+                        time.sleep(wait_time)
+                        continue
+
                     logger.warning(f"アップロード一時エラー: {filename} - {e} - Retrying ({attempt + 1}/5)...")
                     time.sleep(10 * (attempt + 1))
             return False
         return True
 
-    def upload_raw(self, local_path: Path, repo_path: str) -> bool:
+    def upload_raw(self, local_path: Path, repo_path: str, defer: bool = False) -> bool:
         """ローカルの生データを Hugging Face の raw/ フォルダにアップロード"""
         if not local_path.exists():
             logger.error(f"ファイルが存在しないためアップロードできません: {local_path}")
             return False
 
         if self.api:
-            max_retries = 3
+            if defer:
+                self._commit_operations.append(
+                    CommitOperationAdd(path_in_repo=repo_path, path_or_fileobj=str(local_path))
+                )
+                logger.debug(f"RAWコミットバッファに追加: {repo_path}")
+                return True
+
+            max_retries = 5  # 強化
             for attempt in range(max_retries):
                 try:
                     self.api.upload_file(
@@ -187,7 +213,7 @@ class CatalogManager:
             return True  # アップロード対象なしは成功とみなす
 
         if self.api:
-            max_retries = 3
+            max_retries = 5  # 3回から5回に強化
             for attempt in range(max_retries):
                 try:
                     self.api.upload_folder(
@@ -313,7 +339,7 @@ class CatalogManager:
             return str(row.iloc[0]["sector"])
         return "その他"
 
-    def save_delta(self, key: str, df: pd.DataFrame, run_id: str, chunk_id: str, custom_filename: str = None) -> bool:
+    def save_delta(self, key: str, df: pd.DataFrame, run_id: str, chunk_id: str, custom_filename: str = None, defer: bool = False) -> bool:
         """デルタファイルを保存してアップロード (Worker用)"""
         if df.empty:
             return True
@@ -333,15 +359,15 @@ class CatalogManager:
 
         df.to_parquet(local_file, index=False, compression="zstd")
 
-        return self.upload_raw(local_file, delta_path)
+        return self.upload_raw(local_file, delta_path, defer=defer)
 
-    def mark_chunk_success(self, run_id: str, chunk_id: str) -> bool:
+    def mark_chunk_success(self, run_id: str, chunk_id: str, defer: bool = False) -> bool:
         """チャンク処理成功フラグ (_SUCCESS) を作成 (Worker用)"""
         success_path = f"temp/deltas/{run_id}/{chunk_id}/_SUCCESS"
         local_file = self.data_path / f"SUCCESS_{run_id}_{chunk_id}"
         local_file.touch()
 
-        return self.upload_raw(local_file, success_path)
+        return self.upload_raw(local_file, success_path, defer=defer)
 
     def load_deltas(self, run_id: str) -> Dict[str, pd.DataFrame]:
         """全デルタを収集してマージ (Merger用)"""
@@ -424,6 +450,46 @@ class CatalogManager:
         except Exception as e:
             logger.error(f"デルタ収集失敗: {e}")
             return {}
+
+    def push_commit(self, message: str = "Batch update from ARIA") -> bool:
+        """バッファに溜まった操作を一括でコミット実行"""
+        if not self.api or not self._commit_operations:
+            return True
+
+        max_retries = 8  # リトライ回数を増やして競合に備える
+        for attempt in range(max_retries):
+            try:
+                self.api.create_commit(
+                    repo_id=self.hf_repo,
+                    repo_type="dataset",
+                    operations=self._commit_operations,
+                    commit_message=message,
+                    token=self.hf_token,
+                )
+                logger.success(f"✅ バッチコミット成功: {len(self._commit_operations)} 操作")
+                self._commit_operations = []  # クリア
+                return True
+            except Exception as e:
+                # 429 レート制限
+                if isinstance(e, HfHubHTTPError) and e.response.status_code == 429:
+                    wait_time = int(e.response.headers.get("Retry-After", 60)) + 5
+                    logger.warning(f"Commit Rate limit exceeded. Waiting {wait_time}s... ({attempt + 1}/{max_retries})")
+                    time.sleep(wait_time)
+                    continue
+
+                # 409 コンフリクト (他のジョブが同時にコミットした)
+                if isinstance(e, HfHubHTTPError) and e.response.status_code == 409:
+                    # 指数バックオフ + ジッター
+                    wait_time = (2**attempt) + (random.uniform(0, 5))
+                    logger.warning(f"Commit Conflict (409). Retrying in {wait_time:.2f}s... ({attempt + 1}/{max_retries})")
+                    time.sleep(wait_time)
+                    continue
+
+                logger.warning(f"コミット失敗: {e} - Retrying ({attempt + 1}/{max_retries})...")
+                time.sleep(10 * (attempt + 1))
+
+        logger.error("❌ バッチコミットに最終的に失敗しました")
+        return False
 
     def cleanup_deltas(self, run_id: str, cleanup_old: bool = True):
         """一時ファイルのクリーンアップ (Merger用)"""
