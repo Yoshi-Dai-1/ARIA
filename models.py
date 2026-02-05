@@ -32,6 +32,9 @@ class CatalogRecord(BaseModel):
     submit_at: str
     form_code: Optional[str] = None
     ordinance_code: Optional[str] = None
+    fiscal_year: Optional[int] = None
+    period_end: Optional[str] = None
+    is_amendment: bool = False
     raw_zip_path: Optional[str] = None
     pdf_path: Optional[str] = None
     processed_status: Optional[str] = "success"

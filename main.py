@@ -438,6 +438,12 @@ def main():
         ord_c = row.get("ordinanceCode")
         form_c = row.get("formCode")
 
+        # 期末日・決算年度の抽出
+        period_end = row.get("periodEnd")
+        fiscal_year = int(period_end[:4]) if period_end else None
+        # 訂正フラグ (1: 訂正, 2: 訂正の訂正 etc を含むため 0 以外を True)
+        is_amendment = row.get("withdrawalStatus") != "0" or "訂正" in title
+
         # カタログ情報のベースを保持
         record = {
             "doc_id": docid,
@@ -450,6 +456,9 @@ def main():
             "submit_at": row.get("submitDateTime", ""),
             "form_code": form_c,
             "ordinance_code": ord_c,
+            "fiscal_year": fiscal_year,
+            "period_end": period_end,
+            "is_amendment": is_amendment,
             "raw_zip_path": f"raw/edinet/year={y}/month={m}/{docid}.zip" if zip_ok else "",
             "pdf_path": f"raw/edinet/year={y}/month={m}/{docid}.pdf" if pdf_ok else "",
             "processed_status": "success" if (zip_ok or pdf_ok) else "failure",
