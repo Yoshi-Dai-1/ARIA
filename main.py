@@ -433,6 +433,11 @@ def main():
             file_status.append("PDFあり" if pdf_ok else "PDF(DL失敗)")
         status_str = " + ".join(file_status) if file_status else "ファイルなし"
 
+        # 解析タスク判定用のコードを先に取得
+        dtc = row.get("docTypeCode")
+        ord_c = row.get("ordinanceCode")
+        form_c = row.get("formCode")
+
         # カタログ情報のベースを保持
         record = {
             "doc_id": docid,
@@ -440,19 +445,17 @@ def main():
             "code": row.get("secCode", "")[:4],
             "edinet_code": row.get("edinetCode", ""),
             "company_name": row.get("filerName", "Unknown"),
-            "doc_type": row.get("docTypeCode", ""),
+            "doc_type": dtc or "",
             "title": title,
             "submit_at": row.get("submitDateTime", ""),
+            "form_code": form_c,
+            "ordinance_code": ord_c,
             "raw_zip_path": f"raw/edinet/year={y}/month={m}/{docid}.zip" if zip_ok else "",
             "pdf_path": f"raw/edinet/year={y}/month={m}/{docid}.pdf" if pdf_ok else "",
             "processed_status": "success" if (zip_ok or pdf_ok) else "failure",
         }
         potential_catalog_records[docid] = record
 
-        # 解析タスクの判定 (有価証券報告書 120 + 府令 010 + 様式 030000)
-        dtc = row.get("docTypeCode")
-        ord_c = row.get("ordinanceCode")
-        form_c = row.get("formCode")
         # 開発者ブログの指定: 種別=120, 政令=010, 様式=030000
         is_yuho = dtc == "120" and ord_c == "010" and form_c == "030000"
 
@@ -496,9 +499,12 @@ def main():
                 if detect_dir.exists():
                     shutil.rmtree(detect_dir)
         else:
+            # 【改善】スキップ理由をより明確に
+            form_name = "特定有価証券報告書" if form_c == "080000" else "非解析対象"
             codes_info = f"[Type:{dtc}, Ord:{ord_c}, Form:{form_c}]"
-            reason = f"非解析対象 {codes_info}" if not is_yuho else f"XBRLなし {codes_info}"
-            logger.info(f"【スキップ】: {docid} | {title} | {status_str} | 理由: {reason}")
+            reason = f"{form_name} {codes_info}" if not is_yuho else f"XBRLなし {codes_info}"
+
+            logger.info(f"【スキップ済として記録】: {docid} | {title} | {status_str} | 理由: {reason}")
             skipped_types[dtc] = skipped_types.get(dtc, 0) + 1
             new_catalog_records.append(record)
 
@@ -559,10 +565,14 @@ def main():
 
                     elif res_df is not None:
                         if t_type == "financial_values":
-                            all_quant_dfs.append(res_df)
+                            # 【最適解】数値・単一データのみを保存 (flag=0)
+                            # これにより、数値テーブルの圧縮効率とスキャン速度が最大化されます
+                            quant_only = res_df[res_df["isTextBlock_flag"] == 0]
+                            if not quant_only.empty:
+                                all_quant_dfs.append(quant_only)
                         elif t_type == "qualitative_text":
-                            # 【整合性強化】テキストデータのみに限定 (BlockFlag=1)
-                            # 注記等には数値データ(0)も含まれるため、定義に忠実にフィルタリング
+                            # 【最適解】大容量テキストのみを保存 (flag=1)
+                            # NLP/生成AI分析のノイズとなる数値を排除し、分析精度を高めます
                             txt_only = res_df[res_df["isTextBlock_flag"] == 1]
                             if not txt_only.empty:
                                 all_text_dfs.append(txt_only)
