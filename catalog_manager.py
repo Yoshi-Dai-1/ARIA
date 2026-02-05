@@ -418,8 +418,8 @@ class CatalogManager:
             valid_chunks = 0
             for chunk_id, file_list in chunks.items():
                 if not any(f.endswith("_SUCCESS") for f in file_list):
-                    # 【整合性強化】HF Hubの結果整合性を考慮し、1回見つからなくても別のファイルリスト取得を試みることが望ましいが
-                    # ここでは一旦警告に留める
+                    # 【整合性強化】HF Hubの結果整合性を考慮し、1回見つからなくても
+                    # 別のファイルリスト取得を試みることが望ましいが、ここでは一旦警告に留める
                     logger.warning(f"⚠️ 未完了のチャンクをスキップ: {chunk_id}")
                     continue
 
