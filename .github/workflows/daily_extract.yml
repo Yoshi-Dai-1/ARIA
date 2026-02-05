@@ -61,7 +61,7 @@ jobs:
         run: |
           # マトリックス分割に必要な業種情報を最新にするため、Market Pipeline を実行
           python market_main.py
-          
+
       - id: set-matrix
         env:
           EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
@@ -73,7 +73,7 @@ jobs:
         run: |
           RAW_JSON=$(python main.py --list-only --start "${{ steps.set-dates.outputs.start_date }}" --end "${{ steps.set-dates.outputs.end_date }}" | grep "^JSON_MATRIX_DATA:" | cut -d':' -f2-)
           DATA=${RAW_JSON:-"[]"}
-          
+
           echo "$DATA" | python -c "
           import json, math, sys
           try:
@@ -82,21 +82,21 @@ jobs:
               if not data:
                   print('matrix=[]')
                   sys.exit(0)
-              
+
               # 【修正】全書類（824件など）を対象にする。
               # 以前は 'その他' を除外していたため56件の漏れが発生していた。
               filtered_data = data
-              
+
               if not filtered_data:
                   sys.stderr.write('処理対象の書類が0件でした。\n')
                   print('matrix=[]')
                   sys.exit(0)
-              
+
               sec_map = {}
               for item in filtered_data:
                   s = item.get('sector', 'その他')
                   sec_map.setdefault(s, []).append(item['id'])
-              
+
               # 書き込み競合回避のため、業種単位でバケットに分ける
               sorted_sectors = sorted(sec_map.keys(), key=lambda x: len(sec_map[x]), reverse=True)
               # ARG_MAX 回避のため、ジョブの分割数を増やし、1つの引数が長くなりすぎないように調整
@@ -104,27 +104,27 @@ jobs:
               buckets = [[] for _ in range(n_jobs)]
               bucket_counts = [0] * n_jobs
               res_meta = [{} for _ in range(n_jobs)]
-              
+
               for s in sorted_sectors:
                   idx = bucket_counts.index(min(bucket_counts))
                   buckets[idx].extend(sec_map[s])
                   bucket_counts[idx] += len(sec_map[s])
                   if 'sectors' not in res_meta[idx]: res_meta[idx]['sectors'] = []
                   res_meta[idx]['sectors'].append(s)
-              
+
               res = []
               for i, b in enumerate(buckets):
                   if not b: continue
                   sectors_str = ', '.join(res_meta[i]['sectors'])
                   display_sectors = (sectors_str[:50] + '...') if len(sectors_str) > 50 else sectors_str
-                  
+
                   res.append({
                       'ids': ','.join(b),
                       'idx': i,
                       'count': len(b),
                       'sectors': display_sectors
                   })
-              
+
               sys.stderr.write(f'対象期間内の総処理対象書類数: {len(filtered_data)} 件\n')
               print(f'matrix={json.dumps(res)}')
           except Exception as e:

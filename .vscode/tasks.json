@@ -1,0 +1,35 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "ARIA: Workerテスト実行 (2024-02-01)",
+            "type": "shell",
+            "command": "./.venv/bin/python main.py --mode worker --run-id test_run --start 2024-02-01 --end 2024-02-01",
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "new"
+            }
+        },
+        {
+            "label": "ARIA: Mergerテスト実行 (test_runの集約)",
+            "type": "shell",
+            "command": "./.venv/bin/python main.py --mode merger --run-id test_run",
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "new"
+            }
+        },
+        {
+            "label": "act: Extractワークフローのローカル実行",
+            "type": "shell",
+            "command": "act -j discovery --container-architecture linux/amd64",
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "new"
+            }
+        }
+    ]
+}

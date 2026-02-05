@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
+from dotenv import load_dotenv
 from loguru import logger
 
 # モジュールのインポート
@@ -225,6 +226,14 @@ def run_merger(catalog, merger, run_id):
 
 
 def main():
+    # .envファイルの読み込み
+    load_dotenv()
+
+    # ログレベルの設定
+    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+    logger.remove()
+    logger.add(sys.stderr, level=log_level)
+
     # 原因追跡のため、受け取った生の引数をログに出力（デバッグ用）
     logger.debug(f"起動引数: {sys.argv}")
 

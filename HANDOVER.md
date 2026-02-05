@@ -11,26 +11,26 @@ graph TD
     subgraph "Hugging Face Repository (Dataset)"
         direction TB
         ROOT["/ (root)"]
-        
+
         CAT["catalog/"]
         DICT["documents_index.parquet (索引・履歴)"]
-        
+
         META["meta/"]
         SM["stocks_master.parquet (最新マスタ)"]
         LH["listing_history.parquet (上場廃止履歴)"]
         NH["name_history.parquet (社名変更履歴)"]
         IH["index_history.parquet (指数構成履歴)"]
-        
+
         MASTER["master/"]
         FIN["financial_values/sector={業種}/data.parquet"]
         QUAL["qualitative_text/sector={業種}/data.parquet"]
         IND["indices/{指数名}_history.parquet"]
-        
+
         TEMP["temp/deltas/"]
         RUN["{run_id}/{chunk_id}/"]
         SUCC["_SUCCESS (完了フラグ)"]
         DP["delta_{key}.parquet (中間データ)"]
-        
+
         ROOT --> CAT
         ROOT --> META
         ROOT --> MASTER
