@@ -514,10 +514,10 @@ def main():
             # HFのコミット制限(128回/時)を回避するため、Workerでは最後に一度だけ行います。
             pass
 
-    # 解析対象外の書類などのDelta保存(遅延実行)
-    if new_catalog_records:
-        df_cat = pd.DataFrame(new_catalog_records)
-        catalog.save_delta("catalog", df_cat, run_id, chunk_id, defer=True)
+    # 【修正】カタログレコードの収集を一本化し、上書きロストを防止
+    # 以前は「解析対象外」と「解析対象」で別々に save_delta を呼んでおり、後者が前者を上書きしていた
+    final_catalog_records = []
+    final_catalog_records.extend(new_catalog_records)
 
     # 5. 並列解析
     all_quant_dfs = []
@@ -639,22 +639,17 @@ def main():
             all_success = False
 
     # 【追加】解析対象ドキュメントのCatalog Delta保存 (解析結果反映後)
-    parsing_catalog_records = []
     for docid in parsing_target_ids:
         if docid in potential_catalog_records:
             rec = potential_catalog_records[docid]
-
             # 【整合性チェック】RAWアップロード失敗時は強制的にFailure
             if docid in upload_failed_docids:
                 rec["processed_status"] = "failure"
-                # すでにfailureの場合はそのまま。successだった場合のみ上書きされる。
-                # ログを出すと大量になる可能性があるため、代表的なものだけにするか、ここではサイレントに修正。
+            final_catalog_records.append(rec)
 
-            parsing_catalog_records.append(rec)
-
-    if parsing_catalog_records:
-        logger.info(f"解析対象書類のCatalog Deltaを保存します ({len(parsing_catalog_records)} 件)")
-        df_cat = pd.DataFrame(parsing_catalog_records)
+    if final_catalog_records:
+        logger.info(f"全書類の Catalog Delta を保存します ({len(final_catalog_records)} 件)")
+        df_cat = pd.DataFrame(final_catalog_records)
         catalog.save_delta("catalog", df_cat, run_id, chunk_id, defer=True)
 
     # 【修正】all_success が False の場合の処理を追加

@@ -1,4 +1,5 @@
 import io
+import re
 from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
@@ -60,8 +61,9 @@ class NikkeiStrategy(IndexStrategy):
 
             # 日経新聞のCSVは末尾に「データ取得元...」などの説明行が入ることがあるため、
             # コードが数値として解釈できる行のみを残す
-            code_col = next((c for c in df.columns if "コード" in c), None)
-            weight_col = next((c for c in df.columns if "ウエイト" in c or "Weight" in c), None)
+            # また、カラム名に「ウエイト」と「ウエート」の表記揺れがあるため正規表現で対応
+            code_col = next((c for c in df.columns if re.search(r"コード|Code", c, re.IGNORECASE)), None)
+            weight_col = next((c for c in df.columns if re.search(r"ウエ[イート]|Weight", c, re.IGNORECASE)), None)
 
             if not code_col or not weight_col:
                 raise ValueError(f"必須カラムが見つかりません。Columns: {df.columns}")
@@ -109,9 +111,9 @@ class TopixStrategy(IndexStrategy):
             df = pd.read_csv(io.BytesIO(r.content), encoding="shift_jis")
 
             # 想定カラム: 日付,銘柄名,コード,業種,TOPIXに占める個別銘柄のウエイト,ニューインデックス区分
-            code_col = next((c for c in df.columns if "コード" in c), None)
-            # JPXの「ＴＯＰＩＸに占める個別銘柄のウエイト」などに対応するため、キーワードで検索
-            weight_col = next((c for c in df.columns if "ウエイト" in c.lower()), None)
+            # JPXの長大なヘッダや名称揺れにも正規表現で対応
+            code_col = next((c for c in df.columns if re.search(r"コード|Code", c, re.IGNORECASE)), None)
+            weight_col = next((c for c in df.columns if re.search(r"ウエ[イート]|Weight", c, re.IGNORECASE)), None)
 
             if not code_col or not weight_col:
                 raise ValueError(f"TOPIX必須カラム欠落: {df.columns}")

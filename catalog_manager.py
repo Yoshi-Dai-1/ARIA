@@ -372,6 +372,10 @@ class CatalogManager:
         delta_path = f"temp/deltas/{run_id}/{chunk_id}/{filename}"
         local_file = self.data_path / f"delta_{run_id}_{chunk_id}_{filename}"
 
+        # 【修正】rec カラム（インデックス残骸）を永続化の直前で確実に排除
+        if "rec" in df.columns:
+            df = df.drop(columns=["rec"])
+
         # 型の安定化
         for col in df.columns:
             if df[col].dtype == "object":
@@ -398,10 +402,16 @@ class CatalogManager:
         deltas = {}
 
         try:
-            # フォルダ内の全ファイルをリスト
+            # 【整合性強化】HF Hub のリスト取得自体をリトライし、反映遅延に対処
             folder = f"temp/deltas/{run_id}"
-            files = self.api.list_repo_files(repo_id=self.hf_repo, repo_type="dataset")
-            target_files = [f for f in files if f.startswith(folder)]
+            files = []
+            for attempt in range(3):
+                files = self.api.list_repo_files(repo_id=self.hf_repo, repo_type="dataset")
+                target_files = [f for f in files if f.startswith(folder)]
+                if target_files:
+                    break
+                logger.warning(f"デルタフォルダが見つかりません。再試行中... ({attempt + 1}/3)")
+                time.sleep(10)
 
             # チャンクごとにグループ化
             chunks = {}
@@ -514,12 +524,13 @@ class CatalogManager:
                     time.sleep(wait_time)
                     continue
 
-                # 409 コンフリクト (他のジョブが同時にコミットした)
-                if isinstance(e, HfHubHTTPError) and e.response.status_code == 409:
+                # 409 コンフリクト または 412 前提条件失敗 (他のジョブが同時にコミットした)
+                if isinstance(e, HfHubHTTPError) and e.response.status_code in [409, 412]:
                     # 指数バックオフ + ジッター
-                    wait_time = (2**attempt) + (random.uniform(0, 5))
+                    wait_time = (2**attempt) + (random.uniform(5, 15))
                     logger.warning(
-                        f"Commit Conflict (409). Retrying in {wait_time:.2f}s... ({attempt + 1}/{max_retries})"
+                        f"Commit Conflict ({e.response.status_code}). "
+                        f"Retrying in {wait_time:.2f}s... ({attempt + 1}/{max_retries})"
                     )
                     time.sleep(wait_time)
                     continue
