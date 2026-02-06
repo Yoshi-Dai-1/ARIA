@@ -574,15 +574,15 @@ def main():
 
                     elif res_df is not None:
                         if t_type == "financial_values":
-                            # 【最適解】数値・単一データのみを保存 (flag=0)
+                            # 【最適解】数値・単一データのみを保存 (flg=0)
                             # これにより、数値テーブルの圧縮効率とスキャン速度が最大化されます
-                            quant_only = res_df[res_df["isTextBlock_flag"] == 0]
+                            quant_only = res_df[res_df["isTextBlock_flg"] == 0]
                             if not quant_only.empty:
                                 all_quant_dfs.append(quant_only)
                         elif t_type == "qualitative_text":
-                            # 【最適解】大容量テキストのみを保存 (flag=1)
+                            # 【最適解】大容量テキストのみを保存 (flg=1)
                             # NLP/生成AI分析のノイズとなる数値を排除し、分析精度を高めます
-                            txt_only = res_df[res_df["isTextBlock_flag"] == 1]
+                            txt_only = res_df[res_df["isTextBlock_flg"] == 1]
                             if not txt_only.empty:
                                 all_text_dfs.append(txt_only)
 
