@@ -123,8 +123,19 @@ class CatalogManager:
         filename = self.paths[key]
         local_file = self.data_path / Path(filename).name
 
-        # 【重要】インデックス残骸（rec）を永続化の直前で物理的に排除
-        if "rec" in df.columns:
+        # 【重要】カタログ保存時はモデル定義を強制し、カラム欠落や「rec」残存を物理的に排除
+        if key == "catalog":
+            validated = []
+            for rec_dict in df.to_dict("records"):
+                try:
+                    # CatalogRecordモデルが持つフィールドのみを抽出 (extra="ignore"相当)
+                    validated.append(CatalogRecord(**rec_dict).model_dump())
+                except Exception as e:
+                    logger.error(f"永続化バリデーション失敗 (doc_id: {rec_dict.get('doc_id')}): {e}")
+            if validated:
+                df = pd.DataFrame(validated)
+        elif "rec" in df.columns:
+            # カタログ以外でも rec があれば一律排除
             df = df.drop(columns=["rec"])
 
         df.to_parquet(local_file, index=False, compression="zstd")
@@ -369,8 +380,18 @@ class CatalogManager:
         delta_path = f"temp/deltas/{run_id}/{chunk_id}/{filename}"
         local_file = self.data_path / f"delta_{run_id}_{chunk_id}_{filename}"
 
-        # 【修正】rec カラム（インデックス残骸）を永続化の直前で確実に排除
-        if "rec" in df.columns:
+        # 【重要】デルタ保存時もモデル定義を強制し、不純物やカラム欠落を排除
+        if key == "catalog":
+            validated = []
+            for rec_dict in df.to_dict("records"):
+                try:
+                    # CatalogRecordモデルが持つフィールドのみを抽出
+                    validated.append(CatalogRecord(**rec_dict).model_dump())
+                except Exception as e:
+                    logger.error(f"Deltaバリデーション失敗 (doc_id: {rec_dict.get('doc_id')}): {e}")
+            if validated:
+                df = pd.DataFrame(validated)
+        elif "rec" in df.columns:
             df = df.drop(columns=["rec"])
 
         # 型の安定化

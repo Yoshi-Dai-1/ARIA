@@ -364,8 +364,7 @@ def main():
     potential_catalog_records = {}  # docid -> record_base (全レコード保持)
     parsing_target_ids = set()  # 解析対象のdocidセット
 
-    # 【RAW整合性】バッチアップロード失敗を追跡するセット
-    upload_failed_docids = set()
+    # 【RAW整合性】バッチ処理用
     current_batch_docids = []
 
     loaded_acc = {}
@@ -591,41 +590,34 @@ def main():
                 for f in as_completed(futures):
                     did, res_df, err, t_type = f.result()
 
-                    if err:
-                        # テキスト抽出の失敗(No objects...)は頻繁にあるため、Warningレベルに留める場合もあるが
-                        # ここでは一律ログ出力。ただしCatalogへの記録は "どちらも失敗" の場合のみ考慮が必要だが
-                        # 現状はシンプルにエラーログのみ。
-                        # "No objects to concatenate" は正常な空振りの可能性が高い。
+                    # 解析完了後に parsing_target_ids にあるレコードのステータスを更新
+                    if did in potential_catalog_records:
+                        target_rec = potential_catalog_records[did]
 
-                        logger.error(f"解析結果({t_type}): {did} - {err}")
+                        if err:
+                            logger.error(f"解析結果({t_type}): {did} - {err}")
+                            # 両方のタスク(financial/text)が失敗した場合のみfailureとする等の厳密さは一旦置くが、
+                            # エラーがあれば警告レベルを引き上げる
+                            if "No objects to concatenate" not in err:
+                                target_rec["processed_status"] = "failure"
+                        elif res_df is not None:
+                            # 少なくとも一方の解析に成功していれば成功
+                            target_rec["processed_status"] = "success"
 
-                        # 【修正】解析失敗時、カタログ上のステータスを failure に変更
-                        # potential_catalog_records は全レコードを持っている
-                        if did in potential_catalog_records:
-                            potential_catalog_records[did]["processed_status"] = "failure"
-                            logger.warning(f"⚠️ Catalog Status Updated to FAILURE: {did}")
+                            if t_type == "financial_values":
+                                quant_only = res_df[res_df["isTextBlock_flg"] == 0]
+                                if not quant_only.empty:
+                                    all_quant_dfs.append(quant_only)
+                            elif t_type == "qualitative_text":
+                                txt_only = res_df[res_df["isTextBlock_flg"] == 1]
+                                if not txt_only.empty:
+                                    all_text_dfs.append(txt_only)
 
-                    elif res_df is not None:
-                        if t_type == "financial_values":
-                            # 【最適解】数値・単一データのみを保存 (flg=0)
-                            # これにより、数値テーブルの圧縮効率とスキャン速度が最大化されます
-                            quant_only = res_df[res_df["isTextBlock_flg"] == 0]
-                            if not quant_only.empty:
-                                all_quant_dfs.append(quant_only)
-                        elif t_type == "qualitative_text":
-                            # 【最適解】大容量テキストのみを保存 (flg=1)
-                            # NLP/生成AI分析のノイズとなる数値を排除し、分析精度を高めます
-                            txt_only = res_df[res_df["isTextBlock_flg"] == 1]
-                            if not txt_only.empty:
-                                all_text_dfs.append(txt_only)
-
-                        # processed_infos はセクター判定用。重複を防ぐため docid ごとに一度だけ追加したいが
-                        # リスト内包表記で docid を抽出するので重複しても問題ない、または
-                        # set で管理する手もある。ここでは単純に追加。
-                        meta_row = next(m for m in all_meta if m["docID"] == did)
-                        processed_infos.append(
-                            {"docID": did, "sector": catalog.get_sector(meta_row.get("secCode", "")[:4])}
-                        )
+                            # セクター判別用
+                            meta_row = next(m for m in all_meta if m["docID"] == did)
+                            processed_infos.append(
+                                {"docID": did, "sector": catalog.get_sector(meta_row.get("secCode", "")[:4])}
+                            )
 
                 # バッチごとに登録可能な未定記録を登録
                 # 解析対象のカタログ登録は最後にまとめて行うため、ここでは何もしない
@@ -694,18 +686,24 @@ def main():
             logger.error(f"テキストデータマージ失敗: {e}")
             all_success = False
 
-    # 【追加】解析対象ドキュメントのCatalog Delta保存 (解析結果反映後)
-    for docid in parsing_target_ids:
-        if docid in potential_catalog_records:
-            rec = potential_catalog_records[docid]
-            # 【整合性チェック】RAWアップロード失敗時は強制的にFailure
-            if docid in upload_failed_docids:
-                rec["processed_status"] = "failure"
-            final_catalog_records.append(rec)
+    # 【修正】全カタログレコードの収集を一本化 (対象内・対象外すべて)
+    # 824件すべてが potential_catalog_records に格納されています
+    final_catalog_records = list(potential_catalog_records.values())
 
     if final_catalog_records:
-        logger.info(f"全書類の Catalog Delta を保存します ({len(final_catalog_records)} 件)")
         df_cat = pd.DataFrame(final_catalog_records)
+
+        # 【透明性】ID重複による件数不一致 (824 vs 822 等) を事前にログ出力
+        initial_len = len(df_cat)
+        df_cat = df_cat.drop_duplicates(subset=["doc_id"], keep="last")
+        final_len = len(df_cat)
+
+        if initial_len > final_len:
+            logger.info(
+                f"💡 ID重複を排除しました: {initial_len} 件 -> {final_len} 件 (減少: {initial_len - final_len} 件)"
+            )
+
+        logger.info(f"全書類の Catalog Delta を保存します ({final_len} 件)")
         catalog.save_delta("catalog", df_cat, run_id, chunk_id, defer=True)
 
     # 【修正】all_success が False の場合の処理を追加
