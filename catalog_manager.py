@@ -123,21 +123,14 @@ class CatalogManager:
         filename = self.paths[key]
         local_file = self.data_path / Path(filename).name
 
-        # 型の安定化
-        for col in df.columns:
-            if df[col].dtype == "object":
-                # ブール値が含まれる場合は文字列化を避ける
-                if not df[col].apply(lambda x: isinstance(x, bool)).any():
-                    df[col] = df[col].astype(str).replace("None", "")
+        # 【重要】インデックス残骸（rec）を永続化の直前で物理的に排除
+        if "rec" in df.columns:
+            df = df.drop(columns=["rec"])
 
         df.to_parquet(local_file, index=False, compression="zstd")
 
         if self.api:
             if defer:
-                # 【重要】rec カラム（インデックス残骸）の完全排除
-                if "rec" in df.columns:
-                    df = df.drop(columns=["rec"])
-
                 # バッファに追加して終了 (最新のもので上書き)
                 self._commit_operations[filename] = CommitOperationAdd(
                     path_in_repo=filename, path_or_fileobj=str(local_file)
@@ -470,7 +463,7 @@ class CatalogManager:
                                     repo_id=self.hf_repo, filename=remote_path, repo_type="dataset", token=self.hf_token
                                 )
                                 df = pd.read_parquet(local_path)
-                                # 【重要】rec カラム排除
+                                # 【重要】デルタ読み込み時に rec カラムを排除
                                 if "rec" in df.columns:
                                     df = df.drop(columns=["rec"])
                                 if key not in deltas:

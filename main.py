@@ -542,10 +542,20 @@ def main():
     if tasks:
         logger.info(f"解析対象: {len(tasks) // 2} 書類 (Task数: {len(tasks)})")
 
-        # 解析スキップの内訳に有報(120)などが混ざっていないか、最終確認用ログ
-        check_yuho_in_skip = [k for k in skipped_types.keys() if k in ["120"]]
-        if check_yuho_in_skip:
-            logger.warning(f"注意: 解析対象であるはずの種別がスキップされています: {check_yuho_in_skip}")
+        # 【修正】解析スキップの内訳を精査。
+        # 特定有価証券報告書(080000)などは正常なスキップとして無視し、
+        # 通常の有報(120, Form: 030000等)が漏れている場合のみ警告。
+        unexpected_skips = []
+        for did in potential_catalog_records:
+            rec = potential_catalog_records[did]
+            # 種別が 120 (有報相当) なのに解析対象(tasks)に含まれておらず、
+            # かつ 特定有価証券(080000)でもないものを探す
+            if rec["doc_type"] == "120" and did not in parsing_target_ids:
+                if rec.get("form_code") != "080000":
+                    unexpected_skips.append(f"{did}(Form:{rec.get('form_code')})")
+
+        if unexpected_skips:
+            logger.warning(f"注意: 解析対象であるはずの書類がスキップされています: {unexpected_skips}")
 
         TEMP_DIR.mkdir(parents=True, exist_ok=True)
         with ProcessPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:

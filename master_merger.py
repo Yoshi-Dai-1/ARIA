@@ -57,6 +57,9 @@ class MasterMerger:
         try:
             m_path = hf_hub_download(repo_id=self.hf_repo, filename=repo_path, repo_type="dataset", token=self.hf_token)
             master_df = pd.read_parquet(m_path)
+            # 【重要】ロード直後に排除
+            if "rec" in master_df.columns:
+                master_df = master_df.drop(columns=["rec"])
             logger.debug(f"既存Master読み込み: {safe_sector} ({len(master_df)} rows)")
             combined_df = pd.concat([master_df, new_data], ignore_index=True)
         except Exception:
@@ -70,8 +73,9 @@ class MasterMerger:
             combined_df = combined_df.sort_values("submitDateTime", ascending=False)
 
         combined_df = combined_df.drop_duplicates(subset=subset, keep="first")
+        # 【重要】インデックス残骸を物理保存の直前で確実に排除
         if "rec" in combined_df.columns:
-            combined_df = combined_df.drop_duplicates(subset=subset, keep="first").drop(columns=["rec"])
+            combined_df = combined_df.drop(columns=["rec"])
 
         # 3. 保存とアップロード
         local_file = self.data_path / f"master_{safe_sector}_{master_type}.parquet"
