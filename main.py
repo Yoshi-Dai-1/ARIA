@@ -438,37 +438,56 @@ def main():
         ord_c = row.get("ordinanceCode")
         form_c = row.get("formCode")
 
-        # 期末日・決算年度の抽出
+        # 期末日・決算年度・決算期間（月数）の抽出
+        period_start = row.get("periodStart")
         period_end = row.get("periodEnd")
         fiscal_year = int(period_end[:4]) if period_end else None
-        # 訂正フラグ (1: 訂正, 2: 訂正の訂正 etc を含むため 0 以外を True)
+
+        # 決算期の月数を算出 (変則決算対応)
+        num_months = 12
+        if period_start and period_end:
+            try:
+                d1 = datetime.strptime(period_start, "%Y-%m-%d")
+                d2 = datetime.strptime(period_end, "%Y-%m-%d")
+                # 日数差を月数に換算 (+1日して端数を丸める)
+                diff_days = (d2 - d1).days + 1
+                num_months = round(diff_days / 30.4375)  # 365.25 / 12
+                # 通常は 12, 9, 6, 3 などに収束。境界値ガード
+                num_months = max(1, min(24, num_months))
+            except Exception:
+                pass
+
+        sec_code = row.get("secCode", "")[:4]
+        # 訂正フラグ
         is_amendment = row.get("withdrawalStatus") != "0" or "訂正" in title
 
-        # カタログ情報のベースを保持
+        # カタログ情報のベースを保持 (models.py の定義順に準拠)
         record = {
             "doc_id": docid,
-            "source": "EDINET",
-            "code": row.get("secCode", "")[:4],
-            "edinet_code": row.get("edinetCode", ""),
+            "code": sec_code,
             "company_name": row.get("filerName", "Unknown"),
+            "fiscal_year": fiscal_year,
+            "period_start": period_start,
+            "period_end": period_end,
+            "num_months": num_months,
+            "is_amendment": is_amendment,
             "doc_type": dtc or "",
-            "title": title,
-            "submit_at": row.get("submitDateTime", ""),
             "form_code": form_c,
             "ordinance_code": ord_c,
-            "fiscal_year": fiscal_year,
-            "period_end": period_end,
-            "is_amendment": is_amendment,
+            "submit_at": row.get("submitDateTime", ""),
+            "title": title,
+            "edinet_code": row.get("edinetCode", ""),
             "raw_zip_path": f"raw/edinet/year={y}/month={m}/{docid}.zip" if zip_ok else "",
             "pdf_path": f"raw/edinet/year={y}/month={m}/{docid}.pdf" if pdf_ok else "",
             "processed_status": "success" if (zip_ok or pdf_ok) else "failure",
+            "source": "EDINET",
         }
         potential_catalog_records[docid] = record
 
-        # 開発者ブログの指定: 種別=120, 政令=010, 様式=030000
-        is_yuho = dtc == "120" and ord_c == "010" and form_c == "030000"
+        # 解析対象の厳密判定: 有報(120) / 一般事業用(010) / 標準様式(030000)
+        is_target_yuho = dtc == "120" and ord_c == "010" and form_c == "030000"
 
-        if is_yuho and zip_ok:
+        if is_target_yuho and zip_ok:
             try:
                 # 【重要】提出日ではなく、XBRL内部の名前空間から「事業年度」基準で年を特定
                 import shutil
@@ -511,7 +530,8 @@ def main():
             # 【改善】スキップ理由をより明確に
             form_name = "特定有価証券報告書" if form_c == "080000" else "非解析対象"
             codes_info = f"[Type:{dtc}, Ord:{ord_c}, Form:{form_c}]"
-            reason = f"{form_name} {codes_info}" if not is_yuho else f"XBRLなし {codes_info}"
+            # ターゲット有報なのにXBRLがない場合、または単にターゲット外である場合を区別
+            reason = f"XBRLなし {codes_info}" if is_target_yuho else f"{form_name} {codes_info}"
 
             logger.info(f"【スキップ済として記録】: {docid} | {title} | {status_str} | 理由: {reason}")
             skipped_types[dtc] = skipped_types.get(dtc, 0) + 1
@@ -543,19 +563,22 @@ def main():
         logger.info(f"解析対象: {len(tasks) // 2} 書類 (Task数: {len(tasks)})")
 
         # 【修正】解析スキップの内訳を精査。
-        # 特定有価証券報告書(080000)などは正常なスキップとして無視し、
-        # 通常の有報(120, Form: 030000等)が漏れている場合のみ警告。
+        # 厳密に 「有報(120)/一般事業会社(010)/標準様式(030000)」 が漏れている場合のみ警告。
         unexpected_skips = []
         for did in potential_catalog_records:
             rec = potential_catalog_records[did]
-            # 種別が 120 (有報相当) なのに解析対象(tasks)に含まれておらず、
-            # かつ 特定有価証券(080000)でもないものを探す
-            if rec["doc_type"] == "120" and did not in parsing_target_ids:
-                if rec.get("form_code") != "080000":
-                    unexpected_skips.append(f"{did}(Form:{rec.get('form_code')})")
+            # 重要判定: 120 / 010 / 030000 なのに tasks に入っていないものを警告対象とする
+            is_missed = (
+                rec["doc_type"] == "120"
+                and rec["ordinance_code"] == "010"
+                and rec["form_code"] == "030000"
+                and did not in parsing_target_ids
+            )
+            if is_missed:
+                unexpected_skips.append(did)
 
         if unexpected_skips:
-            logger.warning(f"注意: 解析対象であるはずの書類がスキップされています: {unexpected_skips}")
+            logger.warning(f"注意: 最優先解析対象(120/010/030000)がスキップされています: {unexpected_skips}")
 
         TEMP_DIR.mkdir(parents=True, exist_ok=True)
         with ProcessPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:

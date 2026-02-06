@@ -22,22 +22,31 @@ class EdinetDocument(BaseModel):
 class CatalogRecord(BaseModel):
     """統合ドキュメントカタログ (documents_index.parquet) のレコードモデル"""
 
+    # 1. 識別・基本情報系
     doc_id: str
-    source: str
     code: str
-    edinet_code: Optional[str] = None
     company_name: str
+
+    # 2. 分析・監査軸系 (変則決算・期間検証・訂正有無を即座に判定可能にする)
+    fiscal_year: Optional[int] = None
+    period_start: Optional[str] = None
+    period_end: Optional[str] = None
+    num_months: Optional[int] = 12
+    is_amendment: bool = False
+
+    # 3. 書類メタデータ系 (EDINET属性・検索用)
     doc_type: str
-    title: str
-    submit_at: str
     form_code: Optional[str] = None
     ordinance_code: Optional[str] = None
-    fiscal_year: Optional[int] = None
-    period_end: Optional[str] = None
-    is_amendment: bool = False
+    submit_at: str
+    title: str
+    edinet_code: Optional[str] = None
+
+    # 4. システム・インフラ系 (ストレージ・ステータス)
     raw_zip_path: Optional[str] = None
     pdf_path: Optional[str] = None
     processed_status: Optional[str] = "success"
+    source: str = "EDINET"
 
 
 class StockMasterRecord(BaseModel):
