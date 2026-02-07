@@ -352,10 +352,16 @@ def main():
 
             # クレンジング済みの証券コードを使用
             raw_sec_code = str(row.get("secCode", "")).strip()[:4]
-            has_xbrl = row.get("xbrlFlag") == "1"
-            # マトリックス用メタデータに解析フラグとコードを追加し、重み付け分配を可能にする
+            # 解析対象の厳密判定条件をマトリックス側でも提供
             matrix_data.append(
-                {"id": docid, "sector": catalog.get_sector(raw_sec_code), "code": raw_sec_code, "xbrl": has_xbrl}
+                {
+                    "id": docid,
+                    "code": raw_sec_code,
+                    "xbrl": row.get("xbrlFlag") == "1",
+                    "type": row.get("docTypeCode"),
+                    "ord": row.get("ordinanceCode"),
+                    "form": row.get("formCode"),
+                }
             )
         print(f"JSON_MATRIX_DATA: {json.dumps(matrix_data)}")
         return

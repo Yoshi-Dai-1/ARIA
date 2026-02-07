@@ -101,13 +101,17 @@ jobs:
 
               company_tasks = []
               for code, items in company_map.items():
-                  # 【再最適化】オーバーヘッド(10) + XBRL従量(100) / 非XBRL(1)
-                  # 1つの会社を処理するだけでも一定のコストがかかることを加味
-                  weight = 10 + sum(100 if x.get('xbrl') else 1 for x in items)
+                  # 【再最適化】有報(120)/一般(010)/標準(030000) のみを重い(50)と判定
+                  # その他は DLオーバーヘッド(10) + 従量(1)
+                  company_weight = 10
+                  for x in items:
+                      is_parsed = x.get('type') == '120' and x.get('ord') == '010' and x.get('form') == '030000'
+                      company_weight += 50 if is_parsed else 1
+                  
                   company_tasks.append({
                       'code': code,
                       'ids': [x['id'] for x in items],
-                      'weight': weight
+                      'weight': company_weight
                   })
 
               # 2. 重い順にソートして貪欲法(Greedy)で20バケットに分配

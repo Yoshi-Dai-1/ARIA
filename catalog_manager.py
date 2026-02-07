@@ -36,6 +36,15 @@ class CatalogManager:
         self._commit_operations = {}  # パスをキーとした辞書
         logger.info("CatalogManager を初期化しました。")
 
+        # 【超重要】既存データの自動アップグレード・クレンジング強制発動
+        # カタログが18カラム未詳、または rec が残存している場合は即座に正規化して保存
+        if not self.catalog_df.empty:
+            is_old_schema = len(self.catalog_df.columns) < 18 or "rec" in self.catalog_df.columns
+            if is_old_schema:
+                logger.info("⚠️ 旧バージョンのカタログを検知。18カラム化と rec 排除のアップグレードを実行します。")
+                self.catalog_df = self._clean_dataframe("catalog", self.catalog_df)
+                self._save_and_upload("catalog", self.catalog_df)
+
     def _clean_dataframe(self, key: str, df: pd.DataFrame) -> pd.DataFrame:
         """全てのDataFrameに対して共通のクレンジングを適用"""
         if df.empty:
