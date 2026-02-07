@@ -33,8 +33,60 @@ class CatalogManager:
         self.master_df = self._load_parquet("master")
 
         # 【追加】バッチコミット用バッファ
-        self._commit_operations = {}  # パスをキーとした辞書 (一回のコミットでパスの重複を避ける)
+        self._commit_operations = {}  # パスをキーとした辞書
         logger.info("CatalogManager を初期化しました。")
+
+    def _clean_dataframe(self, key: str, df: pd.DataFrame) -> pd.DataFrame:
+        """全てのDataFrameに対して共通のクレンジングを適用"""
+        if df.empty:
+            return df
+
+        # 1. 絶対に rec カラムを排除
+        if "rec" in df.columns:
+            df = df.drop(columns=["rec"])
+        if df.index.name == "rec":
+            df.index.name = None
+
+        # 2. カタログの場合、モデル定義のカラム構成を強制 (18カラム化)
+        if key == "catalog":
+            # NaN を None に置換
+            df = df.replace({pd.NA: None, float("nan"): None})
+
+            # モデル定義の全フィールドを取得
+            expected_cols = list(CatalogRecord.model_fields.keys())
+
+            # 既存のカラムのみでPydanticバリデーションを通し、不足分をNoneで補完
+            validated = []
+            for rec_dict in df.to_dict("records"):
+                try:
+                    # 欠落しているフィールドがあっても Pydantic がデフォルト値を補完
+                    validated.append(CatalogRecord(**rec_dict).model_dump())
+                except Exception as e:
+                    # 必須項目(doc_id等)が欠けている場合のみエラー
+                    logger.warning(f"クレンジング中のバリデーション不備 (doc_id: {rec_dict.get('doc_id')}): {e}")
+                    # 構造だけでも維持するため、辞書として可能な限り保持
+                    row = {col: rec_dict.get(col) for col in expected_cols}
+                    validated.append(row)
+
+            df = pd.DataFrame(validated)
+            # カラム順をモデル定義に合わせる
+            df = df[expected_cols]
+
+        # 3. マスタの場合、codeを確実に文字列化
+        if key == "master" and "code" in df.columns:
+            df["code"] = df["code"].astype(str).str.strip()
+
+        # 4. Object型の安定化 (None を保持しつつ文字列化)
+        for col in df.columns:
+            if df[col].dtype == "object":
+                df[col] = df[col].apply(lambda x: str(x) if (x is not None and not pd.isna(x)) else None)
+
+        return df
+
+    def add_commit_operation(self, repo_path: str, local_path: Path):
+        """コミットバッファに操作を追加（重複は最新で上書き）"""
+        self._commit_operations[repo_path] = CommitOperationAdd(path_in_repo=repo_path, path_or_fileobj=str(local_path))
+        logger.debug(f"コミットバッファに追加: {repo_path}")
 
     def _load_parquet(self, key: str) -> pd.DataFrame:
         filename = self.paths[key]
@@ -43,13 +95,8 @@ class CatalogManager:
                 repo_id=self.hf_repo, filename=filename, repo_type="dataset", token=self.hf_token
             )
             df = pd.read_parquet(local_path)
-            # 【重要】インデックス残骸（rec）をロードの接点で完全に排除
-            if "rec" in df.columns:
-                df = df.drop(columns=["rec"])
-
-            # 【重要】マスタの場合、codeカラムを確実に文字列化
-            if key == "master" and "code" in df.columns:
-                df["code"] = df["code"].astype(str).str.strip()
+            # 【絶対ガード】読み込み直後にクレンジング
+            df = self._clean_dataframe(key, df)
             logger.debug(f"ロード成功: {filename} ({len(df)} rows)")
             return df
         except RepositoryNotFoundError:
@@ -123,33 +170,15 @@ class CatalogManager:
         filename = self.paths[key]
         local_file = self.data_path / Path(filename).name
 
-        # 【重要】カタログ保存時はモデル定義を強制し、カラム欠落や「rec」残存を物理的に排除
-        if key == "catalog":
-            # NaN を None に置換して Pydantic バリデーションエラーを回避
-            df_clean = df.replace({pd.NA: None, float("nan"): None})
-            validated = []
-            for rec_dict in df_clean.to_dict("records"):
-                try:
-                    # CatalogRecordモデルが持つフィールドのみを抽出 (extra="ignore"相当)
-                    validated.append(CatalogRecord(**rec_dict).model_dump())
-                except Exception as e:
-                    logger.error(f"永続化バリデーション失敗 (doc_id: {rec_dict.get('doc_id')}): {e}")
-            if validated:
-                df = pd.DataFrame(validated)
-
-        # 全ての形式で物理保存の直前に rec カラムを確実に排除
-        if "rec" in df.columns:
-            df = df.drop(columns=["rec"])
+        # 【絶対ガード】保存直前に最終クレンジング
+        df = self._clean_dataframe(key, df)
 
         df.to_parquet(local_file, index=False, compression="zstd")
 
         if self.api:
             if defer:
-                # バッファに追加して終了 (最新のもので上書き)
-                self._commit_operations[filename] = CommitOperationAdd(
-                    path_in_repo=filename, path_or_fileobj=str(local_file)
-                )
-                logger.debug(f"コミットバッファに追加: {filename}")
+                # バッファに追加して終了 (パスをキーにして最新のもので上書き)
+                self.add_commit_operation(filename, local_file)
                 return True
 
             max_retries = 5  # 強化
@@ -195,9 +224,7 @@ class CatalogManager:
 
         if self.api:
             if defer:
-                self._commit_operations[repo_path] = CommitOperationAdd(
-                    path_in_repo=repo_path, path_or_fileobj=str(local_path)
-                )
+                self.add_commit_operation(repo_path, local_path)
                 logger.debug(f"RAWコミットバッファに追加: {repo_path}")
                 return True
 
@@ -383,29 +410,8 @@ class CatalogManager:
         delta_path = f"temp/deltas/{run_id}/{chunk_id}/{filename}"
         local_file = self.data_path / f"delta_{run_id}_{chunk_id}_{filename}"
 
-        # 【重要】デルタ保存時もモデル定義を強制し、不純物やカラム欠落を排除
-        if key == "catalog":
-            # NaN を None に置換して Pydantic バリデーションエラー(NaN as float)を回避
-            df_clean = df.replace({pd.NA: None, float("nan"): None})
-            validated = []
-            for rec_dict in df_clean.to_dict("records"):
-                try:
-                    # CatalogRecordモデルが持つフィールドのみを抽出
-                    validated.append(CatalogRecord(**rec_dict).model_dump())
-                except Exception as e:
-                    logger.error(f"Deltaバリデーション失敗 (doc_id: {rec_dict.get('doc_id')}): {e}")
-            if validated:
-                df = pd.DataFrame(validated)
-
-        # 【重要】物理保存の直前で全形式から rec を確実に排除
-        if "rec" in df.columns:
-            df = df.drop(columns=["rec"])
-
-        # 型の安定化
-        for col in df.columns:
-            if df[col].dtype == "object":
-                # None は文字列化せずに保持 (結合時に不整合を起こさないため)
-                df[col] = df[col].apply(lambda x: str(x) if x is not None else None)
+        # 【絶対ガード】保存直前に最終クレンジング
+        df = self._clean_dataframe(key, df)
 
         df.to_parquet(local_file, index=False, compression="zstd")
 

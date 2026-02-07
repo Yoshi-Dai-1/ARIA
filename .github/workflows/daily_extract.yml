@@ -101,13 +101,13 @@ jobs:
 
               company_tasks = []
               for code, items in company_map.items():
-                  # 【再最適化】XBRLあり=20, なし=1 の重み付け
-                  weight = sum(20 if x.get('xbrl') else 1 for x in items)
+                  # 【再最適化】オーバーヘッド(10) + XBRL従量(100) / 非XBRL(1)
+                  # 1つの会社を処理するだけでも一定のコストがかかることを加味
+                  weight = 10 + sum(100 if x.get('xbrl') else 1 for x in items)
                   company_tasks.append({
                       'code': code,
                       'ids': [x['id'] for x in items],
-                      'weight': weight,
-                      'sectors': list(set(x.get('sector', 'その他') for x in items))
+                      'weight': weight
                   })
 
               # 2. 重い順にソートして貪欲法(Greedy)で20バケットに分配
@@ -116,15 +116,12 @@ jobs:
               n_jobs = 20
               buckets = [[] for _ in range(n_jobs)]
               bucket_weights = [0] * n_jobs
-              bucket_sectors = [set() for _ in range(n_jobs)]
 
               for task in company_tasks:
                   # 現在最も軽いバケットを選択
                   idx = bucket_weights.index(min(bucket_weights))
                   buckets[idx].extend(task['ids'])
                   bucket_weights[idx] += task['weight']
-                  for s in task['sectors']:
-                      bucket_sectors[idx].add(s)
 
               res = []
               for i, b in enumerate(buckets):

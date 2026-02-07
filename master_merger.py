@@ -2,7 +2,7 @@ import time
 from pathlib import Path
 
 import pandas as pd
-from huggingface_hub import CommitOperationAdd, HfApi, hf_hub_download
+from huggingface_hub import HfApi, hf_hub_download
 from huggingface_hub.utils import HfHubHTTPError
 from loguru import logger
 
@@ -67,6 +67,9 @@ class MasterMerger:
         # 【重要】インデックス残骸を物理保存の直前で確実に排除
         if "rec" in combined_df.columns:
             combined_df = combined_df.drop(columns=["rec"])
+        # インデックス名もリセット
+        if combined_df.index.name == "rec":
+            combined_df.index.name = None
 
         # 3. 保存とアップロード
         local_file = self.data_path / f"master_bin{bin_val}_{master_type}.parquet"
@@ -82,9 +85,7 @@ class MasterMerger:
 
         if self.api:
             if defer and catalog_manager:
-                catalog_manager._commit_operations.append(
-                    CommitOperationAdd(path_in_repo=repo_path, path_or_fileobj=str(local_file))
-                )
+                catalog_manager.add_commit_operation(repo_path, local_file)
                 logger.debug(f"Master更新をバッファに追加: bin={bin_val}")
                 return True
 
