@@ -92,40 +92,59 @@ jobs:
                   print('matrix=[]')
                   sys.exit(0)
 
-              sec_map = {}
+              # 【高度化】銘柄単位(code)でグループ化し、XBRL解析の重みを加味して分配
+              # 1. 会社ごとの書類リストと重みを計算
+              company_map = {}
               for item in filtered_data:
-                  s = item.get('sector', 'その他')
-                  sec_map.setdefault(s, []).append(item['id'])
+                  code = item.get('code', '9999')
+                  company_map.setdefault(code, []).append(item)
 
-              # 書き込み競合回避のため、業種単位でバケットに分ける
-              sorted_sectors = sorted(sec_map.keys(), key=lambda x: len(sec_map[x]), reverse=True)
-              # ARG_MAX 回避のため、ジョブの分割数を増やし、1つの引数が長くなりすぎないように調整
+              company_tasks = []
+              for code, items in company_map.items():
+                  # XBRLあり=10, なし=1 の重み付け
+                  weight = sum(10 if x.get('xbrl') else 1 for x in items)
+                  company_tasks.append({
+                      'code': code,
+                      'ids': [x['id'] for x in items],
+                      'weight': weight,
+                      'sectors': list(set(x.get('sector', 'その他') for x in items))
+                  })
+
+              # 2. 重い順にソートして貪欲法(Greedy)で20バケットに分配
+              company_tasks.sort(key=lambda x: x['weight'], reverse=True)
+              
               n_jobs = 20
               buckets = [[] for _ in range(n_jobs)]
-              bucket_counts = [0] * n_jobs
-              res_meta = [{} for _ in range(n_jobs)]
+              bucket_weights = [0] * n_jobs
+              bucket_sectors = [set() for _ in range(n_jobs)]
 
-              for s in sorted_sectors:
-                  idx = bucket_counts.index(min(bucket_counts))
-                  buckets[idx].extend(sec_map[s])
-                  bucket_counts[idx] += len(sec_map[s])
-                  if 'sectors' not in res_meta[idx]: res_meta[idx]['sectors'] = []
-                  res_meta[idx]['sectors'].append(s)
+              for task in company_tasks:
+                  # 現在最も軽いバケットを選択
+                  idx = bucket_weights.index(min(bucket_weights))
+                  buckets[idx].extend(task['ids'])
+                  bucket_weights[idx] += task['weight']
+                  for s in task['sectors']:
+                      bucket_sectors[idx].add(s)
 
               res = []
               for i, b in enumerate(buckets):
                   if not b: continue
-                  sectors_str = ', '.join(res_meta[i]['sectors'])
+                  sectors_list = sorted(list(bucket_sectors[i]))
+                  sectors_str = ', '.join(sectors_list)
                   display_sectors = (sectors_str[:50] + '...') if len(sectors_str) > 50 else sectors_str
 
                   res.append({
                       'ids': ','.join(b),
                       'idx': i,
                       'count': len(b),
+                      'weight': bucket_weights[i],
                       'sectors': display_sectors
                   })
 
-              sys.stderr.write(f'対象期間内の総処理対象書類数: {len(filtered_data)} 件\n')
+              sys.stderr.write(f'総書類数: {len(filtered_data)} | 平均重み: {sum(bucket_weights)/n_jobs:.1f}\n')
+              for i, r in enumerate(res):
+                  sys.stderr.write(f'  Job {i}: weight={r[\"weight\"]}, docs={r[\"count\"]}\n')
+              
               print(f'matrix={json.dumps(res)}')
           except Exception as e:
               import traceback

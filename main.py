@@ -187,13 +187,14 @@ def run_merger(catalog, merger, run_id):
     for key, sector_df in deltas.items():
         if (key.startswith("financial_") or key.startswith("text_")) and not sector_df.empty:
             processed_count += 1
-            # キーからセクター名復元
-            sector = key.replace("financial_", "").replace("text_", "")
+            # キーから識別子(bin または sector)を復元
+            identifier = key.replace("financial_", "").replace("text_", "")
             m_type = "financial_values" if key.startswith("financial_") else "qualitative_text"
 
             # MasterMerger (Standard Mode) でアップロード
-            if not merger.merge_and_upload(sector, m_type, sector_df, worker_mode=False):
-                logger.error(f"❌ Failed to update {m_type} for sector {sector}")
+            # セクター引数は bin 識別子を渡すが、Merger内部でデータからbinを再計算するため整合性は維持される
+            if not merger.merge_and_upload(identifier, m_type, sector_df, worker_mode=False):
+                logger.error(f"❌ Failed to update {m_type} for {identifier}")
                 all_masters_success = False
 
     # --- D. Catalog Update (Commit Log) ---
@@ -350,8 +351,11 @@ def main():
 
             # クレンジング済みの証券コードを使用
             raw_sec_code = str(row.get("secCode", "")).strip()[:4]
-            # マスタ更新後なので適切な業種が取得可能
-            matrix_data.append({"id": docid, "sector": catalog.get_sector(raw_sec_code)})
+            has_xbrl = row.get("xbrlFlag") == "1"
+            # マトリックス用メタデータに解析フラグとコードを追加し、重み付け分配を可能にする
+            matrix_data.append(
+                {"id": docid, "sector": catalog.get_sector(raw_sec_code), "code": raw_sec_code, "xbrl": has_xbrl}
+            )
         print(f"JSON_MATRIX_DATA: {json.dumps(matrix_data)}")
         return
 

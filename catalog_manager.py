@@ -469,6 +469,12 @@ class CatalogManager:
                         key = "index"
                     elif fname == "name_history.parquet":
                         key = "name"
+                    elif fname.startswith("financial_values_bin"):
+                        bin_id = fname.replace("financial_values_bin", "").replace(".parquet", "")
+                        key = f"financial_bin{bin_id}"
+                    elif fname.startswith("qualitative_text_bin"):
+                        bin_id = fname.replace("qualitative_text_bin", "").replace(".parquet", "")
+                        key = f"text_bin{bin_id}"
                     elif fname.startswith("financial_values_"):
                         sector = fname.replace("financial_values_", "").replace(".parquet", "")
                         key = f"financial_{sector}"

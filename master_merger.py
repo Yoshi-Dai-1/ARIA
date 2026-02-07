@@ -30,28 +30,19 @@ class MasterMerger:
         if new_data.empty:
             return True
 
-        safe_sector = str(sector).replace("/", "・").replace("\\", "・")
-
-        # 【修正】Workerモードならデルタ保存のみ行う
-        if worker_mode:
-            if not catalog_manager or not run_id or not chunk_id:
-                logger.error("Worker mode requires catalog_manager, run_id, and chunk_id")
-                return False
-
-            filename = f"{master_type}_{safe_sector}.parquet"
-            # keyはダミーだが、save_delta側でpathsキーチェックに使われる可能性があるため
-            # 存在しないキーだとエラーになるかも?
-            # catalog_manager.save_delta の実装を見ると:
-            # if custom_filename: filename = custom_filename
-            # else: filename = paths[key]...
-            # なので、custom_filenameがあれば paths[key] はアクセスされない。
-            # ただし、念のため "master" を渡しておく。
+            # 【重要】不変シャッディング: 証券コードの上2桁(bin)で物理分割
+            # これにより業種が変わっても物理的な保存場所(パス)が不変に保たれます。
+            # 例: 7203 -> bin=72
+            bin_val = str(new_data.iloc[0]["code"])[:2]
+            filename = f"{master_type}_bin{bin_val}.parquet"
 
             return catalog_manager.save_delta(
                 key="master", df=new_data, run_id=run_id, chunk_id=chunk_id, custom_filename=filename, defer=defer
             )
 
-        repo_path = f"master/{master_type}/sector={safe_sector}/data.parquet"
+        # 物理パスの構成を bin=XX に変更
+        bin_val = str(new_data.iloc[0]["code"])[:2]
+        repo_path = f"master/{master_type}/bin={bin_val}/data.parquet"
 
         # 1. 既存データのロード
         try:
@@ -60,10 +51,10 @@ class MasterMerger:
             # 【重要】ロード直後に排除
             if "rec" in master_df.columns:
                 master_df = master_df.drop(columns=["rec"])
-            logger.debug(f"既存Master読み込み: {safe_sector} ({len(master_df)} rows)")
+            logger.debug(f"既存Master読み込み: bin={bin_val} ({len(master_df)} rows)")
             combined_df = pd.concat([master_df, new_data], ignore_index=True)
         except Exception:
-            logger.info(f"新規Master作成: {safe_sector} ({master_type})")
+            logger.info(f"新規Master作成: bin={bin_val} ({master_type})")
             combined_df = new_data
 
         # 2. 重複排除 (最新優先)
@@ -78,7 +69,7 @@ class MasterMerger:
             combined_df = combined_df.drop(columns=["rec"])
 
         # 3. 保存とアップロード
-        local_file = self.data_path / f"master_{safe_sector}_{master_type}.parquet"
+        local_file = self.data_path / f"master_bin{bin_val}_{master_type}.parquet"
 
         for col in combined_df.columns:
             if combined_df[col].dtype == "object":
@@ -94,7 +85,7 @@ class MasterMerger:
                 catalog_manager._commit_operations.append(
                     CommitOperationAdd(path_in_repo=repo_path, path_or_fileobj=str(local_file))
                 )
-                logger.debug(f"Master更新をバッファに追加: {safe_sector}")
+                logger.debug(f"Master更新をバッファに追加: bin={bin_val}")
                 return True
 
             max_retries = 5  # 3回から5回に強化
@@ -107,7 +98,7 @@ class MasterMerger:
                         repo_type="dataset",
                         token=self.hf_token,
                     )
-                    logger.success(f"Master更新成功: {safe_sector} ({master_type})")
+                    logger.success(f"Master更新成功: bin={bin_val} ({master_type})")
                     return True
                 except Exception as e:
                     if isinstance(e, HfHubHTTPError) and e.response.status_code == 429:
@@ -126,7 +117,7 @@ class MasterMerger:
                         time.sleep(wait_time)
                         continue
 
-                    logger.error(f"Masterアップロード失敗: {safe_sector} - {e}")
+                    logger.error(f"Masterアップロード失敗: bin={bin_val} - {e}")
                     return False
             return False
         return True
