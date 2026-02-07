@@ -125,8 +125,10 @@ class CatalogManager:
 
         # 【重要】カタログ保存時はモデル定義を強制し、カラム欠落や「rec」残存を物理的に排除
         if key == "catalog":
+            # NaN を None に置換して Pydantic バリデーションエラーを回避
+            df_clean = df.replace({pd.NA: None, float("nan"): None})
             validated = []
-            for rec_dict in df.to_dict("records"):
+            for rec_dict in df_clean.to_dict("records"):
                 try:
                     # CatalogRecordモデルが持つフィールドのみを抽出 (extra="ignore"相当)
                     validated.append(CatalogRecord(**rec_dict).model_dump())
@@ -134,8 +136,9 @@ class CatalogManager:
                     logger.error(f"永続化バリデーション失敗 (doc_id: {rec_dict.get('doc_id')}): {e}")
             if validated:
                 df = pd.DataFrame(validated)
-        elif "rec" in df.columns:
-            # カタログ以外でも rec があれば一律排除
+
+        # 全ての形式で物理保存の直前に rec カラムを確実に排除
+        if "rec" in df.columns:
             df = df.drop(columns=["rec"])
 
         df.to_parquet(local_file, index=False, compression="zstd")
@@ -382,8 +385,10 @@ class CatalogManager:
 
         # 【重要】デルタ保存時もモデル定義を強制し、不純物やカラム欠落を排除
         if key == "catalog":
+            # NaN を None に置換して Pydantic バリデーションエラー(NaN as float)を回避
+            df_clean = df.replace({pd.NA: None, float("nan"): None})
             validated = []
-            for rec_dict in df.to_dict("records"):
+            for rec_dict in df_clean.to_dict("records"):
                 try:
                     # CatalogRecordモデルが持つフィールドのみを抽出
                     validated.append(CatalogRecord(**rec_dict).model_dump())
@@ -391,13 +396,16 @@ class CatalogManager:
                     logger.error(f"Deltaバリデーション失敗 (doc_id: {rec_dict.get('doc_id')}): {e}")
             if validated:
                 df = pd.DataFrame(validated)
-        elif "rec" in df.columns:
+
+        # 【重要】物理保存の直前で全形式から rec を確実に排除
+        if "rec" in df.columns:
             df = df.drop(columns=["rec"])
 
         # 型の安定化
         for col in df.columns:
             if df[col].dtype == "object":
-                df[col] = df[col].astype(str)
+                # None は文字列化せずに保持 (結合時に不整合を起こさないため)
+                df[col] = df[col].apply(lambda x: str(x) if x is not None else None)
 
         df.to_parquet(local_file, index=False, compression="zstd")
 

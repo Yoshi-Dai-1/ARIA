@@ -101,8 +101,8 @@ jobs:
 
               company_tasks = []
               for code, items in company_map.items():
-                  # XBRLあり=10, なし=1 の重み付け
-                  weight = sum(10 if x.get('xbrl') else 1 for x in items)
+                  # 【再最適化】XBRLあり=20, なし=1 の重み付け
+                  weight = sum(20 if x.get('xbrl') else 1 for x in items)
                   company_tasks.append({
                       'code': code,
                       'ids': [x['id'] for x in items],
@@ -129,16 +129,11 @@ jobs:
               res = []
               for i, b in enumerate(buckets):
                   if not b: continue
-                  sectors_list = sorted(list(bucket_sectors[i]))
-                  sectors_str = ', '.join(sectors_list)
-                  display_sectors = (sectors_str[:50] + '...') if len(sectors_str) > 50 else sectors_str
-
                   res.append({
                       'ids': ','.join(b),
                       'idx': i,
                       'count': len(b),
-                      'weight': bucket_weights[i],
-                      'sectors': display_sectors
+                      'weight': bucket_weights[i]
                   })
 
               sys.stderr.write(f'総書類数: {len(filtered_data)} | 平均重み: {sum(bucket_weights)/n_jobs:.1f}\n')
@@ -163,7 +158,7 @@ jobs:
       matrix:
         chunk: ${{ fromJson(needs.discovery.outputs.matrix) }}
     timeout-minutes: 360
-    name: extract (${{ matrix.chunk.sectors }})
+    name: extract (Job ${{ matrix.chunk.idx }}/20, Weight ${{ matrix.chunk.weight }})
     steps:
       - uses: actions/checkout@v4
         with:

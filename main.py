@@ -63,6 +63,7 @@ def parse_worker(args):
 
         if df is not None and not df.empty:
             df["docid"] = docid
+            df["code"] = str(row.get("secCode", ""))[:4]
             df["submitDateTime"] = row.get("submitDateTime", "")
             for col in df.columns:
                 if df[col].dtype == "object":
@@ -636,23 +637,28 @@ def main():
 
     # 6. マスターマージ & カタログ確定
     all_success = True
-    info_df = pd.DataFrame(processed_infos)
-
-    # セクターリスト (重複排除)
-    sectors = info_df["sector"].unique() if not info_df.empty else []
+    # binリスト (重複排除)
+    processed_df = pd.DataFrame(processed_infos)
+    if not processed_df.empty:
+        # docid ごとに code を取得し、bin (=上2桁) を作成
+        processed_df["bin"] = processed_df["docID"].apply(
+            lambda x: str(next(m for m in all_meta if m["docID"] == x).get("secCode", ""))[:2]
+        )
+    bins = processed_df["bin"].unique() if not processed_df.empty else []
 
     if all_quant_dfs:
         logger.info("数値データ(financial_values)のマージを開始します...")
         try:
             full_quant_df = pd.concat(all_quant_dfs, ignore_index=True)
-            for sector in sectors:
-                sec_docids = info_df[info_df["sector"] == sector]["docID"].tolist()
-                sec_quant = full_quant_df[full_quant_df["docid"].isin(sec_docids)]
+            for b_val in bins:
+                # 当該 bin に属する docid を抽出
+                bin_docids = processed_df[processed_df["bin"] == b_val]["docID"].tolist()
+                sec_quant = full_quant_df[full_quant_df["docid"].isin(bin_docids)]
                 if sec_quant.empty:
                     continue
-                # 【修正】Master更新はWorkerモード(Delta)で実行
+                # 【修正】Master更新は bin 単位で実行
                 merger.merge_and_upload(
-                    sector,
+                    b_val,
                     "financial_values",
                     sec_quant,
                     worker_mode=True,
@@ -669,13 +675,13 @@ def main():
         logger.info("テキストデータ(qualitative_text)のマージを開始します...")
         try:
             full_text_df = pd.concat(all_text_dfs, ignore_index=True)
-            for sector in sectors:
-                sec_docids = info_df[info_df["sector"] == sector]["docID"].tolist()
-                sec_text = full_text_df[full_text_df["docid"].isin(sec_docids)]
+            for b_val in bins:
+                bin_docids = processed_df[processed_df["bin"] == b_val]["docID"].tolist()
+                sec_text = full_text_df[full_text_df["docid"].isin(bin_docids)]
                 if sec_text.empty:
                     continue
                 if not merger.merge_and_upload(
-                    sector,
+                    b_val,
                     "qualitative_text",
                     sec_text,
                     worker_mode=True,
@@ -685,7 +691,7 @@ def main():
                     defer=True,
                 ):
                     all_success = False
-                    logger.error(f"❌ Master更新失敗: {sector} (qualitative_text)")
+                    logger.error(f"❌ Master更新失敗: bin={b_val} (qualitative_text)")
         except Exception as e:
             logger.error(f"テキストデータマージ失敗: {e}")
             all_success = False
