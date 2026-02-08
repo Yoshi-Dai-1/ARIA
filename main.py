@@ -469,7 +469,7 @@ def main():
         fiscal_year = int(period_end[:4]) if period_end else None
 
         # 決算期の月数を算出 (変則決算対応)
-        num_months = 12
+        num_months = None  # デフォルトは NULL（期間不明）
         if period_start and period_end:
             try:
                 d1 = datetime.strptime(period_start, "%Y-%m-%d")
@@ -480,7 +480,7 @@ def main():
                 # 通常は 12, 9, 6, 3 などに収束。境界値ガード
                 num_months = max(1, min(24, num_months))
             except Exception:
-                pass
+                num_months = None  # 計算失敗時も NULL
 
         sec_code = row.get("secCode", "")[:4]
         # 訂正フラグ

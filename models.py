@@ -53,7 +53,7 @@ class CatalogRecord(BaseModel):
     fiscal_year: Optional[int] = None
     period_start: Optional[str] = None
     period_end: Optional[str] = None
-    num_months: Optional[int] = 12
+    num_months: Optional[int] = None
     is_amendment: bool = False
 
     # 4. Document Details (書類詳細特性)
