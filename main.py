@@ -41,7 +41,7 @@ patch_all_networking()
 DATA_PATH = Path("data").resolve()
 RAW_BASE_DIR = DATA_PATH / "raw"
 TEMP_DIR = DATA_PATH / "temp"
-PARALLEL_WORKERS = 4
+PARALLEL_WORKERS = int(os.getenv("PARALLEL_WORKERS", os.cpu_count() or 4))
 BATCH_PARALLEL_SIZE = 8
 
 is_shutting_down = False
