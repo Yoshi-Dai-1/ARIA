@@ -45,6 +45,10 @@ def get_robust_session(
     original_request = session.request
 
     def robust_request(method, url, **kwargs):
+        # httpx 互換の引数 (huggingface_hub 等で使用される) を requests 互換に変換
+        if "follow_redirects" in kwargs:
+            kwargs["allow_redirects"] = kwargs.pop("follow_redirects")
+
         if "timeout" not in kwargs:
             kwargs["timeout"] = timeout
         return original_request(method, url, **kwargs)

@@ -101,14 +101,7 @@ class EdinetEngine:
 
         df = meta.get_metadata_pandas_df()
 
-        # 【防御的処理】外部ライブラリが生成する不要なカラム（rec等）を即座に除去
-        if "rec" in df.columns:
-            df = df.drop(columns=["rec"])
-            logger.debug("Removed 'rec' column introduced by external library")
-
-        # インデックス名も念のためクリア
-        if df.index.name == "rec":
-            df.index.name = None
+        df = meta.get_metadata_pandas_df()
 
         if df.empty:
             logger.warning("No documents found for the specified period.")

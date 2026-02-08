@@ -11,10 +11,9 @@ import pandas as pd
 from dotenv import load_dotenv
 from loguru import logger
 
+# モジュールのインポート
 from catalog_manager import CatalogManager
 from edinet_engine import EdinetEngine
-
-# サブモジュールからのインポート (動的パス追加を廃止し、正規の階層で指定)
 from edinet_xbrl_prep.edinet_xbrl_prep.fs_tbl import get_fs_tbl
 from master_merger import MasterMerger
 from network_utils import patch_all_networking

@@ -4,15 +4,15 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-# HF Hub のプログレスバーを非表示にする (GHAログの視認性向上のため)
-os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
-
 import pandas as pd
 from loguru import logger
 
 from catalog_manager import CatalogManager
 from market_engine import MarketDataEngine
 from network_utils import patch_all_networking
+
+# HF Hub のプログレスバーを非表示にする (GHAログの視認性向上のため)
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 
 # 設定
 DATA_PATH = Path("data").resolve()

@@ -36,7 +36,7 @@ class CatalogManager:
         self._commit_operations = {}
         logger.info("CatalogManager を初期化しました。")
 
-        # 【究極の遡及クレンジング】全ファイルの不純物(rec)を一掃し、最新スキーマへ強制アップグレード
+        # 全ファイルの整合性チェックと最新スキーマへのアップグレード
         self._retrospective_cleanse()
 
     def _retrospective_cleanse(self):
@@ -56,12 +56,7 @@ class CatalogManager:
                     df = self._load_parquet(key)
 
                 # カタログの場合、18カラム未満なら強制保存してスキーマ拡張
-                needs_update = False
                 if key == "catalog" and len(df.columns) < 18:
-                    needs_update = True
-
-                # _clean_dataframe で既に消えているはずだが、リポジトリに反映させるために保存を予約
-                if needs_update or "rec" in df.columns:  # 実際には _load_parquet で消えているが念のため
                     self._save_and_upload(key, df, defer=True)
                     updated_count += 1
             except Exception:
@@ -84,39 +79,27 @@ class CatalogManager:
                 )
                 df_bin = pd.read_parquet(self.data_path / b_file)
 
-                # rec カラムがあれば即死
-                if "rec" in df_bin.columns or df_bin.index.name == "rec":
-                    logger.info(f"Cleaned up contaminated bin file: {b_file}")
-                    df_clean = self._clean_dataframe("master", df_bin)
+                # スキーマ不適合があればクレンジングして予約
+                # (具体的な rec チェックではなく、モデルとの不一致を基準にする)
+                df_clean = self._clean_dataframe("master", df_bin)
+                if len(df_clean.columns) != len(df_bin.columns):
+                    logger.info(f"Cleaned up bin file schema: {b_file}")
                     df_clean.to_parquet(local_tmp, index=False, compression="zstd")
                     self.add_commit_operation(b_file, local_tmp)
                     updated_count += 1
         except Exception:
             pass
 
-            logger.info(f"Added {updated_count} files to repair buffer.")
-            self.push_commit("Structural Integrity Upgrade: Unified 35-column schema and 'rec' elimination")
-
-    def _clean_dataframe(self, key: str, df: pd.DataFrame) -> pd.DataFrame:
-        """全てのDataFrameに対して共通のクレンジングを適用"""
-        if df.empty:
-            return df
-
         # 0. カラム名の正規化（空白除去）
         df.columns = df.columns.astype(str).str.strip()
 
-        # 1. 'rec' および不要なインデックス由来カラムの完全除去
-        # 完全一致だけでなく、部分一致も警戒すべきだが、まずは明確なゴミを除去
-        drop_targets = ["rec", "index", "level_0", "Unnamed: 0"]
+        # 1. 不要なインデックス由来カラムの除去
+        drop_targets = ["index", "level_0", "Unnamed: 0"]
         cols_to_drop = [c for c in drop_targets if c in df.columns]
 
         if cols_to_drop:
             logger.debug(f"{key}: Removed unnecessary columns: {cols_to_drop}")
             df = df.drop(columns=cols_to_drop)
-
-        # インデックス名が 'rec' の場合も対処
-        if df.index.name == "rec":
-            df.index.name = None
 
         # 2. カタログの場合、モデル定義のカラム構成を強制 (18カラム化)
         if key == "catalog":
@@ -575,9 +558,6 @@ class CatalogManager:
                                     repo_id=self.hf_repo, filename=remote_path, repo_type="dataset", token=self.hf_token
                                 )
                                 df = pd.read_parquet(local_path)
-                                # 【重要】デルタ読み込み時に rec カラムを排除
-                                if "rec" in df.columns:
-                                    df = df.drop(columns=["rec"])
                                 if key not in deltas:
                                     deltas[key] = []
                                 deltas[key].append(df)
