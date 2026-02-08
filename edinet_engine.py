@@ -22,16 +22,37 @@ class EdinetEngine:
         """ライブラリのバグや制約を修正するためのパッチ適用"""
 
         # サブモジュール内の verify=False を物理的に無効化する
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+
         import edinet_xbrl_prep.edinet_xbrl_prep.edinet_api as edinet_api_mod
 
         # get_edinet_metadata と request_doc の内部で直接 requests.Session().get している箇所をラップ
         original_session = requests.Session
 
         class SecureSession(original_session):
+            def __init__(self):
+                super().__init__()
+                # リトライ戦略の設定
+                retry_strategy = Retry(
+                    total=5,
+                    backoff_factor=2,
+                    status_forcelist=[429, 500, 502, 503, 504],
+                    allowed_methods=["GET"],
+                    # ネットワークエラー(ConnectionError等)もリトライ対象に
+                    raise_on_status=False,
+                )
+                adapter = HTTPAdapter(max_retries=retry_strategy)
+                self.mount("https://", adapter)
+                self.mount("http://", adapter)
+
             def get(self, url, **kwargs):
                 # EDINET関連のURLなら verify=True を強制
                 if "api.edinet-fsa.go.jp" in url:
                     kwargs["verify"] = True
+                # 接続エラー時のタイムアウト設定を確実にする
+                if "timeout" not in kwargs:
+                    kwargs["timeout"] = (20, 60)
                 return super().get(url, **kwargs)
 
         # 影響範囲を限定するため、モジュール内の requests.Session を差し替える
@@ -87,14 +108,14 @@ class EdinetEngine:
         # 【防御的処理】外部ライブラリが生成する不要なカラム（rec等）を即座に除去
         if "rec" in df.columns:
             df = df.drop(columns=["rec"])
-            logger.debug("外部ライブラリ由来の 'rec' カラムを除去しました")
+            logger.debug("Removed 'rec' column introduced by external library")
 
         # インデックス名も念のためクリア
         if df.index.name == "rec":
             df.index.name = None
 
         if df.empty:
-            logger.warning("対象期間の書類は見つかりませんでした。")
+            logger.warning("No documents found for the specified period.")
             return []
 
         records = df.to_dict("records")
@@ -105,9 +126,9 @@ class EdinetEngine:
                 doc = EdinetDocument(**rec)
                 validated_records.append(doc.model_dump(by_alias=True))
             except Exception as e:
-                logger.error(f"書類メタデータのバリデーション失敗 (docID: {rec.get('docID')}): {e}")
+                logger.error(f"Validation failed for metadata (docID: {rec.get('docID')}): {e}")
 
-        logger.success(f"メタデータ取得完了: {len(validated_records)} 件")
+        logger.info(f"Metadata fetch completed: {len(validated_records)} documents")
         return validated_records
 
     def download_doc(self, doc_id: str, save_path: Path, doc_type: int = 1) -> bool:

@@ -315,14 +315,6 @@ def main():
             print("JSON_MATRIX_DATA: []")
         return
 
-    # 【デバッグ】fetch_metadata から返されたデータを確認
-    # if all_meta:
-    #     first_meta = all_meta[0]
-    #     logger.info(f"🔍 main.py で受け取ったメタデータ（最初のレコード）のキー数: {len(first_meta)}")
-    #     logger.info(f"🔍 main.py で受け取ったメタデータのキー一覧: {list(first_meta.keys())}")
-    #     logger.info(f"🔍 main.py で受け取った periodStart: {first_meta.get('periodStart')}")
-    #     logger.info(f"🔍 main.py で受け取った periodEnd: {first_meta.get('periodEnd')}")
-
     # 【投資特化】証券コードがない（非上場企業）を即座に除外
     initial_count = len(all_meta)
 
@@ -358,7 +350,6 @@ def main():
             if catalog.is_processed(docid):
                 continue
 
-            # クレンジング済みの証券コードを使用
             raw_sec_code = str(row.get("secCode", "")).strip()[:4]
             # 解析対象の厳密判定条件をマトリックス側でも提供
             matrix_data.append(
@@ -460,13 +451,6 @@ def main():
         period_start = row.get("periodStart")
         period_end = row.get("periodEnd")
 
-        # 【デバッグ】カタログレコード作成時の period データを確認（最初の1件のみ）
-        # if len(potential_catalog_records) == 0:
-        #     logger.info(f"🔍 カタログ作成時の row キー一覧: {list(row.keys())}")
-        #     logger.info(f"🔍 カタログ作成時の periodStart: {period_start}")
-        #     logger.info(f"🔍 カタログ作成時の periodEnd: {period_end}")
-        #     logger.info(f"🔍 カタログ作成時の docID: {docid}")
-
         fiscal_year = int(period_end[:4]) if period_end else None
 
         # 決算期の月数を算出 (変則決算対応)
@@ -487,7 +471,7 @@ def main():
         # 訂正フラグ
         is_amendment = row.get("withdrawalStatus") != "0" or "訂正" in title
 
-        # カタログ情報のベースを保持 (models.py の定義順に準拠)
+        # カタログ情報のベースを保持 (models.py の定義順に準拠 - 18カラム構成)
         record = {
             "doc_id": docid,
             "code": sec_code,
@@ -503,26 +487,9 @@ def main():
             "submit_at": row.get("submitDateTime", ""),
             "title": title,
             "edinet_code": row.get("edinetCode", ""),
-            "jcn": row.get("JCN"),
-            "fund_code": row.get("fundCode"),
-            "issuer_edinet_code": row.get("issuerEdinetCode"),
-            "subject_edinet_code": row.get("subjectEdinetCode"),
-            "subsidiary_edinet_code": row.get("subsidiaryEdinetCode"),
-            "current_report_reason": row.get("currentReportReason"),
-            "parent_doc_id": row.get("parentDocID"),
-            "ope_date_time": row.get("opeDateTime"),
-            "withdrawal_status": row.get("withdrawalStatus", "0"),
-            "doc_info_edit_status": row.get("docInfoEditStatus", "0"),
-            "disclosure_status": row.get("disclosureStatus", "0"),
-            "xbrl_flag": row.get("xbrlFlag", "0"),
-            "pdf_flag": row.get("pdfFlag", "0"),
-            "attach_doc_flag": row.get("attachDocFlag", "0"),
-            "english_doc_flag": row.get("englishDocFlag", "0"),
-            "csv_flag": row.get("csvFlag", "0"),
-            "legal_status": row.get("legalStatus", "0"),
-            "raw_zip_path": f"raw/edinet/year={y}/month={m}/{docid}.zip" if zip_ok else "",
-            "pdf_path": f"raw/edinet/year={y}/month={m}/{docid}.pdf" if pdf_ok else "",
-            "processed_status": "success" if (zip_ok or pdf_ok) else "failure",
+            "raw_zip_path": f"raw/edinet/{docid}.zip" if zip_ok else None,
+            "pdf_path": f"raw/edinet/{docid}.pdf" if pdf_ok else None,
+            "processed_status": "success",
             "source": "EDINET",
         }
         potential_catalog_records[docid] = record
@@ -730,7 +697,7 @@ def main():
                     defer=True,
                 ):
                     all_success = False
-                    logger.error(f"❌ Master更新失敗: bin={b_val} (qualitative_text)")
+                    logger.error(f"Master更新失敗: bin={b_val} (qualitative_text)")
         except Exception as e:
             logger.error(f"テキストデータマージ失敗: {e}")
             all_success = False
@@ -748,16 +715,14 @@ def main():
         final_len = len(df_cat)
 
         if initial_len > final_len:
-            logger.info(
-                f"💡 ID重複を排除しました: {initial_len} 件 -> {final_len} 件 (減少: {initial_len - final_len} 件)"
-            )
+            logger.info(f"Duplicate IDs removed: {initial_len} -> {final_len} (Reduced: {initial_len - final_len})")
 
         logger.info(f"全書類の Catalog Delta を保存します ({final_len} 件)")
         catalog.save_delta("catalog", df_cat, run_id, chunk_id, defer=True)
 
     # 【修正】all_success が False の場合の処理を追加
     if not all_success:
-        logger.warning("⚠️ 一部のMaster更新に失敗しました。次回実行時に再試行されます。")
+        logger.warning("一部のMaster更新に失敗しました。次回実行時に再試行されます。")
 
     # カタログ更新（全データ処理後）
     # アップロードに成功したdocid (Quant/Text問わず、何らかのデータが保存できたもの)
@@ -779,9 +744,9 @@ def main():
             # デルタと成功フラグを一括コミット (ここで 1 コミット)
             catalog.mark_chunk_success(run_id, chunk_id, defer=True)
             if catalog.push_commit(f"Worker Success: {run_id}/{chunk_id}"):
-                logger.success(f"=== Worker完了: 全データをアップロードしました ({run_id}/{chunk_id}) ===")
+                logger.info(f"=== Worker完了: 全データをアップロードしました ({run_id}/{chunk_id}) ===")
             else:
-                logger.error("❌ 最終コミットに失敗しました")
+                logger.error("最終コミットに失敗しました")
                 sys.exit(1)
         else:
             logger.error("=== パイプライン停止 (Master保存エラー等) ===")

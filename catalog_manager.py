@@ -44,7 +44,7 @@ class CatalogManager:
         if not self.api:
             return
 
-        logger.info("🕵️ 全Parquetファイルの健全性チェックを開始します...")
+        logger.info("Starting integrity check for all Parquet files...")
         updated_count = 0
 
         # 1. 定義済み主要ファイルのチェック
@@ -86,7 +86,7 @@ class CatalogManager:
 
                 # rec カラムがあれば即死
                 if "rec" in df_bin.columns or df_bin.index.name == "rec":
-                    logger.info(f"🧹 Binファイルの汚染を検知: {b_file}")
+                    logger.info(f"Cleaned up contaminated bin file: {b_file}")
                     df_clean = self._clean_dataframe("master", df_bin)
                     df_clean.to_parquet(local_tmp, index=False, compression="zstd")
                     self.add_commit_operation(b_file, local_tmp)
@@ -94,9 +94,8 @@ class CatalogManager:
         except Exception:
             pass
 
-        if updated_count > 0:
-            logger.success(f"✅ {updated_count} 個のファイルを修復バッファに追加しました。")
-            self.push_commit("Structural Integrity Upgrade: Unified 18-column schema and 'rec' elimination")
+            logger.info(f"Added {updated_count} files to repair buffer.")
+            self.push_commit("Structural Integrity Upgrade: Unified 35-column schema and 'rec' elimination")
 
     def _clean_dataframe(self, key: str, df: pd.DataFrame) -> pd.DataFrame:
         """全てのDataFrameに対して共通のクレンジングを適用"""
@@ -112,7 +111,7 @@ class CatalogManager:
         cols_to_drop = [c for c in drop_targets if c in df.columns]
 
         if cols_to_drop:
-            logger.debug(f"🧹 {key}: 不要カラムを除去しました: {cols_to_drop}")
+            logger.debug(f"{key}: Removed unnecessary columns: {cols_to_drop}")
             df = df.drop(columns=cols_to_drop)
 
         # インデックス名が 'rec' の場合も対処
@@ -172,7 +171,7 @@ class CatalogManager:
             logger.debug(f"ロード成功: {filename} ({len(df)} rows)")
             return df
         except RepositoryNotFoundError:
-            logger.error(f"❌ リポジトリが見つかりません: {self.hf_repo}")
+            logger.error(f"リポジトリが見つかりません: {self.hf_repo}")
             logger.error("環境変数 HF_REPO の設定を確認してください")
             raise
         except EntryNotFoundError:
@@ -191,7 +190,7 @@ class CatalogManager:
                 return pd.DataFrame(columns=["code", "old_name", "new_name", "change_date"])
             return pd.DataFrame()
         except HfHubHTTPError as e:
-            logger.error(f"❌ HF API エラー ({e.response.status_code}): {filename}")
+            logger.error(f"HF API エラー ({e.response.status_code}): {filename}")
             logger.error(f"詳細: {e}")
             if e.response.status_code == 401:
                 logger.error("認証エラー: HF_TOKEN が無効または期限切れの可能性があります")
@@ -199,7 +198,7 @@ class CatalogManager:
                 logger.error("アクセス拒否: リポジトリへのアクセス権限がありません")
             raise
         except Exception as e:
-            logger.error(f"❌ 予期しないエラー: {filename} - {type(e).__name__}: {e}")
+            logger.error(f"予期しないエラー: {filename} - {type(e).__name__}: {e}")
             raise
 
     def is_processed(self, doc_id: str) -> bool:
@@ -235,7 +234,7 @@ class CatalogManager:
             logger.success(f"✅ カタログ更新成功: {len(validated)} 件")
             return True
         else:
-            logger.error("❌ カタログのアップロードに失敗したため、メモリ上の状態を保持します")
+            logger.error("カタログのアップロードに失敗したため、メモリ上の状態を保持します")
             return False
 
     def _save_and_upload(self, key: str, df: pd.DataFrame, defer: bool = False) -> bool:
