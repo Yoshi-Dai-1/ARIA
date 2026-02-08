@@ -72,11 +72,6 @@ def run_market_pipeline(target_date: str):
             merged_master = pd.concat([current_master, new_master], ignore_index=True).drop_duplicates(
                 subset=["code"], keep="last"
             )
-            # 【重要】recカラムの絶対除去
-            if "rec" in merged_master.columns:
-                merged_master.drop(columns=["rec"], inplace=True)
-            if merged_master.index.name == "rec":
-                merged_master.index.name = None
 
             # 型を強制（文字列化を防ぐ）
             if merged_master["is_active"].dtype == "object":
@@ -105,9 +100,6 @@ def run_market_pipeline(target_date: str):
 
             # Listing Events生成
             old_listing = catalog.get_listing_history()
-            # 【重要】読み込みデータからの汚染除去
-            if hasattr(old_listing, "columns") and "rec" in old_listing.columns:
-                old_listing.drop(columns=["rec"], inplace=True)
 
             listing_events = engine.update_listing_history(catalog.master_df, new_master, old_listing)
 
@@ -119,9 +111,6 @@ def run_market_pipeline(target_date: str):
             # Save History (Deferred)
             if not listing_events.empty:
                 merged_hist = pd.concat([old_listing, listing_events], ignore_index=True).drop_duplicates()
-                # rec 削除
-                if "rec" in merged_hist.columns:
-                    merged_hist.drop(columns=["rec"], inplace=True)
                 catalog._save_and_upload("listing", merged_hist, defer=True)
                 logger.info("Listing History updated in buffer.")
             elif old_listing.empty:

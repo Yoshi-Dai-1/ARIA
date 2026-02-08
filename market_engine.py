@@ -178,13 +178,7 @@ class MarketDataEngine:
     ) -> pd.DataFrame:
         """上場・廃止イベントの生成 (Listing History)"""
         # ロジックは従来のHistoryEngineと同じだが、今回は分離実装
-        if old_master.empty:
-            # マスタ自体が空ならイベントもなし（初回マスタ作成時は別途処理されるべきだが、
-            # update_listing_historyはあくまで差分更新用。
-            # ただし、マスタはあるがヒストリーがない場合の初期化は必要）
-            return pd.DataFrame()
-
-        old_codes = set(old_master["code"])
+        old_codes = set(old_master["code"]) if not old_master.empty else set()
         new_codes = set(new_master["code"])
         events = []
         today = datetime.now().strftime("%Y-%m-%d")
