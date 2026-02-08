@@ -15,6 +15,7 @@ from network_utils import patch_all_networking
 
 # CI環境でのプログレスバーを無効化 (ログの肥大化・視認性低下を防ぐ)
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+os.environ["TQDM_DISABLE"] = "1"
 tqdm.get_lock().locks = []  # tqdm のマルチプロセス安全用のロックを無効化（オプション）
 
 

@@ -20,8 +20,9 @@ from edinet_xbrl_prep.edinet_xbrl_prep.fs_tbl import get_fs_tbl
 from master_merger import MasterMerger
 from network_utils import patch_all_networking
 
-# HF Hub のプログレスバーを非表示にする (GHAログの視認性向上のため)
+# CI環境でのログ視認性向上のための設定
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+os.environ["TQDM_DISABLE"] = "1"
 
 
 # tqdm を無効化

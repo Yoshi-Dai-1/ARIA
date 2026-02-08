@@ -99,6 +99,12 @@ class CatalogManager:
         # 0. カラム名の正規化（空白除去）
         df.columns = df.columns.astype(str).str.strip()
 
+        # 【追加】全文字列カラムの空文字を明示的に None (NULL) に統一
+        for col in df.columns:
+            if df[col].dtype == "object":
+                # 空白のみの文字列も NULL 扱いとする
+                df[col] = df[col].apply(lambda x: None if (isinstance(x, str) and not x.strip()) else x)
+
         # 1. 不要なインデックス由来カラムの除去
         drop_targets = ["index", "level_0", "Unnamed: 0"]
         cols_to_drop = [c for c in drop_targets if c in df.columns]
@@ -131,6 +137,13 @@ class CatalogManager:
             df = pd.DataFrame(validated)
             # カラム順をモデル定義に合わせる
             df = df[expected_cols]
+
+            # 【重要】データ型の正規化 (2024.0 回避のための Int64 適用)
+            # pandas の浮動小数点化を阻止し、整数または NULL として保存
+            if "fiscal_year" in df.columns:
+                df["fiscal_year"] = pd.to_numeric(df["fiscal_year"], errors="coerce").astype("Int64")
+            if "num_months" in df.columns:
+                df["num_months"] = pd.to_numeric(df["num_months"], errors="coerce").astype("Int64")
 
         # 3. マスタの場合、codeを確実に文字列化
         if key == "master" and "code" in df.columns:
