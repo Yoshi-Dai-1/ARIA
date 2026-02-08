@@ -6,9 +6,9 @@ from pathlib import Path
 from typing import Dict
 
 import pandas as pd
-import requests
 from loguru import logger
-from tenacity import retry, stop_after_attempt, wait_exponential
+
+from network_utils import get_robust_session
 
 
 class IndexStrategy(ABC):
@@ -39,18 +39,18 @@ class NikkeiStrategy(IndexStrategy):
             "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
         }
 
-    @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=2, min=4, max=20))
     def fetch_data(self) -> pd.DataFrame:
         logger.info("日経225構成銘柄を取得中 (Archive CSV)...")
+        session = get_robust_session()
         try:
-            r = requests.get(self.url, headers=self.headers, timeout=60)
+            r = session.get(self.url, headers=self.headers)
             if r.status_code != 200:
                 logger.error(f"日経225取得エラー: HTTP {r.status_code}")
                 # HTTP 403 の場合は詳細なメッセージを出す
                 if r.status_code == 403:
                     logger.error("日経新聞社サイトからアクセスが拒絶されました (403)。")
                 r.raise_for_status()
-        except requests.exceptions.RequestException as e:
+        except Exception as e:
             logger.error(f"日経225リクエスト失敗: {e}")
             raise
 
@@ -103,7 +103,8 @@ class TopixStrategy(IndexStrategy):
 
     def fetch_data(self) -> pd.DataFrame:
         logger.info("TOPIX構成銘柄を取得中...")
-        r = requests.get(self.url)
+        session = get_robust_session()
+        r = session.get(self.url)
         r.raise_for_status()
 
         try:
@@ -150,11 +151,11 @@ class MarketDataEngine:
         }
         self.jpx_url = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     def fetch_jpx_master(self) -> pd.DataFrame:
         """JPXから最新の銘柄一覧を取得 (Retry付き)"""
         logger.info("JPX銘柄マスタを取得中...")
-        r = requests.get(self.jpx_url, stream=True)
+        session = get_robust_session()
+        r = session.get(self.jpx_url, stream=True)
         r.raise_for_status()
 
         # 保存して読み込む (Excel形式のため)
@@ -212,7 +213,6 @@ class MarketDataEngine:
 
         return pd.DataFrame(events)
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     def fetch_index_data(self, index_name: str) -> pd.DataFrame:
         """指数データの取得 (Retry付き)"""
         if index_name not in self.strategies:

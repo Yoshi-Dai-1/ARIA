@@ -20,43 +20,39 @@ class EdinetEngine:
 
     def _apply_monkypatches(self):
         """ライブラリのバグや制約を修正するためのパッチ適用"""
+        from network_utils import patch_all_networking
 
-        # サブモジュール内の verify=False を物理的に無効化する
-        from requests.adapters import HTTPAdapter
-        from urllib3.util.retry import Retry
+        # 1. 全体的な通信の堅牢化を適用
+        patch_all_networking()
 
+        # 2. サブモジュール内の verify=False を物理的に無効化する
         import edinet_xbrl_prep.edinet_xbrl_prep.edinet_api as edinet_api_mod
+        from network_utils import get_robust_session
 
         # get_edinet_metadata と request_doc の内部で直接 requests.Session().get している箇所をラップ
-        original_session = requests.Session
 
-        class SecureSession(original_session):
+        # 共通の堅牢なセッションを取得
+        robust_session = get_robust_session()
+
+        class SecureSessionAdapter:
+            """requests.Session の振る舞いを模倣しつつ、実体は共有の robust_session を使うアダプタ"""
+
             def __init__(self):
-                super().__init__()
-                # リトライ戦略の設定
-                retry_strategy = Retry(
-                    total=5,
-                    backoff_factor=2,
-                    status_forcelist=[429, 500, 502, 503, 504],
-                    allowed_methods=["GET"],
-                    # ネットワークエラー(ConnectionError等)もリトライ対象に
-                    raise_on_status=False,
-                )
-                adapter = HTTPAdapter(max_retries=retry_strategy)
-                self.mount("https://", adapter)
-                self.mount("http://", adapter)
+                self._session = robust_session
 
             def get(self, url, **kwargs):
                 # EDINET関連のURLなら verify=True を強制
                 if "api.edinet-fsa.go.jp" in url:
                     kwargs["verify"] = True
-                # 接続エラー時のタイムアウト設定を確実にする
-                if "timeout" not in kwargs:
-                    kwargs["timeout"] = (20, 60)
-                return super().get(url, **kwargs)
+                return self._session.get(url, **kwargs)
+
+            def mount(self, prefix, adapter):
+                self._session.mount(prefix, adapter)
 
         # 影響範囲を限定するため、モジュール内の requests.Session を差し替える
-        edinet_api_mod.requests.Session = SecureSession
+        # edinet_xbrl_prep は `with requests.Session() as s:` のように使うため、
+        # クラス自体を呼び出し可能なもの（コンストラクタ）として差し替える必要がある。
+        edinet_api_mod.requests.Session = SecureSessionAdapter
 
         # account_list_common._download_taxonomy をモンキーパッチ
         # closureで self.taxonomy_urls を参照できるようにする

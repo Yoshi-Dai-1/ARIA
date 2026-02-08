@@ -7,20 +7,23 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
 
-# HF Hub のプログレスバーを非表示にする (GHAログの視認性向上のため)
-os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
-
 import pandas as pd
 from dotenv import load_dotenv
 from loguru import logger
 
-# モジュールのインポート
 from catalog_manager import CatalogManager
 from edinet_engine import EdinetEngine
 
 # サブモジュールからのインポート (動的パス追加を廃止し、正規の階層で指定)
 from edinet_xbrl_prep.edinet_xbrl_prep.fs_tbl import get_fs_tbl
 from master_merger import MasterMerger
+from network_utils import patch_all_networking
+
+# HF Hub のプログレスバーを非表示にする (GHAログの視認性向上のため)
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+
+# 全体的な通信の堅牢化を適用
+patch_all_networking()
 
 # 設定
 DATA_PATH = Path("data").resolve()
@@ -447,9 +450,9 @@ def main():
         ord_c = row.get("ordinanceCode")
         form_c = row.get("formCode")
 
-        # 期末日・決算年度・決算期間（月数）の抽出
-        period_start = row.get("periodStart")
-        period_end = row.get("periodEnd")
+        # 期末日・決算年度・決算期間（月数）の抽出 (NULL正規化)
+        period_start = (row.get("periodStart") or "").strip() or None
+        period_end = (row.get("periodEnd") or "").strip() or None
 
         fiscal_year = int(period_end[:4]) if period_end else None
 
@@ -471,22 +474,22 @@ def main():
         # 訂正フラグ
         is_amendment = row.get("withdrawalStatus") != "0" or "訂正" in title
 
-        # カタログ情報のベースを保持 (models.py の定義順に準拠 - 18カラム構成)
+        # カタログ情報のベースを保持 (models.py の解析最適化順序に準拠 - 18カラム構成)
         record = {
             "doc_id": docid,
             "code": sec_code,
-            "company_name": row.get("filerName", "Unknown"),
+            "company_name": (row.get("filerName") or "").strip() or "Unknown",
+            "edinet_code": (row.get("edinetCode") or "").strip() or None,
+            "submit_at": (row.get("submitDateTime") or "").strip() or None,
             "fiscal_year": fiscal_year,
             "period_start": period_start,
             "period_end": period_end,
             "num_months": num_months,
             "is_amendment": is_amendment,
             "doc_type": dtc or "",
-            "form_code": form_c,
-            "ordinance_code": ord_c,
-            "submit_at": row.get("submitDateTime", ""),
-            "title": title,
-            "edinet_code": row.get("edinetCode", ""),
+            "title": (title or "").strip() or None,
+            "form_code": (form_c or "").strip() or None,
+            "ordinance_code": (ord_c or "").strip() or None,
             "raw_zip_path": f"raw/edinet/{docid}.zip" if zip_ok else None,
             "pdf_path": f"raw/edinet/{docid}.pdf" if pdf_ok else None,
             "processed_status": "success",

@@ -38,29 +38,31 @@ class EdinetDocument(BaseModel):
 
 
 class CatalogRecord(BaseModel):
-    """統合ドキュメントカタログ (documents_index.parquet) のレコードモデル (18カラム構成)"""
+    """統合ドキュメントカタログ (documents_index.parquet) のレコードモデル (18カラム構成 - 解析最適化順序)"""
 
-    # 1. 識別・基本情報系
+    # 1. Identifiers (識別子・基本情報)
     doc_id: str
     code: str
     company_name: str
+    edinet_code: Optional[str] = None
 
-    # 2. 分析・監査軸系 (変則決算・期間検証・訂正有無を即座に判定可能にする)
+    # 2. Timeline (時間軸 - 解析における最重要キー)
+    submit_at: str
+
+    # 3. Domain/Fiscal (決算・期間属性)
     fiscal_year: Optional[int] = None
     period_start: Optional[str] = None
     period_end: Optional[str] = None
     num_months: Optional[int] = 12
     is_amendment: bool = False
 
-    # 3. 書類メタデータ系 (EDINET属性・検索用)
+    # 4. Document Details (書類詳細特性)
     doc_type: str
+    title: str
     form_code: Optional[str] = None
     ordinance_code: Optional[str] = None
-    submit_at: str
-    title: str
-    edinet_code: Optional[str] = None
 
-    # 4. システム・インフラ系 (ストレージ・ステータス)
+    # 5. Infrastructure (システム管理情報)
     raw_zip_path: Optional[str] = None
     pdf_path: Optional[str] = None
     processed_status: Optional[str] = "success"

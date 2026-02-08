@@ -12,6 +12,7 @@ from loguru import logger
 
 from catalog_manager import CatalogManager
 from market_engine import MarketDataEngine
+from network_utils import patch_all_networking
 
 # 設定
 DATA_PATH = Path("data").resolve()
@@ -20,6 +21,9 @@ TEMP_DIR = DATA_PATH / "temp"
 
 def run_market_pipeline(target_date: str):
     logger.info(f"=== Market Data Pipeline Started (Target Date: {target_date}) ===")
+
+    # 全体的な通信の堅牢化を適用
+    patch_all_networking()
 
     hf_token = os.getenv("HF_TOKEN")
     hf_repo = os.getenv("HF_REPO")
