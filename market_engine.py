@@ -178,12 +178,22 @@ class MarketDataEngine:
         """上場・廃止イベントの生成 (Listing History)"""
         # ロジックは従来のHistoryEngineと同じだが、今回は分離実装
         if old_master.empty:
+            # マスタ自体が空ならイベントもなし（初回マスタ作成時は別途処理されるべきだが、
+            # update_listing_historyはあくまで差分更新用。
+            # ただし、マスタはあるがヒストリーがない場合の初期化は必要）
             return pd.DataFrame()
 
         old_codes = set(old_master["code"])
         new_codes = set(new_master["code"])
         events = []
         today = datetime.now().strftime("%Y-%m-%d")
+
+        # Historyが存在しない場合（初期化）
+        if old_history is None or old_history.empty:
+            logger.info("既存のListing Historyが存在しません。現在の全銘柄をLISTINGとして初期化します。")
+            for code in new_codes:
+                events.append({"code": code, "type": "LISTING", "event_date": today})
+            return pd.DataFrame(events)
 
         # 過去の廃止銘柄
         delisted_codes = set()

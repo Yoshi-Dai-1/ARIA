@@ -60,7 +60,26 @@ class CatalogRecord(BaseModel):
     title: str
     edinet_code: Optional[str] = None
 
-    # 4. システム・インフラ系 (ストレージ・ステータス)
+    # 4. 詳細メタデータ系 (API v2 追加フィールド)
+    jcn: Optional[str] = None
+    fund_code: Optional[str] = None
+    issuer_edinet_code: Optional[str] = None
+    subject_edinet_code: Optional[str] = None
+    subsidiary_edinet_code: Optional[str] = None
+    current_report_reason: Optional[str] = None
+    parent_doc_id: Optional[str] = None
+    ope_date_time: Optional[str] = None
+    withdrawal_status: Optional[str] = "0"
+    doc_info_edit_status: Optional[str] = "0"
+    disclosure_status: Optional[str] = "0"
+    xbrl_flag: Optional[str] = "0"
+    pdf_flag: Optional[str] = "0"
+    attach_doc_flag: Optional[str] = "0"
+    english_doc_flag: Optional[str] = "0"
+    csv_flag: Optional[str] = "0"
+    legal_status: Optional[str] = "0"
+
+    # 5. システム・インフラ系 (ストレージ・ステータス)
     raw_zip_path: Optional[str] = None
     pdf_path: Optional[str] = None
     processed_status: Optional[str] = "success"
