@@ -770,21 +770,33 @@ def main():
         # 360行目で都度呼んでいるので、ここは「最終的な完了ログ」だけで良い可能性。
         pass
 
-    if all_success:
-        # RAWフォルダの一括アップロード (ここで 1 コミット)
-        logger.info("ファイルを一括アップロードしています...")
-        catalog.upload_raw_folder(RAW_BASE_DIR, path_in_repo="raw", defer=True)
+    try:
+        if all_success:
+            # RAWフォルダの一括アップロード (ここで 1 コミット)
+            logger.info("ファイルを一括アップロードしています...")
+            catalog.upload_raw_folder(RAW_BASE_DIR, path_in_repo="raw", defer=True)
 
-        # デルタと成功フラグを一括コミット (ここで 1 コミット)
-        catalog.mark_chunk_success(run_id, chunk_id, defer=True)
-        if catalog.push_commit(f"Worker Success: {run_id}/{chunk_id}"):
-            logger.success(f"=== Worker完了: 全データをアップロードしました ({run_id}/{chunk_id}) ===")
+            # デルタと成功フラグを一括コミット (ここで 1 コミット)
+            catalog.mark_chunk_success(run_id, chunk_id, defer=True)
+            if catalog.push_commit(f"Worker Success: {run_id}/{chunk_id}"):
+                logger.success(f"=== Worker完了: 全データをアップロードしました ({run_id}/{chunk_id}) ===")
+            else:
+                logger.error("❌ 最終コミットに失敗しました")
+                sys.exit(1)
         else:
-            logger.error("❌ 最終コミットに失敗しました")
+            logger.error("=== パイプライン停止 (Master保存エラー等) ===")
             sys.exit(1)
-    else:
-        logger.error("=== パイプライン停止 (Master保存エラー等) ===")
-        sys.exit(1)
+    finally:
+        # Cleanup Temporary Directories
+        import shutil
+
+        # Cleanup TEMP_DIR
+        if TEMP_DIR.exists():
+            try:
+                shutil.rmtree(TEMP_DIR)
+                logger.info(f"Cleaned up temporary directory: {TEMP_DIR}")
+            except Exception as e:
+                logger.warning(f"Failed to cleanup {TEMP_DIR}: {e}")
 
 
 if __name__ == "__main__":

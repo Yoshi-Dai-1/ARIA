@@ -103,9 +103,19 @@ class CatalogManager:
         if df.empty:
             return df
 
-        # 1. 絶対に rec カラムを排除
-        if "rec" in df.columns:
-            df = df.drop(columns=["rec"])
+        # 0. カラム名の正規化（空白除去）
+        df.columns = df.columns.astype(str).str.strip()
+
+        # 1. 'rec' および不要なインデックス由来カラムの完全除去
+        # 完全一致だけでなく、部分一致も警戒すべきだが、まずは明確なゴミを除去
+        drop_targets = ["rec", "index", "level_0", "Unnamed: 0"]
+        cols_to_drop = [c for c in drop_targets if c in df.columns]
+
+        if cols_to_drop:
+            logger.debug(f"🧹 {key}: 不要カラムを除去しました: {cols_to_drop}")
+            df = df.drop(columns=cols_to_drop)
+
+        # インデックス名が 'rec' の場合も対処
         if df.index.name == "rec":
             df.index.name = None
 
