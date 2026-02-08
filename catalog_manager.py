@@ -77,6 +77,7 @@ class CatalogManager:
                     token=self.hf_token,
                     local_dir=str(self.data_path),
                     local_dir_use_symlinks=False,
+                    disable_tqdm=True,
                 )
                 df_bin = pd.read_parquet(self.data_path / b_file)
 
@@ -165,7 +166,7 @@ class CatalogManager:
         filename = self.paths[key]
         try:
             local_path = hf_hub_download(
-                repo_id=self.hf_repo, filename=filename, repo_type="dataset", token=self.hf_token
+                repo_id=self.hf_repo, filename=filename, repo_type="dataset", token=self.hf_token, disable_tqdm=True
             )
             df = pd.read_parquet(local_path)
             # 【絶対ガード】読み込み直後にクレンジング
@@ -272,6 +273,7 @@ class CatalogManager:
                         repo_id=self.hf_repo,
                         repo_type="dataset",
                         token=self.hf_token,
+                        progress_bar=False,
                     )
                     logger.success(f"アップロード成功: {filename}")
                     return True
@@ -629,6 +631,7 @@ class CatalogManager:
                     operations=ops_list,
                     commit_message=message,
                     token=self.hf_token,
+                    progress_bar=False,
                 )
                 logger.success(f"✅ バッチコミット成功: {len(ops_list)} 操作")
                 self._commit_operations = {}  # クリア

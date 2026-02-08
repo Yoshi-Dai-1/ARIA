@@ -1,5 +1,10 @@
-import argparse
 import os
+
+# CI環境でのプログレスバーを無効化 (ログの肥大化・視認性低下を防ぐため全ライブラリ前に設定)
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+os.environ["TQDM_DISABLE"] = "1"
+
+import argparse
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -12,11 +17,6 @@ from tqdm import tqdm
 from catalog_manager import CatalogManager
 from market_engine import MarketDataEngine
 from network_utils import patch_all_networking
-
-# CI環境でのプログレスバーを無効化 (ログの肥大化・視認性低下を防ぐ)
-os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
-os.environ["TQDM_DISABLE"] = "1"
-tqdm.get_lock().locks = []  # tqdm のマルチプロセス安全用のロックを無効化（オプション）
 
 
 def no_op_tqdm(*args, **kwargs):
