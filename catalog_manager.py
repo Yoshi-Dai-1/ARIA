@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict, List
 
 import pandas as pd
+import requests
 from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi, hf_hub_download
 from huggingface_hub.utils import EntryNotFoundError, HfHubHTTPError, RepositoryNotFoundError
 from loguru import logger
@@ -157,7 +158,16 @@ class CatalogManager:
             logger.error(f"リポジトリが見つかりません: {self.hf_repo}")
             logger.error("環境変数 HF_REPO の設定を確認してください")
             raise
-        except EntryNotFoundError:
+        except (EntryNotFoundError, requests.exceptions.HTTPError) as e:
+            # EntryNotFoundError (HFライブラリ) または 生の 404 (パッチ適用時) をハンドリング
+            is_404 = isinstance(e, EntryNotFoundError) or (
+                hasattr(e, "response") and e.response is not None and e.response.status_code == 404
+            )
+
+            if not is_404:
+                # 404 以外なら上位または Exception へ飛ばす
+                raise e
+
             logger.info(f"ファイルが存在しないため新規作成します: {filename}")
             if key == "catalog":
                 cols = list(CatalogRecord.model_fields.keys())
