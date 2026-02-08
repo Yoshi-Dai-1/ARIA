@@ -8,8 +8,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
+import tqdm as tqdm_mod
 from dotenv import load_dotenv
 from loguru import logger
+from tqdm import tqdm
 
 # モジュールのインポート
 from catalog_manager import CatalogManager
@@ -20,6 +22,15 @@ from network_utils import patch_all_networking
 
 # HF Hub のプログレスバーを非表示にする (GHAログの視認性向上のため)
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+
+
+# tqdm を無効化
+def no_op_tqdm(*args, **kwargs):
+    kwargs.update({"disable": True})
+    return tqdm(*args, **kwargs)
+
+
+tqdm_mod.tqdm = no_op_tqdm
 
 # 全体的な通信の堅牢化を適用
 patch_all_networking()

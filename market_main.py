@@ -5,14 +5,25 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
+import tqdm as tqdm_mod
 from loguru import logger
+from tqdm import tqdm
 
 from catalog_manager import CatalogManager
 from market_engine import MarketDataEngine
 from network_utils import patch_all_networking
 
-# HF Hub のプログレスバーを非表示にする (GHAログの視認性向上のため)
+# CI環境でのプログレスバーを無効化 (ログの肥大化・視認性低下を防ぐ)
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+tqdm.get_lock().locks = []  # tqdm のマルチプロセス安全用のロックを無効化（オプション）
+
+
+def no_op_tqdm(*args, **kwargs):
+    kwargs.update({"disable": True})
+    return tqdm(*args, **kwargs)
+
+
+tqdm_mod.tqdm = no_op_tqdm
 
 # 設定
 DATA_PATH = Path("data").resolve()

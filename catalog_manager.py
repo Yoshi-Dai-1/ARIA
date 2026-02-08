@@ -91,6 +91,11 @@ class CatalogManager:
         except Exception:
             pass
 
+    def _clean_dataframe(self, key: str, df: pd.DataFrame) -> pd.DataFrame:
+        """全てのDataFrameに対して共通のクレンジングを適用"""
+        if df.empty:
+            return df
+
         # 0. カラム名の正規化（空白除去）
         df.columns = df.columns.astype(str).str.strip()
 

@@ -122,4 +122,4 @@ def patch_all_networking():
         except Exception as e:
             logger.debug(f"Failed to patch {mod_name}: {e}")
 
-    logger.success("Global Networking Stability: Optimized to World-Class Level.")
+    logger.debug("Network patching completed.")
