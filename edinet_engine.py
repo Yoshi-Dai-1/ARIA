@@ -83,6 +83,16 @@ class EdinetEngine:
         meta.set_data(res_results)
 
         df = meta.get_metadata_pandas_df()
+
+        # 【防御的処理】外部ライブラリが生成する不要なカラム（rec等）を即座に除去
+        if "rec" in df.columns:
+            df = df.drop(columns=["rec"])
+            logger.debug("外部ライブラリ由来の 'rec' カラムを除去しました")
+
+        # インデックス名も念のためクリア
+        if df.index.name == "rec":
+            df.index.name = None
+
         if df.empty:
             logger.warning("対象期間の書類は見つかりませんでした。")
             return []

@@ -315,6 +315,14 @@ def main():
             print("JSON_MATRIX_DATA: []")
         return
 
+    # 【デバッグ】fetch_metadata から返されたデータを確認
+    # if all_meta:
+    #     first_meta = all_meta[0]
+    #     logger.info(f"🔍 main.py で受け取ったメタデータ（最初のレコード）のキー数: {len(first_meta)}")
+    #     logger.info(f"🔍 main.py で受け取ったメタデータのキー一覧: {list(first_meta.keys())}")
+    #     logger.info(f"🔍 main.py で受け取った periodStart: {first_meta.get('periodStart')}")
+    #     logger.info(f"🔍 main.py で受け取った periodEnd: {first_meta.get('periodEnd')}")
+
     # 【投資特化】証券コードがない（非上場企業）を即座に除外
     initial_count = len(all_meta)
 
@@ -451,6 +459,14 @@ def main():
         # 期末日・決算年度・決算期間（月数）の抽出
         period_start = row.get("periodStart")
         period_end = row.get("periodEnd")
+
+        # 【デバッグ】カタログレコード作成時の period データを確認（最初の1件のみ）
+        # if len(potential_catalog_records) == 0:
+        #     logger.info(f"🔍 カタログ作成時の row キー一覧: {list(row.keys())}")
+        #     logger.info(f"🔍 カタログ作成時の periodStart: {period_start}")
+        #     logger.info(f"🔍 カタログ作成時の periodEnd: {period_end}")
+        #     logger.info(f"🔍 カタログ作成時の docID: {docid}")
+
         fiscal_year = int(period_end[:4]) if period_end else None
 
         # 決算期の月数を算出 (変則決算対応)

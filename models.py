@@ -4,19 +4,37 @@ from pydantic import BaseModel
 
 
 class EdinetDocument(BaseModel):
-    """EDINET APIから取得される書類メタデータのバリデーションモデル"""
+    """EDINET APIから取得される書類メタデータのバリデーションモデル (API v2 全フィールド網羅)"""
 
+    seqNumber: int
     docID: str
-    docDescription: Optional[str] = None
-    filerName: Optional[str] = None
-    submitDateTime: str
-    secCode: Optional[str] = None
     edinetCode: Optional[str] = None
-    docTypeCode: Optional[str] = None
+    secCode: Optional[str] = None
+    JCN: Optional[str] = None
+    filerName: Optional[str] = None
+    fundCode: Optional[str] = None
     ordinanceCode: Optional[str] = None
     formCode: Optional[str] = None
-    xbrlFlag: Optional[str] = "0"
-    pdfFlag: Optional[str] = "0"
+    docTypeCode: Optional[str] = None
+    periodStart: Optional[str] = None
+    periodEnd: Optional[str] = None
+    submitDateTime: str
+    docDescription: Optional[str] = None
+    issuerEdinetCode: Optional[str] = None
+    subjectEdinetCode: Optional[str] = None
+    subsidiaryEdinetCode: Optional[str] = None
+    currentReportReason: Optional[str] = None
+    parentDocID: Optional[str] = None
+    opeDateTime: Optional[str] = None
+    withdrawalStatus: str = "0"
+    docInfoEditStatus: str = "0"
+    disclosureStatus: str = "0"
+    xbrlFlag: str = "0"
+    pdfFlag: str = "0"
+    attachDocFlag: str = "0"
+    englishDocFlag: str = "0"
+    csvFlag: str = "0"
+    legalStatus: str = "0"
 
 
 class CatalogRecord(BaseModel):

@@ -33,17 +33,70 @@ class CatalogManager:
         self.master_df = self._load_parquet("master")
 
         # 【追加】バッチコミット用バッファ
-        self._commit_operations = {}  # パスをキーとした辞書
+        self._commit_operations = {}
         logger.info("CatalogManager を初期化しました。")
 
-        # 【超重要】既存データの自動アップグレード・クレンジング強制発動
-        # カタログが18カラム未詳、または rec が残存している場合は即座に正規化して保存
-        if not self.catalog_df.empty:
-            is_old_schema = len(self.catalog_df.columns) < 18 or "rec" in self.catalog_df.columns
-            if is_old_schema:
-                logger.info("⚠️ 旧バージョンのカタログを検知。18カラム化と rec 排除のアップグレードを実行します。")
-                self.catalog_df = self._clean_dataframe("catalog", self.catalog_df)
-                self._save_and_upload("catalog", self.catalog_df)
+        # 【究極の遡及クレンジング】全ファイルの不純物(rec)を一掃し、最新スキーマへ強制アップグレード
+        self._retrospective_cleanse()
+
+    def _retrospective_cleanse(self):
+        """データディレクトリ内の全Parquetファイルを走査し、不備があれば自動修正してアップロード"""
+        if not self.api:
+            return
+
+        logger.info("🕵️ 全Parquetファイルの健全性チェックを開始します...")
+        updated_count = 0
+
+        # 1. 定義済み主要ファイルのチェック
+        for key in self.paths.keys():
+            try:
+                # 既にロード済みの catalog_df, master_df は _load_parquet でクレンジング済み
+                df = self.catalog_df if key == "catalog" else (self.master_df if key == "master" else None)
+                if df is None:
+                    df = self._load_parquet(key)
+
+                # カタログの場合、18カラム未満なら強制保存してスキーマ拡張
+                needs_update = False
+                if key == "catalog" and len(df.columns) < 18:
+                    needs_update = True
+
+                # _clean_dataframe で既に消えているはずだが、リポジトリに反映させるために保存を予約
+                if needs_update or "rec" in df.columns:  # 実際には _load_parquet で消えているが念のため
+                    self._save_and_upload(key, df, defer=True)
+                    updated_count += 1
+            except Exception:
+                continue
+
+        # 2. マスターの全Binファイルを走査
+        try:
+            files = self.api.list_repo_files(repo_id=self.hf_repo, repo_type="dataset")
+            bin_files = [f for f in files if "master/bin/" in f and f.endswith(".parquet")]
+
+            for b_file in bin_files:
+                local_tmp = self.data_path / "temp_cleanse.parquet"
+                self.api.hf_hub_download(
+                    repo_id=self.hf_repo,
+                    filename=b_file,
+                    repo_type="dataset",
+                    token=self.hf_token,
+                    local_dir=str(self.data_path),
+                    local_dir_use_symlinks=False,
+                )
+                df_bin = pd.read_parquet(self.data_path / b_file)
+
+                # rec カラムがあれば即死
+                if "rec" in df_bin.columns or df_bin.index.name == "rec":
+                    logger.info(f"🧹 Binファイルの汚染を検知: {b_file}")
+                    df_clean = self._clean_dataframe("master", df_bin)
+                    df_clean.to_parquet(local_tmp, index=False, compression="zstd")
+                    self.add_commit_operation(b_file, local_tmp)
+                    updated_count += 1
+        except Exception:
+            pass
+
+        if updated_count > 0:
+            logger.success(f"✅ {updated_count} 個のファイルを修復バッファに追加しました。")
+            self.push_commit("Structural Integrity Upgrade: Unified 18-column schema and 'rec' elimination")
 
     def _clean_dataframe(self, key: str, df: pd.DataFrame) -> pd.DataFrame:
         """全てのDataFrameに対して共通のクレンジングを適用"""
