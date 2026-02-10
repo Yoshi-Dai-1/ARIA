@@ -27,7 +27,7 @@ class CatalogManager:
             "master": "meta/stocks_master.parquet",
             "listing": "meta/listing_history.parquet",
             "index": "meta/index_history.parquet",
-            "name": "meta/name_history.parquet",
+            "name": "meta/company_metadata_history.parquet",
         }
 
         self.catalog_df = self._load_parquet("catalog")
@@ -462,7 +462,32 @@ class CatalogManager:
                 self._save_and_upload("name", name_history.drop_duplicates())
 
         self.master_df = valid_df
-        return self._save_and_upload("master", self.master_df)  # 【修正】戻り値を返す
+        self.master_df = valid_df
+        return self._save_and_upload("master", self.master_df)
+
+    def update_metadata_history(self, events: list[dict]):
+        """企業メタデータ変更履歴を更新"""
+        if not events:
+            return
+
+        key = "name"  # metadata_history
+        history_df = self._load_parquet(key)
+
+        new_events_df = pd.DataFrame(events)
+
+        # 既存データと結合
+        if not history_df.empty:
+            combined_df = pd.concat([history_df, new_events_df], ignore_index=True)
+        else:
+            combined_df = new_events_df
+
+        # 重複排除（完全に同一のイベントは記録しない）
+        combined_df = combined_df.drop_duplicates(subset=["code", "event_date", "item_type", "new_value"], keep="first")
+
+        # 日付順、コード順にソート
+        combined_df = combined_df.sort_values(["event_date", "code"], ascending=[False, True])
+
+        self._save_and_upload(key, combined_df)
 
     def get_last_index_list(self, index_name: str) -> pd.DataFrame:
         """指定指数の構成銘柄を取得 (Phase 3用)"""

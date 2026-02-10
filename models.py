@@ -87,11 +87,18 @@ class ListingEvent(BaseModel):
     event_date: str
     note: Optional[str] = None
 
-
-class IndexEvent(BaseModel):
-    """指数採用・除外イベントの記録モデル"""
-
     index_name: str
     code: str
     type: str  # ADD, REMOVE
     event_date: str
+
+
+class CompanyMetadataHistory(BaseModel):
+    """企業メタデータ（社名、代表者、所在地など）の変更履歴モデル"""
+
+    code: str
+    event_date: str
+    item_type: str  # CompanyName, Representative, Address, etc.
+    old_value: Optional[str] = None
+    new_value: str
+    source_doc_id: Optional[str] = None
