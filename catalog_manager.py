@@ -27,7 +27,7 @@ class CatalogManager:
             "master": "meta/stocks_master.parquet",
             "listing": "meta/listing_history.parquet",
             "index": "meta/index_history.parquet",
-            "name": "meta/company_metadata_history.parquet",
+            "name": "meta/name_history.parquet",
         }
 
         self.catalog_df = self._load_parquet("catalog")
@@ -438,56 +438,53 @@ class CatalogManager:
                 on="code",
                 suffixes=("_old", "_new"),
             )
-            changed = merged[merged["company_name_old"] != merged["company_name_new"]]
-            if not changed.empty:
-                today = datetime.now().strftime("%Y-%m-%d")
-                name_history = self._load_parquet("name")
-                for _, row in changed.iterrows():
-                    name_history = pd.concat(
-                        [
-                            name_history,
-                            pd.DataFrame(
-                                [
-                                    {
-                                        "code": row["code"],
-                                        "old_name": row["company_name_old"],
-                                        "new_name": row["company_name_new"],
-                                        "change_date": today,
-                                    }
-                                ]
-                            ),
-                        ],
-                        ignore_index=True,
-                    )
-                self._save_and_upload("name", name_history.drop_duplicates())
+            )
+            
+            # 社名変更の検知 (Phase 3 実装)
+            # マージ前のマスター(self.master_df) と マージ後のマスター(valid_df) を比較
+            # ただし、valid_df は「今回処理した分」だけでなく「全量」になっているため、
+            # 「今回処理した分」かつ「名前が変わったもの」を抽出する必要がある
+            
+            # 簡易ロジック:
+            # 1. 既存マスターにあるコードで、
+            # 2. 今回の更新データ(df)に含まれており、
+            # 3. 名前が異なるものを検出
+            
+            if not self.master_df.empty:
+                # 共通のコードを持つものをマージ
+                merged_check = pd.merge(
+                    self.master_df[["code", "company_name"]],
+                    df[["code", "company_name"]],
+                    on="code",
+                    how="inner",
+                    suffixes=("_old", "_new")
+                )
+                
+                # 名前が不一致のものを抽出
+                changed = merged_check[merged_check["company_name_old"] != merged_check["company_name_new"]]
+                
+                if not changed.empty:
+                    today = datetime.now().strftime("%Y-%m-%d")
+                    new_events = []
+                    
+                    for _, row in changed.iterrows():
+                        new_events.append({
+                            "code": row["code"],
+                            "old_name": row["company_name_old"],
+                            "new_name": row["company_name_new"],
+                            "change_date": today
+                        })
+                    
+                    # 履歴ファイルに追記
+                    name_history = self._load_parquet("name")
+                    name_history = pd.concat([name_history, pd.DataFrame(new_events)], ignore_index=True)
+                    
+                    # 重複排除して保存
+                    self._save_and_upload("name", name_history.drop_duplicates())
+                    logger.info(f"社名変更を検知・記録しました: {len(new_events)} 件")
 
         self.master_df = valid_df
-        self.master_df = valid_df
-        return self._save_and_upload("master", self.master_df)
-
-    def update_metadata_history(self, events: list[dict]):
-        """企業メタデータ変更履歴を更新"""
-        if not events:
-            return
-
-        key = "name"  # metadata_history
-        history_df = self._load_parquet(key)
-
-        new_events_df = pd.DataFrame(events)
-
-        # 既存データと結合
-        if not history_df.empty:
-            combined_df = pd.concat([history_df, new_events_df], ignore_index=True)
-        else:
-            combined_df = new_events_df
-
-        # 重複排除（完全に同一のイベントは記録しない）
-        combined_df = combined_df.drop_duplicates(subset=["code", "event_date", "item_type", "new_value"], keep="first")
-
-        # 日付順、コード順にソート
-        combined_df = combined_df.sort_values(["event_date", "code"], ascending=[False, True])
-
-        self._save_and_upload(key, combined_df)
+        return self._save_and_upload("master", self.master_df)  # 【修正】戻り値を返す
 
     def get_last_index_list(self, index_name: str) -> pd.DataFrame:
         """指定指数の構成銘柄を取得 (Phase 3用)"""
