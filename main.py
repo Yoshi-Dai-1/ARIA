@@ -476,9 +476,14 @@ def main():
                 d2 = datetime.strptime(period_end, "%Y-%m-%d")
                 # 日数差を月数に換算 (+1日して端数を丸める)
                 diff_days = (d2 - d1).days + 1
-                num_months = round(diff_days / 30.4375)  # 365.25 / 12
-                # 通常は 12, 9, 6, 3 などに収束。境界値ガード
-                num_months = max(1, min(24, num_months))
+                calc_months = round(diff_days / 30.4375)  # 365.25 / 12
+
+                # 通常は 12, 9, 6, 3 などに収束。
+                # 異常値（0以下 または 24ヶ月超）は NULL として扱い、嘘の情報を記録しない
+                if 1 <= calc_months <= 24:
+                    num_months = calc_months
+                else:
+                    num_months = None
             except Exception:
                 num_months = None  # 計算失敗時も NULL
 
