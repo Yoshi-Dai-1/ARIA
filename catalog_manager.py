@@ -430,58 +430,40 @@ class CatalogManager:
             return
         valid_df = pd.DataFrame(validated)
 
-        # 社名変更チェック
+        # 社名変更の検知 (Phase 3 実装)
         if not self.master_df.empty:
             merged = pd.merge(
                 self.master_df[["code", "company_name"]],
                 valid_df[["code", "company_name"]],
                 on="code",
+                how="inner",
                 suffixes=("_old", "_new"),
             )
-            )
-            
-            # 社名変更の検知 (Phase 3 実装)
-            # マージ前のマスター(self.master_df) と マージ後のマスター(valid_df) を比較
-            # ただし、valid_df は「今回処理した分」だけでなく「全量」になっているため、
-            # 「今回処理した分」かつ「名前が変わったもの」を抽出する必要がある
-            
-            # 簡易ロジック:
-            # 1. 既存マスターにあるコードで、
-            # 2. 今回の更新データ(df)に含まれており、
-            # 3. 名前が異なるものを検出
-            
-            if not self.master_df.empty:
-                # 共通のコードを持つものをマージ
-                merged_check = pd.merge(
-                    self.master_df[["code", "company_name"]],
-                    df[["code", "company_name"]],
-                    on="code",
-                    how="inner",
-                    suffixes=("_old", "_new")
-                )
-                
-                # 名前が不一致のものを抽出
-                changed = merged_check[merged_check["company_name_old"] != merged_check["company_name_new"]]
-                
-                if not changed.empty:
-                    today = datetime.now().strftime("%Y-%m-%d")
-                    new_events = []
-                    
-                    for _, row in changed.iterrows():
-                        new_events.append({
+
+            # 名前が異なるものを検出
+            changed = merged[merged["company_name_old"] != merged["company_name_new"]]
+
+            if not changed.empty:
+                today = datetime.now().strftime("%Y-%m-%d")
+                new_events = []
+
+                for _, row in changed.iterrows():
+                    new_events.append(
+                        {
                             "code": row["code"],
                             "old_name": row["company_name_old"],
                             "new_name": row["company_name_new"],
-                            "change_date": today
-                        })
-                    
-                    # 履歴ファイルに追記
-                    name_history = self._load_parquet("name")
-                    name_history = pd.concat([name_history, pd.DataFrame(new_events)], ignore_index=True)
-                    
-                    # 重複排除して保存
-                    self._save_and_upload("name", name_history.drop_duplicates())
-                    logger.info(f"社名変更を検知・記録しました: {len(new_events)} 件")
+                            "change_date": today,
+                        }
+                    )
+
+                # 履歴ファイルに追記
+                name_history = self._load_parquet("name")
+                name_history = pd.concat([name_history, pd.DataFrame(new_events)], ignore_index=True)
+
+                # 重複排除して保存
+                self._save_and_upload("name", name_history.drop_duplicates())
+                logger.info(f"社名変更を検知・記録しました: {len(new_events)} 件")
 
         self.master_df = valid_df
         return self._save_and_upload("master", self.master_df)  # 【修正】戻り値を返す

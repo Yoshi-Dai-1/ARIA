@@ -740,47 +740,6 @@ def main():
         logger.info(f"全書類の Catalog Delta を保存します ({final_len} 件)")
         catalog.save_delta("catalog", df_cat, run_id, chunk_id, defer=True)
 
-        # 【Phase 3】社名変更履歴の自動検知と保存
-        try:
-            # 1. カタログ全体から必要なカラムを抽出してソート
-            # doc_id順ではなく、時系列順(submit_at)に並べることで変更を検知
-            df_history = df_cat[["code", "company_name", "submit_at", "doc_id"]].copy()
-            df_history = df_history.sort_values(["code", "submit_at"])
-
-            # 2. 前の行と比較して、社名が変わったレコードを特定
-            # shift() で1行ずらして比較
-            df_history["prev_code"] = df_history["code"].shift(1)
-            df_history["prev_name"] = df_history["company_name"].shift(1)
-
-            # 同じ証券コードで、かつ社名が異なる行を抽出
-            changes = df_history[
-                (df_history["code"] == df_history["prev_code"])
-                & (df_history["company_name"] != df_history["prev_name"])
-                & (df_history["prev_name"].notna())
-            ]
-
-            if not changes.empty:
-                logger.info(f"社名変更を検知しました: {len(changes)} 件")
-                events = []
-                for _, row in changes.iterrows():
-                    events.append(
-                        {
-                            "code": row["code"],
-                            "event_date": row["submit_at"][:10],  # YYYY-MM-DD
-                            "item_type": "CompanyName",
-                            "old_value": row["prev_name"],
-                            "new_value": row["company_name"],
-                            "source_doc_id": row["doc_id"],
-                        }
-                    )
-
-                catalog.update_metadata_history(events)
-            else:
-                logger.info("社名変更はありませんでした。")
-
-        except Exception as e:
-            logger.error(f"社名変更検知処理でエラーが発生しましたが、パイプラインは継続します: {e}")
-
     # 【修正】all_success が False の場合の処理を追加
     if not all_success:
         logger.warning("一部のMaster更新に失敗しました。次回実行時に再試行されます。")
