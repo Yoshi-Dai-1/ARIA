@@ -141,12 +141,33 @@ def run_merger(catalog, merger, run_id):
             merged_master = latest_from_cat.copy()
             merged_master["is_active"] = True
             merged_master["sector"] = "その他"
+            # カタログから最新の提出日時を取得して付与
+            merged_master["last_submitted_at"] = (
+                cat_df.sort_values("submit_at", ascending=True)
+                .drop_duplicates(subset=["code"], keep="last")["submit_at"]
+                .values
+            )
         else:
+            # 最新の提出日時情報を抽出
+            latest_dates = cat_df.sort_values("submit_at", ascending=True).drop_duplicates(
+                subset=["code"], keep="last"
+            )[["code", "submit_at"]]
+
             # 外部結合して、新しい社名があれば上書き、なければ既存維持
             merged_master = pd.merge(current_master, latest_from_cat, on="code", how="outer", suffixes=("", "_new"))
             if "company_name_new" in merged_master.columns:
                 merged_master["company_name"] = merged_master["company_name_new"].fillna(merged_master["company_name"])
                 merged_master.drop(columns=["company_name_new"], inplace=True)
+
+            # 提出日時の更新
+            merged_master = pd.merge(merged_master, latest_dates, on="code", how="left")
+            if "submit_at" in merged_master.columns:
+                if "last_submitted_at" in merged_master.columns:
+                    # 既存の提出日時より新しい場合のみ更新
+                    merged_master["last_submitted_at"] = merged_master[["last_submitted_at", "submit_at"]].max(axis=1)
+                else:
+                    merged_master["last_submitted_at"] = merged_master["submit_at"]
+                merged_master.drop(columns=["submit_at"], inplace=True)
 
             # デフォルト値補完
             merged_master["is_active"] = merged_master["is_active"].fillna(True)
@@ -166,9 +187,9 @@ def run_merger(catalog, merger, run_id):
                 .astype(bool)
             )
 
-        # 【超重要】これにより社名変更検知 (update_stocks_master) が走り、かつ defer=True で保存予約される
+        # 【超重要】これにより社名変更検知 (update_stocks_master) が走り、かつ時系列ガードが適用される
         if catalog.update_stocks_master(merged_master):
-            logger.info("Stock Master update staged from Catalog (Atomic)")
+            logger.info("Stock Master update staged from Catalog (Atomic & Temporal Guard)")
         else:
             logger.error("❌ Failed to stage Global Stock Master")
             all_masters_success = False

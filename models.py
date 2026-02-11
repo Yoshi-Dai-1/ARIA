@@ -77,6 +77,7 @@ class StockMasterRecord(BaseModel):
     sector: Optional[str] = "その他"
     market: Optional[str] = None
     is_active: bool = True
+    last_submitted_at: Optional[str] = None  # 時系列ガード用：情報の最新性を担保する提出日時
 
 
 class ListingEvent(BaseModel):

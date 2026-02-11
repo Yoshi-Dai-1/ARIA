@@ -19,15 +19,16 @@ def get_robust_session(
         requests.Session: 設定済みのセッション
     """
     if status_forcelist is None:
+        # HF側の500(Internal Server Error)もリトライ対象として明示的に強化
         status_forcelist = [429, 500, 502, 503, 504]
 
     session = requests.Session()
 
     retry_strategy = Retry(
         total=retries,
-        backoff_factor=backoff_factor,
+        backoff_factor=backoff_factor,  # 2.0 (2, 4, 8, 16, 32s...)
         status_forcelist=status_forcelist,
-        allowed_methods=["GET", "POST"],  # POSTも含める
+        allowed_methods=["GET", "POST", "PUT"],  # 大規模コミット用のPUTも含める
         raise_on_status=False,
     )
 
@@ -35,22 +36,17 @@ def get_robust_session(
     session.mount("https://", adapter)
     session.mount("http://", adapter)
 
-    # タイムアウトをデフォルトで適用するためのフック
-    # requests.Session 自体には default_timeout がないため、アダプターかモンキーパッチが必要だが、
-    # ここでは利用側が session.get() を呼ぶときに意識しなくて済むよう、requestメソッドをラップする形も考えられる。
-    # しかし、シンプルに Session を返す方が汎用性が高い。
-    # timeout は呼び出し側で kwargs として渡すのが一般的だが、
-    # ここでは利便性のため、session.request をフックしてデフォルトタイムアウトを設定する。
-
+    # 【極限強化】HF Hubの大規模コミット(300操作超)はサーバー側処理が重いため、Read Timeoutを180秒へ大幅延長
     original_request = session.request
 
     def robust_request(method, url, **kwargs):
-        # httpx 互換の引数 (huggingface_hub 等で使用される) を requests 互換に変換
+        # httpx 互換の引数を requests 互換に変換
         if "follow_redirects" in kwargs:
             kwargs["allow_redirects"] = kwargs.pop("follow_redirects")
 
         if "timeout" not in kwargs:
-            kwargs["timeout"] = timeout
+            # (connect_timeout, read_timeout)
+            kwargs["timeout"] = (30, 180)
         return original_request(method, url, **kwargs)
 
     session.request = robust_request

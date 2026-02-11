@@ -461,7 +461,7 @@ class CatalogManager:
         return self._load_parquet("index")
 
     def update_stocks_master(self, new_master: pd.DataFrame):
-        """マスタ更新 (Pydantic バリデーション実施)"""
+        """マスタ更新 (時系列ガード付き Pydantic バリデーション実施)"""
         if new_master.empty:
             return
 
@@ -469,6 +469,8 @@ class CatalogManager:
         validated = []
         for rec in records:
             try:
+                # 辞書内の None や NaN を適切に処理
+                rec = {k: (v if not pd.isna(v) else None) for k, v in rec.items()}
                 validated.append(StockMasterRecord(**rec).model_dump())
             except Exception as e:
                 logger.error(f"銘柄マスタのバリデーション失敗 (code: {rec.get('code')}): {e}")
@@ -477,42 +479,68 @@ class CatalogManager:
             return
         valid_df = pd.DataFrame(validated)
 
-        # 社名変更の検知 (Phase 3 実装)
+        # 【極限の整合性：時系列ガード】
+        # 既存マスタとマージし、codeごとに last_submitted_at が「より新しい」情報のみを採用する
         if not self.master_df.empty:
-            merged = pd.merge(
-                self.master_df[["code", "company_name"]],
-                valid_df[["code", "company_name"]],
+            # 両方のDFに提出日時があることを保証（古いマスタには入っていない可能性があるため）
+            if "last_submitted_at" not in self.master_df.columns:
+                self.master_df["last_submitted_at"] = "1970-01-01 00:00:00"
+            if "last_submitted_at" not in valid_df.columns:
+                valid_df["last_submitted_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            # 比較用にコピー
+            current_m = self.master_df.copy()
+            incoming_m = valid_df.copy()
+
+            # 現在のマスタをベースに、新しい情報があるものだけを特定
+            # 重複排除のキーとして code を使用
+            combined = pd.concat([current_m, incoming_m], ignore_index=True)
+            # 提出日時の降順でソートし、最初のもの（最新）を残す
+            # これにより、過去の書類が後から処理されても、マスタの情報（社名等）が過去に「巻き戻る」のを物理的に阻止する
+            final_master = combined.sort_values("last_submitted_at", ascending=False).drop_duplicates(
+                subset=["code"], keep="first"
+            )
+
+            # 社名変更の検知 (情報の順方向の変化のみを記録)
+            # 既にマスタにある社名と、今回「採用される」新しい社名が異なる場合のみ履歴に残す
+            # ※ただし、今回の「情報の提出日」が保持している最新の提出日より後の場合のみを対象とする
+            merged_for_change = pd.merge(
+                current_m[["code", "company_name", "last_submitted_at"]],
+                incoming_m[["code", "company_name", "last_submitted_at"]],
                 on="code",
                 how="inner",
                 suffixes=("_old", "_new"),
             )
 
-            # 名前が異なるものを検出
-            changed = merged[merged["company_name_old"] != merged["company_name_new"]]
+            # 条件：名前が異なり、かつ「新しい書類の日付」が「古い書類の日付」より後の場合のみ
+            # これにより、2022年の書類を処理したときに「2024年の社名が2022年の社名に変わった」という誤検知を防ぐ
+            changed = merged_for_change[
+                (merged_for_change["company_name_old"] != merged_for_change["company_name_new"])
+                & (merged_for_change["last_submitted_at_new"] > merged_for_change["last_submitted_at_old"])
+            ]
 
             if not changed.empty:
-                today = datetime.now().strftime("%Y-%m-%d")
                 new_events = []
-
                 for _, row in changed.iterrows():
                     new_events.append(
                         {
                             "code": row["code"],
                             "old_name": row["company_name_old"],
                             "new_name": row["company_name_new"],
-                            "change_date": today,
+                            "change_date": row["last_submitted_at_new"][:10],  # 提出日の日付部分
                         }
                     )
 
                 # 履歴ファイルに追記
                 name_history = self._load_parquet("name")
                 name_history = pd.concat([name_history, pd.DataFrame(new_events)], ignore_index=True)
-
-                # 重複排除して保存 (Atomic保存のために defer=True)
                 self._save_and_upload("name", name_history.drop_duplicates(), defer=True)
-                logger.info(f"社名変更を検知・記録しました: {len(new_events)} 件")
+                logger.info(f"正当な時系列での社名変更を記録しました: {len(new_events)} 件")
 
-        self.master_df = valid_df
+            self.master_df = final_master
+        else:
+            self.master_df = valid_df
+
         # defer=True を指定してコミットバッファに積む
         return self._save_and_upload("master", self.master_df, defer=True)
 
@@ -670,11 +698,13 @@ class CatalogManager:
         if not self.api or not self._commit_operations:
             return True
 
-        max_retries = 8  # リトライ回数を増やして競合に備える
+        # 【極限強化】リトライ上限を12回に引き上げ、500エラーやタイムアウトに備える
+        max_retries = 12
         ops_list = list(self._commit_operations.values())
 
         for attempt in range(max_retries):
             try:
+                # 通信パッチにより、この内部でのタイムアウトは180秒に延長されています
                 self.api.create_commit(
                     repo_id=self.hf_repo,
                     repo_type="dataset",
@@ -686,17 +716,20 @@ class CatalogManager:
                 self._commit_operations = {}  # クリア
                 return True
             except Exception as e:
-                # 429 レート制限
-                if isinstance(e, HfHubHTTPError) and e.response.status_code == 429:
-                    wait_time = int(e.response.headers.get("Retry-After", 60)) + 5
-                    logger.warning(f"Commit Rate limit exceeded. Waiting {wait_time}s... ({attempt + 1}/{max_retries})")
+                # 429 レート制限 または 500 サーバーエラー
+                if isinstance(e, HfHubHTTPError) and e.response.status_code in [429, 500]:
+                    wait_time = int(e.response.headers.get("Retry-After", 60)) + 15
+                    logger.warning(
+                        f"HF Server Error ({e.response.status_code}). "
+                        f"Waiting {wait_time}s... ({attempt + 1}/{max_retries})"
+                    )
                     time.sleep(wait_time)
                     continue
 
-                # 409 コンフリクト または 412 前提条件失敗 (他のジョブが同時にコミットした)
+                # 409 コンフリクト または 412 前提条件失敗
                 if isinstance(e, HfHubHTTPError) and e.response.status_code in [409, 412]:
-                    # 指数バックオフ + ジッター
-                    wait_time = (2**attempt) + (random.uniform(5, 15))
+                    # 大規模コミットではコンフリクト期間が長いため、バックオフを強化
+                    wait_time = (2 ** (attempt + 2)) + (random.uniform(10, 30))
                     logger.warning(
                         f"Commit Conflict ({e.response.status_code}). "
                         f"Retrying in {wait_time:.2f}s... ({attempt + 1}/{max_retries})"
@@ -704,10 +737,11 @@ class CatalogManager:
                     time.sleep(wait_time)
                     continue
 
-                logger.warning(f"コミット失敗: {e} - Retrying ({attempt + 1}/{max_retries})...")
-                time.sleep(10 * (attempt + 1))
+                # タイムアウト等のネットワーク例外
+                logger.warning(f"コミット通信エラー: {e} - Retrying ({attempt + 1}/{max_retries})...")
+                time.sleep(20 * (attempt + 1))
 
-        logger.error("❌ バッチコミットに最終的に失敗しました")
+        logger.error("❌ バッチコミットに最終的に失敗しました。大規模更新のため、分割実行を推奨します。")
         return False
 
     def cleanup_deltas(self, run_id: str, cleanup_old: bool = True):
