@@ -92,6 +92,10 @@ class EdinetEngine:
 
     def fetch_metadata(self, start_date: str, end_date: str) -> List[Dict]:
         """指定期間の全書類メタデータを取得し、Pydanticでバリデーション"""
+        # 入力値の前後空白を除去 (Pydanticバリデーションエラー対策)
+        start_date = start_date.strip() if isinstance(start_date, str) else start_date
+        end_date = end_date.strip() if isinstance(end_date, str) else end_date
+
         logger.info(f"EDINETメタデータ取得開始: {start_date} ~ {end_date}")
         res_results = request_term(api_key=self.api_key, start_date_str=start_date, end_date_str=end_date)
 
