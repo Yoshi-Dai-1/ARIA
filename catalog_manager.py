@@ -628,9 +628,28 @@ class CatalogManager:
             self._save_and_upload("name", name_history, defer=True)
 
         # 全状態の中から、code ごとに提出日時が最新のものを抽出
-        self.master_df = all_states.sort_values("last_submitted_at", ascending=False).drop_duplicates(
-            subset=["code"], keep="first"
-        )
+        sorted_all = all_states.sort_values("last_submitted_at", ascending=False)
+
+        # セクターと市場情報の「属性継承（Inheritance）」
+        # 最新レコードが NULL や "その他" の場合、過去の有効なレコード（JPX等）から引き継ぐ
+        def resolve_attr(group, col):
+            # 提出日に関わらず、そのコードにおける「その他」や NULL 以外の最も確かな値を探す
+            # (JPXは1970年だがセクター情報は「正」であるため、全体から検索して良い)
+            valid = group[col][~group[col].isin(["その他", None, "nan", ""])]
+            return valid.iloc[0] if not valid.empty else "その他"
+
+        # 各コードの最新状態を特定しつつ、属性を補完
+        best_records = []
+        for _, group in sorted_all.groupby("code", sort=False):
+            latest_rec = group.iloc[0].copy()
+            # セクターと市場が不十分なら、そのコードの既存知識から補完
+            if latest_rec["sector"] in ["その他", None, "nan", ""]:
+                latest_rec["sector"] = resolve_attr(group, "sector")
+            if latest_rec["market"] in ["その他", None, "nan", ""]:
+                latest_rec["market"] = resolve_attr(group, "market")
+            best_records.append(latest_rec)
+
+        self.master_df = pd.DataFrame(best_records)
 
         # defer=True を指定してコミットバッファに積む
         return self._save_and_upload("master", self.master_df, defer=True)

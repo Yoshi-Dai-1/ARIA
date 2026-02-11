@@ -142,14 +142,8 @@ def run_merger(catalog, merger, run_id):
                 f"Filtered out {initial_event_count - len(name_events_in_batch)} events with missing submit_at"
             )
 
-        # カタログマネージャーにすべての「状態候補」を渡し、時系列でリコンシリエーション（照合）させる
-        # これにより、バッチ内での複数回変更や、過去データのバックフィル時も正しい履歴が生成される
-        # StockMasterRecord モデルに合わせてカラム名を調整
-        name_events_in_batch.rename(columns={"submit_at": "last_submitted_at"}, inplace=True)
-
         # 基本属性の付与
         name_events_in_batch["is_active"] = True
-        name_events_in_batch["sector"] = "その他"
 
         if "rec" in name_events_in_batch.columns:
             name_events_in_batch.drop(columns=["rec"], inplace=True)
