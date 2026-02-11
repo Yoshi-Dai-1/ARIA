@@ -161,11 +161,15 @@ class CatalogManager:
         self._commit_operations[repo_path] = CommitOperationAdd(path_in_repo=repo_path, path_or_fileobj=str(local_path))
         logger.debug(f"コミットバッファに追加: {repo_path}")
 
-    def _load_parquet(self, key: str) -> pd.DataFrame:
+    def _load_parquet(self, key: str, force_download: bool = False) -> pd.DataFrame:
         filename = self.paths[key]
         try:
             local_path = hf_hub_download(
-                repo_id=self.hf_repo, filename=filename, repo_type="dataset", token=self.hf_token
+                repo_id=self.hf_repo,
+                filename=filename,
+                repo_type="dataset",
+                token=self.hf_token,
+                force_download=force_download,
             )
             df = pd.read_parquet(local_path)
             # 【絶対ガード】読み込み直後にクレンジング
