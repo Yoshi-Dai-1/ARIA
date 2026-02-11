@@ -59,12 +59,21 @@ def run_market_pipeline(target_date: str):
             new_master = engine.fetch_jpx_master()
             current_master = catalog.master_df.copy()  # Load current
 
-            # Active判定
+            # 三値論理（Active/Inactive/Unknown）の適用
             active_codes = set(new_master["code"])
+
+            def determine_active_status(row):
+                if row["code"] in active_codes:
+                    return True  # JPXに存在 = Active
+                # 過去にJPXから追加された形跡（1970年スタンプ）があるが、現在はリストにない = 廃止(False)
+                last_at = str(row.get("last_submitted_at", "1970-01-01"))
+                if last_at.startswith("1970"):
+                    return False
+                # JPXに一度も現れていない（EDINETのみ） = 不明(None)
+                return None
+
             if not current_master.empty:
-                if "is_active" not in current_master.columns:
-                    current_master["is_active"] = True
-                current_master["is_active"] = current_master["code"].isin(active_codes)
+                current_master["is_active"] = current_master.apply(determine_active_status, axis=1)
 
             new_master["is_active"] = True
             # 【重要】JPX由来のデータ（略称）を「最古」として扱い、EDINET由来の正式名称を保護する

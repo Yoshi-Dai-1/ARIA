@@ -656,10 +656,9 @@ class CatalogManager:
                 # 万が一 JPX のセクターが不全な場合は、過去の有効な属性から拾う（ただし優先度はJPX）
                 if latest_rec["sector"] in ["その他", None, "nan", ""]:
                     latest_rec["sector"] = resolve_attr(group, "sector")
-            else:
                 # JPXに一度も登録されたことがない(完全新規上場等)の場合
-                # JPXによる承認(同期)があるまでは、Inactive かつ 属性なし(None) として隔離する
-                latest_rec["is_active"] = False
+                # JPXによる承認(同期)があるまでは、Unknown (None) 状態で隔離する
+                latest_rec["is_active"] = None
                 latest_rec["sector"] = None
                 latest_rec["market"] = None
 

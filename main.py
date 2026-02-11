@@ -143,8 +143,8 @@ def run_merger(catalog, merger, run_id):
             )
 
         # 基本属性の付与
-        # EDINET由来は初期状態で Inactive とし、JPX同期で初めて Active に昇格させる
-        name_events_in_batch["is_active"] = False
+        # EDINET由来は初期状態で Unknown (None) とし、JPX同期で初めて Active/Inactive に確定させる
+        name_events_in_batch["is_active"] = None
 
         if "rec" in name_events_in_batch.columns:
             name_events_in_batch.drop(columns=["rec"], inplace=True)
