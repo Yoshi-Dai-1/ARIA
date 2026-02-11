@@ -120,22 +120,34 @@ def run_merger(catalog, merger, run_id):
     all_masters_success = True
     processed_count = 0
 
-    # --- A. Stock Master ---
-    if "master" in deltas and not deltas["master"].empty:
+    # --- A. Stock Master (Catalogデルタから最新情報を抽出) ---
+    # 【修正】Workerはmasterデルタを生成しないため、常にカタログから得られる最新の社名情報を反映
+    if "catalog" in deltas and not deltas["catalog"].empty:
         processed_count += 1
-        new_master = deltas["master"]
-        active_codes = set(new_master["code"])
+        cat_df = deltas["catalog"]
+
+        # カタログからコードごとの最新社名を抽出
+        latest_from_cat = cat_df.sort_values("submit_at", ascending=True).drop_duplicates(subset=["code"], keep="last")[
+            ["code", "company_name"]
+        ]
 
         current_master = catalog.master_df.copy()
-        if not current_master.empty:
-            if "is_active" not in current_master.columns:
-                current_master["is_active"] = True
-            current_master["is_active"] = current_master["code"].isin(active_codes)
 
-        new_master["is_active"] = True
-        merged_master = pd.concat([current_master, new_master], ignore_index=True).drop_duplicates(
-            subset=["code"], keep="last"
-        )
+        # 既存マスタに最新社名をマージ
+        if current_master.empty:
+            merged_master = latest_from_cat.copy()
+            merged_master["is_active"] = True
+            merged_master["sector"] = "その他"
+        else:
+            # 外部結合して、新しい社名があれば上書き、なければ既存維持
+            merged_master = pd.merge(current_master, latest_from_cat, on="code", how="outer", suffixes=("", "_new"))
+            if "company_name_new" in merged_master.columns:
+                merged_master["company_name"] = merged_master["company_name_new"].fillna(merged_master["company_name"])
+                merged_master.drop(columns=["company_name_new"], inplace=True)
+
+            # デフォルト値補完
+            merged_master["is_active"] = merged_master["is_active"].fillna(True)
+            merged_master["sector"] = merged_master["sector"].fillna("その他")
 
         if "rec" in merged_master.columns:
             merged_master.drop(columns=["rec"], inplace=True)
@@ -151,9 +163,9 @@ def run_merger(catalog, merger, run_id):
                 .astype(bool)
             )
 
-        # 【超重要】update_stocks_master を使うことで社名変更検知を強制し、かつ defer=True で保存
+        # 【超重要】これにより社名変更検知 (update_stocks_master) が走り、かつ defer=True で保存予約される
         if catalog.update_stocks_master(merged_master):
-            logger.info("Stock Master update staged (Atomic)")
+            logger.info("Stock Master update staged from Catalog (Atomic)")
         else:
             logger.error("❌ Failed to stage Global Stock Master")
             all_masters_success = False
@@ -204,7 +216,20 @@ def run_merger(catalog, merger, run_id):
                 logger.success(
                     f"=== Merger完了: 全データをアトミックに更新しました (Total: {processed_count} files) ==="
                 )
-                catalog.cleanup_deltas(run_id, cleanup_old=False)
+
+                # 【極限の堅牢性：Read-after-Write Verification】
+                logger.info("最終整合性検証 (Read-after-Write) を実行中...")
+                try:
+                    # コミット直後に実際にリポジトリからカタログをロードして、空でないことを確認
+                    # ※ここでの _load_parquet はキャッシュではなくリモートからの再取得を試行する
+                    vf_catalog = catalog._load_parquet("catalog")
+                    if not vf_catalog.empty:
+                        logger.success(f"✅ 検証成功: カタログの整合性が確認されました (レコード数: {len(vf_catalog)})")
+                        catalog.cleanup_deltas(run_id, cleanup_old=False)
+                    else:
+                        logger.error("❌ 検証失敗: 更新後のカタログが読み込めません。")
+                except Exception as e:
+                    logger.error(f"❌ 検証プロセスエラー: {e}")
             else:
                 logger.error("❌ 最終バッチコミットに失敗しました。データ整合性は維持されています。")
         else:
