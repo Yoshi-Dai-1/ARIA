@@ -67,10 +67,16 @@ def run_market_pipeline(target_date: str):
                 current_master["is_active"] = current_master["code"].isin(active_codes)
 
             new_master["is_active"] = True
+            # 【重要】JPX由来のデータ（略称）を「最古」として扱い、EDINET由来の正式名称を保護する
+            new_master["last_submitted_at"] = "1970-01-01 00:00:00"
 
             # Merge
-            merged_master = pd.concat([current_master, new_master], ignore_index=True).drop_duplicates(
-                subset=["code"], keep="last"
+            # 時系列順（新しい順）に並べ替えてから重複排除することで、EDINET由来の名前を維持する
+            merged_master = pd.concat([current_master, new_master], ignore_index=True)
+            # NaNを安全に埋める
+            merged_master["last_submitted_at"] = merged_master["last_submitted_at"].fillna("1970-01-01 00:00:00")
+            merged_master = merged_master.sort_values("last_submitted_at", ascending=False).drop_duplicates(
+                subset=["code"], keep="first"
             )
 
             # 型を強制（文字列化を防ぐ）

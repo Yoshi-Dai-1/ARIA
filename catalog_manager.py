@@ -543,44 +543,53 @@ class CatalogManager:
             sorted_group = group.sort_values("last_submitted_at", ascending=True)
 
             # --- A. 基点(Baseline)の決定 ---
-            # 既に履歴に記録されている「最新の社名」を取得
+            # 1. まずは既に確定した履歴(name_history)から最新の名前を探す (最も信頼できる過去)
             prev_name = None
             if not name_history.empty:
                 code_history = name_history[name_history["code"] == code]
                 if not code_history.empty:
-                    # change_date または submit_at があるはずだが、
-                    # 履歴に記録されている最新の new_name を取得
-                    # (履歴は並べ替え済みと想定)
                     prev_name = code_history.iloc[-1]["new_name"]
+
+            # 2. 履歴がない場合、既存マスタ(stocks_master)の名前を暫定基点とする
+            # ただし、マスタ名は JPX 由来(略称)の可能性がある。
+            is_baseline_from_jpx = False
+            if prev_name is None:
+                master_entry = current_m[current_m["code"] == code]
+                if not master_entry.empty:
+                    prev_name = master_entry.iloc[0]["company_name"]
+                    # 提出日が 1970年なら JPX 由来の暫定名と判断
+                    last_at = master_entry.iloc[0].get("last_submitted_at", "1970")
+                    if str(last_at).startswith("1970"):
+                        is_baseline_from_jpx = True
 
             # --- B. 逐次比較と履歴生成 ---
             for _, curr_state in sorted_group.iterrows():
+                # 既存データ(1970年等の古いマスタ状態)は比較の「対象」ではなく「基点」なのでスキップ
+                last_at = str(curr_state.get("last_submitted_at", ""))
+                if last_at.startswith("1970"):
+                    continue
+
                 curr_name = curr_state["company_name"]
 
-                # 基点がない場合 (ARIAで初めて捕捉された銘柄)
+                # 基点がない場合 (ARIAで完全新規に発見された銘柄)
                 if prev_name is None:
-                    # 最初に見つかった EDINET 由来の名前を基点とする (履歴には残さない)
                     prev_name = curr_name
                     continue
 
                 # 正規化比較を行い、実質的な差異がある場合のみ履歴を作成
-                if self._normalize_company_name(curr_name) != self._normalize_company_name(prev_name):
-                    # 日付の安全な抽出
-                    submitted_at = curr_state.get("last_submitted_at")
-                    if pd.isna(submitted_at) or not isinstance(submitted_at, str):
-                        # 日付不明の場合は、歴史的な「変化」として基準が作れないためスキップ
-                        logger.warning(f"Submission date missing for code {code}. Skipping name history recording.")
-                        continue
+                normalized_prev = self._normalize_company_name(prev_name)
+                normalized_curr = self._normalize_company_name(curr_name)
 
-                    # 変更イベントの生成
+                if normalized_prev != normalized_curr:
+                    # 本物の社名変更として記録
                     event = {
                         "code": code,
                         "old_name": prev_name,
                         "new_name": curr_name,
-                        "change_date": submitted_at[:10],
+                        "change_date": last_at[:10],
                     }
 
-                    # 重複チェック (同一移動の二重登録防止)
+                    # 重複チェック
                     exists = False
                     if not name_history.empty:
                         exists = not name_history[
@@ -595,7 +604,17 @@ class CatalogManager:
 
                     # 基点を更新
                     prev_name = curr_name
-
+                    is_baseline_from_jpx = False  # EDINET由来になったのでフラグを落とす
+                else:
+                    # 「形式的な差異(略称→正式名称)」または「同一名称」の場合
+                    # 履歴には残さないが、以降の比較のために基点だけは更新(正式名へ昇格)
+                    if prev_name != curr_name:
+                        if is_baseline_from_jpx:
+                            logger.debug(
+                                f"ℹ️ 基点を略称から正式名称へ昇格 (履歴には残しません): {code} | {prev_name} -> {curr_name}"
+                            )
+                        prev_name = curr_name
+                        is_baseline_from_jpx = False
         # 4. 履歴の保存 (Atomic & Non-destructive)
         if new_history_events:
             new_hist_df = pd.DataFrame(new_history_events)
@@ -607,7 +626,6 @@ class CatalogManager:
             # 初回実行時などで履歴が空の場合でも、ファイルを作成して整合性を保つ
             self._save_and_upload("name", name_history, defer=True)
 
-        # 5. マスタの更新 (常に「物理的に最も新しい提出日時」の情報で上書き)
         # 全状態の中から、code ごとに提出日時が最新のものを抽出
         self.master_df = all_states.sort_values("last_submitted_at", ascending=False).drop_duplicates(
             subset=["code"], keep="first"
