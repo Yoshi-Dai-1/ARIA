@@ -542,56 +542,47 @@ class CatalogManager:
             # 提出日時の昇順でソート
             sorted_group = group.sort_values("last_submitted_at", ascending=True)
 
-            # 名称が変わった瞬間を特定 (正規化名で比較)
-            # lambda を使って、実質的な名前が変わった行のみを抽出
-            def is_real_name_change(row, prev_row):
-                if prev_row is None:
-                    return False
-                return self._normalize_company_name(row["company_name"]) != self._normalize_company_name(
-                    prev_row["company_name"]
-                )
+            # --- A. 基点(Baseline)の決定 ---
+            # 既に履歴に記録されている「最新の社名」を取得
+            prev_name = None
+            if not name_history.empty:
+                code_history = name_history[name_history["code"] == code]
+                if not code_history.empty:
+                    # change_date または submit_at があるはずだが、
+                    # 履歴に記録されている最新の new_name を取得
+                    # (履歴は並べ替え済みと想定)
+                    prev_name = code_history.iloc[-1]["new_name"]
 
-            # 変化点のみを抽出
-            name_changes = []
-            prev_row = None
-            for _, row in sorted_group.iterrows():
-                if prev_row is not None and is_real_name_change(row, prev_row):
-                    name_changes.append(row)
-                prev_row = row
+            # --- B. 逐次比較と履歴生成 ---
+            for _, curr_state in sorted_group.iterrows():
+                curr_name = curr_state["company_name"]
 
-            name_changes_df = pd.DataFrame(name_changes)
+                # 基点がない場合 (ARIAで初めて捕捉された銘柄)
+                if prev_name is None:
+                    # 最初に見つかった EDINET 由来の名前を基点とする (履歴には残さない)
+                    prev_name = curr_name
+                    continue
 
-            if not name_changes_df.empty:
-                # 抽出された変化点ごとに履歴を生成
-                for _, curr_state in name_changes_df.iterrows():
-                    # 直前の状態を取得
-                    prev_state = (
-                        sorted_group[sorted_group["last_submitted_at"] < curr_state["last_submitted_at"]]
-                        .sort_values("last_submitted_at", ascending=False)
-                        .iloc[0]
-                    )
-
-                    # 日付の安全な抽出 (last_submitted_at が NaN の場合を考慮)
+                # 正規化比較を行い、実質的な差異がある場合のみ履歴を作成
+                if self._normalize_company_name(curr_name) != self._normalize_company_name(prev_name):
+                    # 日付の安全な抽出
                     submitted_at = curr_state.get("last_submitted_at")
                     if pd.isna(submitted_at) or not isinstance(submitted_at, str):
-                        # 日付不明の場合は、歴史的な「変化」として記録しない (嘘の情報の記録を回避)
+                        # 日付不明の場合は、歴史的な「変化」として基準が作れないためスキップ
                         logger.warning(f"Submission date missing for code {code}. Skipping name history recording.")
                         continue
 
-                    change_date = submitted_at[:10]
-
+                    # 変更イベントの生成
                     event = {
                         "code": code,
-                        "old_name": prev_state["company_name"],
-                        "new_name": curr_state["company_name"],
-                        "change_date": change_date,
+                        "old_name": prev_name,
+                        "new_name": curr_name,
+                        "change_date": submitted_at[:10],
                     }
 
-                    # 既に履歴に存在するかチェック (重複登録防止)
+                    # 重複チェック (同一移動の二重登録防止)
                     exists = False
                     if not name_history.empty:
-                        # 同じ code, old_name, new_name があれば重複とみなす
-                        # (change_date は書類によって多少前後する可能性があるため)
                         exists = not name_history[
                             (name_history["code"] == code)
                             & (name_history["old_name"] == event["old_name"])
@@ -600,6 +591,10 @@ class CatalogManager:
 
                     if not exists:
                         new_history_events.append(event)
+                        logger.info(f"✨ 社名変更を検知: {code} | {prev_name} -> {curr_name}")
+
+                    # 基点を更新
+                    prev_name = curr_name
 
         # 4. 履歴の保存 (Atomic & Non-destructive)
         if new_history_events:
