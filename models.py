@@ -74,7 +74,7 @@ class StockMasterRecord(BaseModel):
 
     code: str
     company_name: str
-    sector: Optional[str] = "その他"
+    sector: Optional[str] = None
     market: Optional[str] = None
     is_active: bool = True
     last_submitted_at: Optional[str] = None  # 時系列ガード用：情報の最新性を担保する提出日時

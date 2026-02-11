@@ -658,9 +658,9 @@ class CatalogManager:
                     latest_rec["sector"] = resolve_attr(group, "sector")
             else:
                 # JPXに一度も登録されたことがない(完全新規上場等)の場合
-                # JPXによる承認(同期)があるまでは、Inactive かつ 属性なし として隔離する
+                # JPXによる承認(同期)があるまでは、Inactive かつ 属性なし(None) として隔離する
                 latest_rec["is_active"] = False
-                latest_rec["sector"] = "その他"
+                latest_rec["sector"] = None
                 latest_rec["market"] = None
 
             best_records.append(latest_rec)
