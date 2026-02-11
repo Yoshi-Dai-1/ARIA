@@ -33,8 +33,9 @@ class CatalogManager:
         self.catalog_df = self._load_parquet("catalog")
         self.master_df = self._load_parquet("master")
 
-        # 【追加】バッチコミット用バッファ
+        # 【最重要】一括コミット用バッファ
         self._commit_operations = {}
+        self._snapshots = {}  # 整合性保護のためのロールバックスナップショット
         logger.info("CatalogManager を初期化しました。")
 
         # 全ファイルの整合性チェックと最新スキーマへのアップグレード
@@ -160,6 +161,47 @@ class CatalogManager:
         """コミットバッファに操作を追加（重複は最新で上書き）"""
         self._commit_operations[repo_path] = CommitOperationAdd(path_in_repo=repo_path, path_or_fileobj=str(local_path))
         logger.debug(f"コミットバッファに追加: {repo_path}")
+
+    def take_snapshot(self):
+        """現在のGlobal状態のスナップショットをメモリに取得 (不整合発生時のロールバック用)"""
+        # 主要ファイルをロードしてスナップショットに保存
+        self._snapshots = {
+            "catalog": self.catalog_df.copy(),
+            "master": self.master_df.copy(),
+            "listing": self._load_parquet("listing").copy(),
+            "index": self._load_parquet("index").copy(),
+            "name": self._load_parquet("name").copy(),
+        }
+        logger.info("Global 状態のスナップショットを取得しました (安全性確保)")
+
+    def rollback(self, message: str = "RaW-V Failure: Automated Recovery Rollback"):
+        """スナップショットの状態を強制的に書き戻し、Globalデータの整合性を復旧する"""
+        if not self._snapshots:
+            logger.error("❌ スナップショットが存在しないため、ロールバックできません。")
+            return False
+
+        logger.warning(f"⛔ ロールバックを開始します: {message}")
+
+        # 既存のコミット予約をすべて破棄
+        self._commit_operations = {}
+
+        # スナップショットの内容を強制的に上書き予約
+        for key, df in self._snapshots.items():
+            self._save_and_upload(key, df, defer=True)
+
+        # 一括コミットの実行 (事実上の差し戻し)
+        success = self.push_commit(f"ROLLBACK: {message}")
+        if success:
+            logger.success("✅ ロールバック・コミットが完了しました。整合性は復旧されました。")
+            # メモリ上の最新状態もスナップショットに戻す
+            self.catalog_df = self._snapshots["catalog"]
+            self.master_df = self._snapshots["master"]
+        else:
+            logger.critical(
+                "❌ ロールバック自体に失敗しました！"
+                "Hugging Face上のデータが壊れている可能性があります。直ちに手動確認が必要です。"
+            )
+        return success
 
     def _load_parquet(self, key: str, force_download: bool = False) -> pd.DataFrame:
         filename = self.paths[key]

@@ -103,10 +103,13 @@ def parse_worker(args):
 
 
 def run_merger(catalog, merger, run_id):
-    """Mergerモード: デルタファイルの集約とGlobal更新 (Atomic Commit 戦略)"""
+    """Mergerモード: デルタファイルの集約とGlobal更新 (Atomic Commit & Rollback 戦略)"""
     logger.info(f"=== Merger Process Started (Run ID: {run_id}) ===")
 
-    # 1. ハウスキーピング (古いデルタの削除)
+    # 1. 準備：ロールバック用のスナップショット取得
+    catalog.take_snapshot()
+
+    # 2. ハウスキーピング (古いデルタの削除)
     catalog.cleanup_deltas(run_id, cleanup_old=True)
 
     # 2. 有効なデルタの収集
@@ -198,8 +201,14 @@ def run_merger(catalog, merger, run_id):
                 logger.error(f"❌ Failed to stage {m_type} for {identifier}")
                 all_masters_success = False
 
-    # --- D. Catalog & Final Commit ---
+    # --- D. Catalog & RAW Assets ---
     if all_masters_success:
+        # RAWデータのアップロード復旧 (Atomicバッファに積む)
+        if RAW_BASE_DIR.exists() and any(RAW_BASE_DIR.iterdir()):
+            processed_count += 1
+            catalog.upload_raw_folder(RAW_BASE_DIR, path_in_repo="raw", defer=True)
+            logger.info("RAW assets staged for upload (Atomic)")
+
         if "catalog" in deltas and not deltas["catalog"].empty:
             processed_count += 1
             new_df = deltas["catalog"]
@@ -210,7 +219,7 @@ def run_merger(catalog, merger, run_id):
             catalog._save_and_upload("catalog", merged_catalog, defer=True)
             logger.info("Global Catalog staged (Atomic)")
 
-        # 【最重要】ここで全一括コミット！ (全か無か)
+        # 【アトミック・コミット実行】
         if processed_count > 0:
             if catalog.push_commit(f"Merger Atomic Success: {run_id}"):
                 logger.success(
@@ -219,31 +228,53 @@ def run_merger(catalog, merger, run_id):
 
                 # 【極限の堅牢性：Read-after-Write Verification (RaW-V)】
                 # コミット直後に、キャッシュを無視してリモートから再取得し、実際に書き込まれたことを検証する
-                logger.info("極限整合性検証 (RaW-V: カタログ & マスタ) を実行中...")
+                logger.info("極限整合性検証 (RaW-V: カタログ, マスタ, RAW) を実行中...")
                 try:
-                    # 1. カタログの検証 (force_download=True で最新を強制取得)
+                    # 1. カタログ & マスタの検証 (force_download=True で最新を強制取得)
                     vf_catalog = catalog._load_parquet("catalog", force_download=True)
-                    if vf_catalog.empty:
-                        raise ValueError("リモートのカタログファイルが空です。")
-
-                    # 2. マスタの検証
                     vf_master = catalog._load_parquet("master", force_download=True)
-                    if vf_master.empty:
-                        raise ValueError("リモートのマスタファイルが空です。")
 
-                    # 3. 具体的なレコード存在確認 (今回の期間の書類が1件でもカタログに存在するか)
+                    if vf_catalog.empty or vf_master.empty:
+                        raise ValueError("リモートの基幹ファイルが空です。")
+
+                    # 2. RAWデータの存在検証 (サンプリング)
                     if not deltas["catalog"].empty:
                         sample_doc = deltas["catalog"].iloc[0]["doc_id"]
+
+                        # カタログ上の存在確認
                         if sample_doc not in vf_catalog["doc_id"].values:
                             raise ValueError(
                                 f"検知失敗: 追加されたはずの書類 {sample_doc} がリモートカタログに見当たりません。"
                             )
 
+                        # RAWファイルの存在確認 (エビデンス)
+                        raw_repo_path = f"raw/{sample_doc}/{sample_doc}.zip"
+                        try:
+                            # 存在確認のみなのでメタデータ取得を試みる
+                            catalog.api.get_paths_info(
+                                repo_id=catalog.hf_repo,
+                                paths=[raw_repo_path],
+                                repo_type="dataset",
+                                token=catalog.hf_token,
+                            )
+                            logger.info(f"✅ RAWファイル検証成功: {raw_repo_path}")
+                        except Exception:
+                            # 固有のzip名でない可能性も考慮し、フォルダ存在を確認
+                            files = catalog.api.list_repo_files(repo_id=catalog.hf_repo, repo_type="dataset")
+                            if not any(f.startswith(f"raw/{sample_doc}/") for f in files):
+                                raise ValueError(
+                                    f"RAW検証失敗: 書類 {sample_doc} のRAWデータがリモートに存在しません。"
+                                ) from None
+
                     logger.success("✅ RaW-V 成功: 全データの書き込みと整合性がリモート上で確認されました。")
                     catalog.cleanup_deltas(run_id, cleanup_old=False)
                 except Exception as e:
                     logger.critical(f"❌ 整合性不整合を検知 (RaW-V ERROR): {e}")
-                    logger.critical("⛔ 重大なデータ不整合の可能性があるため、パイプラインを強制停止します。")
+                    # 【世界最高の対応：自動ロールバック】
+                    if catalog.rollback(f"RaW-V Failure Rollback: {e}"):
+                        logger.success("✅ 自動ロールバックに成功しました。不完全なデータは破棄されました。")
+                    else:
+                        logger.critical("❌ ロールバックに失敗しました。データが不安定な状態です！手動介入が必要です。")
                     sys.exit(1)
             else:
                 logger.error("❌ 最終バッチコミットに失敗しました。データ整合性は維持されています。")
@@ -484,12 +515,11 @@ def main():
             try:
                 d1 = datetime.strptime(period_start, "%Y-%m-%d")
                 d2 = datetime.strptime(period_end, "%Y-%m-%d")
-                # 日数差を月数に換算 (+1日して端数を丸める)
-                diff_days = (d2 - d1).days + 1
-                calc_months = round(diff_days / 30.4375)  # 365.25 / 12
-
                 # 通常は 12, 9, 6, 3 などに収束。
                 # 異常値（0以下 または 24ヶ月超）は NULL として扱い、嘘の情報を記録しない
+                diff_days = (d2 - d1).days + 1
+                calc_months = round(diff_days / 30.4375)  # 365.25 / 12 (平均月日数)
+
                 if 1 <= calc_months <= 24:
                     num_months = calc_months
                 else:
