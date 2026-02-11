@@ -30,6 +30,7 @@ class MasterMerger:
         if new_data.empty:
             return True
 
+        if worker_mode:
             # 【重要】不変シャッディング: 証券コードの上2桁(bin)で物理分割
             # これにより業種が変わっても物理的な保存場所(パス)が不変に保たれます。
             # 例: 7203 -> bin=72
