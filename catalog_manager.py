@@ -295,6 +295,7 @@ class CatalogManager:
 
                     logger.warning(f"アップロード一時エラー: {filename} - {e} - Retrying ({attempt + 1}/5)...")
                     time.sleep(10 * (attempt + 1))
+            logger.error(f"❌ アップロードに最終的に失敗しました: {filename}")
             return False
         return True
 
@@ -461,12 +462,13 @@ class CatalogManager:
                 name_history = self._load_parquet("name")
                 name_history = pd.concat([name_history, pd.DataFrame(new_events)], ignore_index=True)
 
-                # 重複排除して保存
-                self._save_and_upload("name", name_history.drop_duplicates())
+                # 重複排除して保存 (Atomic保存のために defer=True)
+                self._save_and_upload("name", name_history.drop_duplicates(), defer=True)
                 logger.info(f"社名変更を検知・記録しました: {len(new_events)} 件")
 
         self.master_df = valid_df
-        return self._save_and_upload("master", self.master_df)  # 【修正】戻り値を返す
+        # defer=True を指定してコミットバッファに積む
+        return self._save_and_upload("master", self.master_df, defer=True)
 
     def get_last_index_list(self, index_name: str) -> pd.DataFrame:
         """指定指数の構成銘柄を取得 (Phase 3用)"""

@@ -75,9 +75,10 @@ class MasterMerger:
         combined_df.to_parquet(local_file, compression="zstd", index=False)
 
         if self.api:
+            # 【重要】defer=True の場合は、モードに関わらずコミットバッファに積む
             if defer and catalog_manager:
                 catalog_manager.add_commit_operation(repo_path, local_file)
-                logger.debug(f"Master更新をバッファに追加: bin={bin_val}")
+                logger.debug(f"Master更新をバッファに追加: bin={bin_val} ({master_type})")
                 return True
 
             max_retries = 5  # 3回から5回に強化

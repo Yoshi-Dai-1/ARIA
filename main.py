@@ -103,24 +103,20 @@ def parse_worker(args):
 
 
 def run_merger(catalog, merger, run_id):
-    """Mergerモード: デルタファイルの集約とGlobal更新 (Master First 戦略)"""
+    """Mergerモード: デルタファイルの集約とGlobal更新 (Atomic Commit 戦略)"""
     logger.info(f"=== Merger Process Started (Run ID: {run_id}) ===")
 
-    # 1. ハウスキーピング (古いデルタの削除 - 常に実行してOK)
+    # 1. ハウスキーピング (古いデルタの削除)
     catalog.cleanup_deltas(run_id, cleanup_old=True)
 
     # 2. 有効なデルタの収集
     deltas = catalog.load_deltas(run_id)
     if not deltas:
         logger.warning("有効なデルタデータが見つかりませんでした (No valid chunks found).")
-        # データがない場合はクリーンアップして終了（何も更新していないので安全）
         catalog.cleanup_deltas(run_id, cleanup_old=False)
-        # データがない場合でも、後続のクリーンアップロジックで処理されるように return を削除
-        # catalog.cleanup_deltas(run_id, cleanup_old=False) # この行は削除
+        return
 
-    # 3. マージとGlobal更新 (Strategy: Master/Data First -> Catalog Last)
-    # これにより、Catalogが進んでMasterが更新されない（データロスト）を防ぐ。
-
+    # 3. マージとGlobal更新 (Atomic Commit: すべて defer=True でバッファに積む)
     all_masters_success = True
     processed_count = 0
 
@@ -128,62 +124,38 @@ def run_merger(catalog, merger, run_id):
     if "master" in deltas and not deltas["master"].empty:
         processed_count += 1
         new_master = deltas["master"]
-        # JPX最新リストにあるコードのセット
         active_codes = set(new_master["code"])
 
-        # 既存マスタの is_active を更新
         current_master = catalog.master_df.copy()
         if not current_master.empty:
             if "is_active" not in current_master.columns:
-                current_master["is_active"] = True  # カラムがない場合は初期化
-
-            # 既存レコードのステータス更新
+                current_master["is_active"] = True
             current_master["is_active"] = current_master["code"].isin(active_codes)
 
-        # 新規データの is_active は当然 True
         new_master["is_active"] = True
-
-        # マージ (既存の状態更新済みデータ + 新規データ)
         merged_master = pd.concat([current_master, new_master], ignore_index=True).drop_duplicates(
             subset=["code"], keep="last"
         )
 
-        # recカラムなどのクリーンアップ（もしあれば）
         if "rec" in merged_master.columns:
             merged_master.drop(columns=["rec"], inplace=True)
 
-        # 型を強制（文字列化を防ぐ）
+        # 型正規化 (継承ロジック)
         if merged_master["is_active"].dtype == "object":
-            # 'False' (文字列) を確実に False (bool) にするために lowercase で判定
             merged_master["is_active"] = (
                 merged_master["is_active"]
                 .astype(str)
                 .str.lower()
-                .map(
-                    {
-                        "true": True,
-                        "false": False,
-                        "1": True,
-                        "0": False,
-                        "1.0": True,
-                        "0.0": False,
-                        "none": True,
-                        "nan": True,
-                    }
-                )
+                .map({"true": True, "false": False, "1": True, "0": False, "none": True, "nan": True})
                 .fillna(True)
                 .astype(bool)
             )
-        else:
-            merged_master["is_active"] = merged_master["is_active"].astype(bool)
 
-        if catalog._save_and_upload("master", merged_master):
-            logger.success(
-                f"Global Stock Master Updated (Active: {merged_master['is_active'].astype(int).sum()} / "
-                f"Total: {len(merged_master)})"
-            )
+        # 【超重要】update_stocks_master を使うことで社名変更検知を強制し、かつ defer=True で保存
+        if catalog.update_stocks_master(merged_master):
+            logger.info("Stock Master update staged (Atomic)")
         else:
-            logger.error("❌ Failed to update Global Stock Master")
+            logger.error("❌ Failed to stage Global Stock Master")
             all_masters_success = False
 
     # --- B. History (listing, index, name) ---
@@ -193,28 +165,28 @@ def run_merger(catalog, merger, run_id):
             new_hist = deltas[key]
             current_hist = catalog._load_parquet(key)
             merged_hist = pd.concat([current_hist, new_hist], ignore_index=True).drop_duplicates()
-            if catalog._save_and_upload(key, merged_hist):
-                logger.success(f"Global {key} History Updated")
+            # 履歴も defer=True でバッファリング
+            if catalog._save_and_upload(key, merged_hist, defer=True):
+                logger.info(f"Global {key} History staged (Atomic)")
             else:
-                logger.error(f"❌ Failed to update Global {key} History")
+                logger.error(f"❌ Failed to stage Global {key} History")
                 all_masters_success = False
 
     # --- C. Financial / Text (Sector based) ---
     for key, sector_df in deltas.items():
         if (key.startswith("financial_") or key.startswith("text_")) and not sector_df.empty:
             processed_count += 1
-            # キーから識別子(bin または sector)を復元
             identifier = key.replace("financial_", "").replace("text_", "")
             m_type = "financial_values" if key.startswith("financial_") else "qualitative_text"
 
-            # MasterMerger (Standard Mode) でアップロード
-            # セクター引数は bin 識別子を渡すが、Merger内部でデータからbinを再計算するため整合性は維持される
-            if not merger.merge_and_upload(identifier, m_type, sector_df, worker_mode=False):
-                logger.error(f"❌ Failed to update {m_type} for {identifier}")
+            # defer=True を明示的に指定
+            if not merger.merge_and_upload(
+                identifier, m_type, sector_df, worker_mode=False, catalog_manager=catalog, defer=True
+            ):
+                logger.error(f"❌ Failed to stage {m_type} for {identifier}")
                 all_masters_success = False
 
-    # --- D. Catalog Update (Commit Log) ---
-    catalog_updated = False
+    # --- D. Catalog & Final Commit ---
     if all_masters_success:
         if "catalog" in deltas and not deltas["catalog"].empty:
             processed_count += 1
@@ -222,27 +194,24 @@ def run_merger(catalog, merger, run_id):
             merged_catalog = pd.concat([catalog.catalog_df, new_df], ignore_index=True).drop_duplicates(
                 subset=["doc_id"], keep="last"
             )
-            if catalog._save_and_upload("catalog", merged_catalog):
-                logger.success(f"Global Catalog Updated (Total: {len(merged_catalog)} rows)")
-                catalog_updated = True
+            # カタログも予約
+            catalog._save_and_upload("catalog", merged_catalog, defer=True)
+            logger.info("Global Catalog staged (Atomic)")
+
+        # 【最重要】ここで全一括コミット！ (全か無か)
+        if processed_count > 0:
+            if catalog.push_commit(f"Merger Atomic Success: {run_id}"):
+                logger.success(
+                    f"=== Merger完了: 全データをアトミックに更新しました (Total: {processed_count} files) ==="
+                )
+                catalog.cleanup_deltas(run_id, cleanup_old=False)
             else:
-                logger.error("❌ Failed to update Global Catalog")
+                logger.error("❌ 最終バッチコミットに失敗しました。データ整合性は維持されています。")
         else:
-            catalog_updated = True  # Catalog自体の更新がない場合は成功とみなす
+            logger.info("処理対象のデータはありませんでした。")
     else:
-        logger.error("⛔ Master更新に失敗があるため、Catalog更新をスキップしました (データ整合性保護)")
-
-    if processed_count == 0:
-        logger.info("処理対象のデータはありませんでした。クリーンアップのみ実行します。")
-
-    # 4. クリーンアップ
-    # 更新に成功したか、あるいはそもそも処理対象がなかった場合に実行
-    if all_masters_success and catalog_updated:
-        catalog.cleanup_deltas(run_id, cleanup_old=False)
-        logger.info("=== Merger Process Completed Successfully ===")
-    else:
-        logger.warning("⚠️ 処理の失敗（または整合性不備）を検知したため、今回のDeltaファイルを保持します。")
-        logger.info("=== Merger Process Completed with Errors ===")
+        logger.error("⛔ Master更新準備中にエラーが発生したため、コミットを中断しました (整合性保護)")
+        logger.info("=== Merger Process Completed with Errors (No changes applied) ===")
 
 
 def main():
