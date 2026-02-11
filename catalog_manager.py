@@ -484,11 +484,17 @@ class CatalogManager:
         # 2. 既存データとの統合 (リコンシリエーション)
         # 既存マスタを「過去の状態の一つ」として扱い、全てのタイムラインをマージする
         current_m = self.master_df.copy()
+        # カラム自体の存在と、値としての NaN の両方をケア
         if "last_submitted_at" not in current_m.columns:
             current_m["last_submitted_at"] = "1970-01-01 00:00:00"
+        else:
+            current_m["last_submitted_at"] = current_m["last_submitted_at"].fillna("1970-01-01 00:00:00")
 
         # 全ての既知の状態を統合
         all_states = pd.concat([current_m, incoming_df], ignore_index=True)
+        # NaN が残っている場合は最古の日付で埋める (時系列ソートの安定化)
+        all_states["last_submitted_at"] = all_states["last_submitted_at"].fillna("1970-01-01 00:00:00")
+
         # 重複排除 (同じ code, company_name, last_submitted_at は不要)
         all_states.drop_duplicates(subset=["code", "company_name", "last_submitted_at"], inplace=True)
 
@@ -546,8 +552,12 @@ class CatalogManager:
         if new_history_events:
             new_hist_df = pd.DataFrame(new_history_events)
             name_history = pd.concat([name_history, new_hist_df], ignore_index=True).drop_duplicates()
+            # defer=True を指定してコミットバッファに積む
             self._save_and_upload("name", name_history, defer=True)
             logger.info(f"時系列リコンシリエーションにより {len(new_history_events)} 件の変遷を特定しました。")
+        elif name_history.empty:
+            # 初回実行時などで履歴が空の場合でも、ファイルを作成して整合性を保つ
+            self._save_and_upload("name", name_history, defer=True)
 
         # 5. マスタの更新 (常に「物理的に最も新しい提出日時」の情報で上書き)
         # 全状態の中から、code ごとに提出日時が最新のものを抽出
