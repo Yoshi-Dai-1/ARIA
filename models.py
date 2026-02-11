@@ -93,6 +93,8 @@ class IndexEvent(BaseModel):
 
     index_name: str
     code: str
+    type: str  # ADITION, REMOVAL
+    event_date: str
 
 
 class NameChangeEvent(BaseModel):

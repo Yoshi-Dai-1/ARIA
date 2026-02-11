@@ -225,6 +225,8 @@ def run_merger(catalog, merger, run_id):
                 logger.success(
                     f"=== Merger完了: 全データをアトミックに更新しました (Total: {processed_count} files) ==="
                 )
+                # メモリ上のカタログ状態を確定させる
+                catalog.catalog_df = merged_catalog
 
                 # 【極限の堅牢性：Read-after-Write Verification (RaW-V)】
                 # コミット直後に、キャッシュを無視してリモートから再取得し、実際に書き込まれたことを検証する
