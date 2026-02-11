@@ -1,6 +1,7 @@
 import random
 import re
 import time
+import unicodedata
 from pathlib import Path
 from typing import Dict, List
 
@@ -158,16 +159,18 @@ class CatalogManager:
         return df
 
     def _normalize_company_name(self, name: str) -> str:
-        """比較判定のために法人格や空白を除去して正規化する"""
+        """比較判定のために法人格や空白を除去して正規化する (NFKC対応版)"""
         if not name or not isinstance(name, str):
             return ""
 
-        # 1. 全角を半角に、または統一的な処理 (全角スペースを半角になど)
-        # ここでは簡易的に「全ての空白除去」と「法人格除去」を行う
-        n = name.replace("　", "").replace(" ", "")
+        # 1. NFKC正規化 (全角数字・英字を半角に、㈱ などを (株) に分解)
+        n = unicodedata.normalize("NFKC", name)
 
-        # 2. 代表的な法人格表記を除去
-        # 前株、後株、中株、有限会社、合同会社、(株)、（株）、株式会社 等
+        # 2. 全ての空白除去
+        n = n.replace(" ", "").replace("\u3000", "")
+
+        # 3. 代表的な法人格表記を除去
+        # NFKC後の (株) や (有) などに対応できるようパターンを整理
         patterns = [
             r"株式会社",
             r"有限会社",
@@ -179,31 +182,13 @@ class CatalogManager:
             r"公益社団法人",
             r"公益財団法人",
             r"\(株\)",
-            r"（株）",
             r"\(有\)",
-            r"（有）",
             r"\(合\)",
-            r"（合）",
-            r"㈱",
-            r"㈲",
-            r"㈔",
-            r"㈶",
-            r"㈿",
-            r"㈺",
-            r"㈻",
-            r"㈼",
-            r"㈽",
-            r"㈾",
+            r"\(社\)",
+            r"\(財\)",
         ]
         for p in patterns:
             n = re.sub(p, "", n)
-
-        # 3. 記号等の微細な差異を正規化
-        n = n.translate(
-            str.maketrans(
-                "！”＃＄％＆’（）＊＋，－．／：；＜＝＞？［＼］＾＿｀｛｜｝～", "!\"#$%&'()*+,-./:;<=>?[\\]^_`{|}~"
-            )
-        )
 
         return n.strip()
 
