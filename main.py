@@ -313,6 +313,11 @@ def main():
         logger.critical("EDINET_API_KEY が設定されていません。")
         return
 
+    if args.start:
+        args.start = args.start.strip()
+    if args.end:
+        args.end = args.end.strip()
+
     if not args.start:
         args.start = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
     if not args.end:
