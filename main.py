@@ -217,21 +217,37 @@ def run_merger(catalog, merger, run_id):
                     f"=== Merger完了: 全データをアトミックに更新しました (Total: {processed_count} files) ==="
                 )
 
-                # 【極限の堅牢性：Read-after-Write Verification】
-                logger.info("最終整合性検証 (Read-after-Write) を実行中...")
+                # 【極限の堅牢性：Read-after-Write Verification (RaW-V)】
+                # コミット直後に、キャッシュを無視してリモートから再取得し、実際に書き込まれたことを検証する
+                logger.info("極限整合性検証 (RaW-V: カタログ & マスタ) を実行中...")
                 try:
-                    # コミット直後に実際にリポジトリからカタログをロードして、空でないことを確認
-                    # ※ここでの _load_parquet はキャッシュではなくリモートからの再取得を試行する
-                    vf_catalog = catalog._load_parquet("catalog")
-                    if not vf_catalog.empty:
-                        logger.success(f"✅ 検証成功: カタログの整合性が確認されました (レコード数: {len(vf_catalog)})")
-                        catalog.cleanup_deltas(run_id, cleanup_old=False)
-                    else:
-                        logger.error("❌ 検証失敗: 更新後のカタログが読み込めません。")
+                    # 1. カタログの検証 (force_download=True で最新を強制取得)
+                    vf_catalog = catalog._load_parquet("catalog", force_download=True)
+                    if vf_catalog.empty:
+                        raise ValueError("リモートのカタログファイルが空です。")
+
+                    # 2. マスタの検証
+                    vf_master = catalog._load_parquet("master", force_download=True)
+                    if vf_master.empty:
+                        raise ValueError("リモートのマスタファイルが空です。")
+
+                    # 3. 具体的なレコード存在確認 (今回の期間の書類が1件でもカタログに存在するか)
+                    if not deltas["catalog"].empty:
+                        sample_doc = deltas["catalog"].iloc[0]["doc_id"]
+                        if sample_doc not in vf_catalog["doc_id"].values:
+                            raise ValueError(
+                                f"検知失敗: 追加されたはずの書類 {sample_doc} がリモートカタログに見当たりません。"
+                            )
+
+                    logger.success("✅ RaW-V 成功: 全データの書き込みと整合性がリモート上で確認されました。")
+                    catalog.cleanup_deltas(run_id, cleanup_old=False)
                 except Exception as e:
-                    logger.error(f"❌ 検証プロセスエラー: {e}")
+                    logger.critical(f"❌ 整合性不整合を検知 (RaW-V ERROR): {e}")
+                    logger.critical("⛔ 重大なデータ不整合の可能性があるため、パイプラインを強制停止します。")
+                    sys.exit(1)
             else:
                 logger.error("❌ 最終バッチコミットに失敗しました。データ整合性は維持されています。")
+                sys.exit(1)
         else:
             logger.info("処理対象のデータはありませんでした。")
     else:
