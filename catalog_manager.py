@@ -526,6 +526,19 @@ class CatalogManager:
         else:
             current_m["last_submitted_at"] = current_m["last_submitted_at"].fillna("1970-01-01 00:00:00")
 
+        # --- 【重要】JPXゲートキーパー・フィルタ ---
+        # 証券コードの名簿(Universe)は JPX を唯一の正とする。
+        # EDINET 由来の新コード(非上場企業や上場廃止後の残党)がマスタに混入するのを防ぐ。
+        if not current_m.empty:
+            existing_codes = set(current_m["code"])
+            # EDINETバッチの中から、既にマスタ(JPX由来)に存在する銘柄のみを抽出
+            incoming_df = incoming_df[incoming_df["code"].isin(existing_codes)]
+
+            # EDINETデータから取得した is_active は信用せず、既存の「生死判定」を優先する
+            # (上場廃止後に書類が出たことで is_active=True に戻るのを防ぐ)
+            active_map = current_m.set_index("code")["is_active"].to_dict()
+            incoming_df["is_active"] = incoming_df["code"].map(active_map)
+
         # 全ての既知の状態を統合
         all_states = pd.concat([current_m, incoming_df], ignore_index=True)
         # NaN が残っている場合は最古の日付で埋める (時系列ソートの安定化)
