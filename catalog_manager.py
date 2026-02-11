@@ -1,6 +1,5 @@
 import random
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import Dict, List
 
@@ -516,9 +515,11 @@ class CatalogManager:
                     # 日付の安全な抽出 (last_submitted_at が NaN の場合を考慮)
                     submitted_at = curr_state.get("last_submitted_at")
                     if pd.isna(submitted_at) or not isinstance(submitted_at, str):
-                        change_date = datetime.now().strftime("%Y-%m-%d")
-                    else:
-                        change_date = submitted_at[:10]
+                        # 日付不明の場合は、歴史的な「変化」として記録しない (嘘の情報の記録を回避)
+                        logger.warning(f"Submission date missing for code {code}. Skipping name history recording.")
+                        continue
+
+                    change_date = submitted_at[:10]
 
                     event = {
                         "code": code,
@@ -717,8 +718,10 @@ class CatalogManager:
         ops_list = list(self._commit_operations.values())
         total_ops = len(ops_list)
 
-        # 1コミットあたりの最大操作数 (HFの推奨と経験則から100件程度が安定)
-        batch_size = 100
+        # 1コミットあたりの最大操作数
+        # レート制限 (128回/時) を回避するため、バッチサイズを拡大してコミット回数を削減する
+        # HF側でタイムアウトしないギリギリのラインとして 500件程度が最適
+        batch_size = 500
         batches = [ops_list[i : i + batch_size] for i in range(0, total_ops, batch_size)]
 
         logger.info(f"🚀 コミット送信開始: 合計 {total_ops} 操作を {len(batches)} バッチに分割して実行します")

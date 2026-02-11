@@ -134,6 +134,14 @@ def run_merger(catalog, merger, run_id):
             subset=["code", "company_name"]
         )[["code", "company_name", "submit_at"]]
 
+        # 提出日時が欠落しているドキュメントは時系列解析から除外 (情報の誠実性を担保)
+        initial_event_count = len(name_events_in_batch)
+        name_events_in_batch = name_events_in_batch[name_events_in_batch["submit_at"].notna()]
+        if len(name_events_in_batch) < initial_event_count:
+            logger.warning(
+                f"Filtered out {initial_event_count - len(name_events_in_batch)} events with missing submit_at"
+            )
+
         # カタログマネージャーにすべての「状態候補」を渡し、時系列でリコンシリエーション（照合）させる
         # これにより、バッチ内での複数回変更や、過去データのバックフィル時も正しい履歴が生成される
         # StockMasterRecord モデルに合わせてカラム名を調整
