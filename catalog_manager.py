@@ -526,19 +526,6 @@ class CatalogManager:
         else:
             current_m["last_submitted_at"] = current_m["last_submitted_at"].fillna("1970-01-01 00:00:00")
 
-        # --- 【重要】JPXゲートキーパー・フィルタ ---
-        # 証券コードの名簿(Universe)は JPX を唯一の正とする。
-        # EDINET 由来の新コード(非上場企業や上場廃止後の残党)がマスタに混入するのを防ぐ。
-        if not current_m.empty:
-            existing_codes = set(current_m["code"])
-            # EDINETバッチの中から、既にマスタ(JPX由来)に存在する銘柄のみを抽出
-            incoming_df = incoming_df[incoming_df["code"].isin(existing_codes)]
-
-            # EDINETデータから取得した is_active は信用せず、既存の「生死判定」を優先する
-            # (上場廃止後に書類が出たことで is_active=True に戻るのを防ぐ)
-            active_map = current_m.set_index("code")["is_active"].to_dict()
-            incoming_df["is_active"] = incoming_df["code"].map(active_map)
-
         # 全ての既知の状態を統合
         all_states = pd.concat([current_m, incoming_df], ignore_index=True)
         # NaN が残っている場合は最古の日付で埋める (時系列ソートの安定化)
@@ -661,18 +648,20 @@ class CatalogManager:
             jpx_entries = group[group["last_submitted_at"].str.startswith("1970")]
 
             if not jpx_entries.empty:
-                # JPXが存在する場合、社名以外の主要属性をJPXから強制取得
-                # これにより、将来EDINETにセクター情報が含まれても、JPXが「正」として守られる
+                # JPXが存在する場合、主要属性をJPXから強制取得（EDINET属性を拒絶）
                 jpx_rec = jpx_entries.iloc[0]
                 latest_rec["sector"] = jpx_rec["sector"]
                 latest_rec["market"] = jpx_rec["market"]
                 latest_rec["is_active"] = jpx_rec["is_active"]
-            else:
-                # JPXに存在しない(完全新規上場等の)場合のみ、属性を補完またはデフォルト値で埋める
+                # 万が一 JPX のセクターが不全な場合は、過去の有効な属性から拾う（ただし優先度はJPX）
                 if latest_rec["sector"] in ["その他", None, "nan", ""]:
                     latest_rec["sector"] = resolve_attr(group, "sector")
-                if latest_rec["market"] in ["その他", None, "nan", ""]:
-                    latest_rec["market"] = resolve_attr(group, "market")
+            else:
+                # JPXに一度も登録されたことがない(完全新規上場等)の場合
+                # JPXによる承認(同期)があるまでは、Inactive かつ 属性なし として隔離する
+                latest_rec["is_active"] = False
+                latest_rec["sector"] = "その他"
+                latest_rec["market"] = None
 
             best_records.append(latest_rec)
 
