@@ -611,7 +611,8 @@ class CatalogManager:
                     if prev_name != curr_name:
                         if is_baseline_from_jpx:
                             logger.debug(
-                                f"ℹ️ 基点を略称から正式名称へ昇格 (履歴には残しません): {code} | {prev_name} -> {curr_name}"
+                                f"ℹ️ 基点を略称から正式名称へ昇格 (履歴には残しません): "
+                                f"{code} | {prev_name} -> {curr_name}"
                             )
                         prev_name = curr_name
                         is_baseline_from_jpx = False
