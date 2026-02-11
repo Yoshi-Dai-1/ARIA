@@ -1,5 +1,6 @@
 import random
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List
 
@@ -512,11 +513,18 @@ class CatalogManager:
                     prev_state = sorted_group.iloc[sorted_group.index.get_loc(name_changes.index[i]) - 1]
                     curr_state = name_changes.iloc[i]
 
+                    # 日付の安全な抽出 (last_submitted_at が NaN の場合を考慮)
+                    submitted_at = curr_state.get("last_submitted_at")
+                    if pd.isna(submitted_at) or not isinstance(submitted_at, str):
+                        change_date = datetime.now().strftime("%Y-%m-%d")
+                    else:
+                        change_date = submitted_at[:10]
+
                     event = {
                         "code": code,
                         "old_name": prev_state["company_name"],
                         "new_name": curr_state["company_name"],
-                        "change_date": curr_state["last_submitted_at"][:10],
+                        "change_date": change_date,
                     }
 
                     # 既に履歴に存在するかチェック (重複登録防止)
@@ -699,55 +707,80 @@ class CatalogManager:
             return {}
 
     def push_commit(self, message: str = "Batch update from ARIA") -> bool:
-        """バッファに溜まった操作を一括でコミット実行"""
+        """
+        バッファに溜まった操作をコミット実行。
+        【究極の安定化】操作数が多い場合は、HF側の負荷と429エラーを避けるため、自動的に分割してコミットする。
+        """
         if not self.api or not self._commit_operations:
             return True
 
-        # 【極限強化】リトライ上限を12回に引き上げ、500エラーやタイムアウトに備える
-        max_retries = 12
         ops_list = list(self._commit_operations.values())
+        total_ops = len(ops_list)
 
-        for attempt in range(max_retries):
-            try:
-                # 通信パッチにより、この内部でのタイムアウトは180秒に延長されています
-                self.api.create_commit(
-                    repo_id=self.hf_repo,
-                    repo_type="dataset",
-                    operations=ops_list,
-                    commit_message=message,
-                    token=self.hf_token,
-                )
-                logger.success(f"✅ バッチコミット成功: {len(ops_list)} 操作")
-                self._commit_operations = {}  # クリア
-                return True
-            except Exception as e:
-                # 429 レート制限 または 500 サーバーエラー
-                if isinstance(e, HfHubHTTPError) and e.response.status_code in [429, 500]:
-                    wait_time = int(e.response.headers.get("Retry-After", 60)) + 15
-                    logger.warning(
-                        f"HF Server Error ({e.response.status_code}). "
-                        f"Waiting {wait_time}s... ({attempt + 1}/{max_retries})"
+        # 1コミットあたりの最大操作数 (HFの推奨と経験則から100件程度が安定)
+        batch_size = 100
+        batches = [ops_list[i : i + batch_size] for i in range(0, total_ops, batch_size)]
+
+        logger.info(f"🚀 コミット送信開始: 合計 {total_ops} 操作を {len(batches)} バッチに分割して実行します")
+
+        for i, batch in enumerate(batches):
+            batch_msg = f"{message} (part {i + 1}/{len(batches)})"
+            max_retries = 12
+            success = False
+
+            for attempt in range(max_retries):
+                try:
+                    self.api.create_commit(
+                        repo_id=self.hf_repo,
+                        repo_type="dataset",
+                        operations=batch,
+                        commit_message=batch_msg,
+                        token=self.hf_token,
                     )
-                    time.sleep(wait_time)
-                    continue
+                    success = True
+                    break
+                except Exception as e:
+                    status_code = getattr(getattr(e, "response", None), "status_code", None)
 
-                # 409 コンフリクト または 412 前提条件失敗
-                if isinstance(e, HfHubHTTPError) and e.response.status_code in [409, 412]:
-                    # 大規模コミットではコンフリクト期間が長いため、バックオフを強化
-                    wait_time = (2 ** (attempt + 2)) + (random.uniform(10, 30))
+                    # 429 レート制限 または 500 サーバーエラー
+                    if status_code in [429, 500]:
+                        # 429の場合はより長く待機 (HFの回復を待つ)
+                        wait_time = int(getattr(e.response.headers, "get", lambda x, y: y)("Retry-After", 60))
+                        wait_time = max(wait_time, 60) + (attempt * 30) + random.uniform(5, 15)
+                        logger.warning(
+                            f"HF Server Error ({status_code}). Waiting {wait_time:.1f}s... "
+                            f"(Batch {i + 1}, Attempt {attempt + 1}/{max_retries})"
+                        )
+                        time.sleep(wait_time)
+                        continue
+
+                    # 409 コンフリクト または 412 前提条件失敗
+                    if status_code in [409, 412]:
+                        wait_time = (2 ** (attempt + 2)) + (random.uniform(10, 30))
+                        logger.warning(
+                            f"Commit Conflict ({status_code}). Retrying in {wait_time:.2f}s... "
+                            f"(Batch {i + 1}, Attempt {attempt + 1}/{max_retries})"
+                        )
+                        time.sleep(wait_time)
+                        continue
+
+                    # タイムアウト等のネットワーク例外
                     logger.warning(
-                        f"Commit Conflict ({e.response.status_code}). "
-                        f"Retrying in {wait_time:.2f}s... ({attempt + 1}/{max_retries})"
+                        f"通信エラー: {e} - Retrying... (Batch {i + 1}, Attempt {attempt + 1}/{max_retries})"
                     )
-                    time.sleep(wait_time)
-                    continue
+                    time.sleep(30 * (attempt + 1))
 
-                # タイムアウト等のネットワーク例外
-                logger.warning(f"コミット通信エラー: {e} - Retrying ({attempt + 1}/{max_retries})...")
-                time.sleep(20 * (attempt + 1))
+            if not success:
+                logger.error(f"❌ バッチ {i + 1} の送信に最終的に失敗しました。")
+                return False
 
-        logger.error("❌ バッチコミットに最終的に失敗しました。大規模更新のため、分割実行を推奨します。")
-        return False
+            # バッチ間に短い休憩を挟んでHF側の負荷を逃がす
+            if i < len(batches) - 1:
+                time.sleep(random.uniform(3, 7))
+
+        logger.success(f"✅ 全 {total_ops} 操作のバッチコミットが完了しました")
+        self._commit_operations = {}  # クリア
+        return True
 
     def cleanup_deltas(self, run_id: str, cleanup_old: bool = True):
         """一時ファイルのクリーンアップ (Merger用)"""
