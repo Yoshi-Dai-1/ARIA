@@ -1,4 +1,5 @@
 import random
+import re
 import time
 from pathlib import Path
 from typing import Dict, List
@@ -155,6 +156,42 @@ class CatalogManager:
                 df[col] = df[col].apply(lambda x: str(x) if (x is not None and not pd.isna(x)) else None)
 
         return df
+
+    def _normalize_company_name(self, name: str) -> str:
+        """比較判定のために法人格や空白を除去して正規化する"""
+        if not name or not isinstance(name, str):
+            return ""
+
+        # 1. 全角を半角に、または統一的な処理 (全角スペースを半角になど)
+        # ここでは簡易的に「全ての空白除去」と「法人格除去」を行う
+        n = name.replace("　", "").replace(" ", "")
+
+        # 2. 代表的な法人格表記を除去
+        # 前株、後株、中株、有限会社、合同会社、(株)、（株）、株式会社 等
+        patterns = [
+            r"株式会社",
+            r"有限会社",
+            r"合同会社",
+            r"合資会社",
+            r"合名会社",
+            r"\(株\)",
+            r"（株）",
+            r"\(有\)",
+            r"（有）",
+            r"\(合\)",
+            r"（合）",
+        ]
+        for p in patterns:
+            n = re.sub(p, "", n)
+
+        # 3. 記号等の微細な差異を正規化
+        n = n.translate(
+            str.maketrans(
+                "！”＃＄％＆’（）＊＋，－．／：；＜＝＞？［＼］＾＿｀｛｜｝～", "!\"#$%&'()*+,-./:;<=>?[\\]^_`{|}~"
+            )
+        )
+
+        return n.strip()
 
     def add_commit_operation(self, repo_path: str, local_path: Path):
         """コミットバッファに操作を追加（重複は最新で上書き）"""
@@ -506,17 +543,34 @@ class CatalogManager:
             # 提出日時の昇順でソート
             sorted_group = group.sort_values("last_submitted_at", ascending=True)
 
-            # 名称が変わった瞬間を特定
-            # 前の行と名称が異なる行を抽出
-            name_changes = sorted_group[sorted_group["company_name"] != sorted_group["company_name"].shift(1)]
+            # 名称が変わった瞬間を特定 (正規化名で比較)
+            # lambda を使って、実質的な名前が変わった行のみを抽出
+            def is_real_name_change(row, prev_row):
+                if prev_row is None:
+                    return False
+                return self._normalize_company_name(row["company_name"]) != self._normalize_company_name(
+                    prev_row["company_name"]
+                )
 
-            # 最初の行は「変化」ではないので除外（ただし既存履歴がない新規銘柄の場合は後で検討が必要かもしれないが、
-            # 基本的に「変化」を記録するのが name_history の役割）
-            if len(name_changes) > 1:
-                # 2行目以降が名称変更イベント
-                for i in range(1, len(name_changes)):
-                    prev_state = sorted_group.iloc[sorted_group.index.get_loc(name_changes.index[i]) - 1]
-                    curr_state = name_changes.iloc[i]
+            # 変化点のみを抽出
+            name_changes = []
+            prev_row = None
+            for _, row in sorted_group.iterrows():
+                if prev_row is not None and is_real_name_change(row, prev_row):
+                    name_changes.append(row)
+                prev_row = row
+
+            name_changes_df = pd.DataFrame(name_changes)
+
+            if not name_changes_df.empty:
+                # 抽出された変化点ごとに履歴を生成
+                for _, curr_state in name_changes_df.iterrows():
+                    # 直前の状態を取得
+                    prev_state = (
+                        sorted_group[sorted_group["last_submitted_at"] < curr_state["last_submitted_at"]]
+                        .sort_values("last_submitted_at", ascending=False)
+                        .iloc[0]
+                    )
 
                     # 日付の安全な抽出 (last_submitted_at が NaN の場合を考慮)
                     submitted_at = curr_state.get("last_submitted_at")
