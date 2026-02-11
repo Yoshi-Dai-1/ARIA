@@ -1,6 +1,5 @@
 import random
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import Dict, List
 
@@ -460,86 +459,92 @@ class CatalogManager:
         """現在の指数採用履歴マスタを取得"""
         return self._load_parquet("index")
 
-    def update_stocks_master(self, new_master: pd.DataFrame):
-        """マスタ更新 (時系列ガード付き Pydantic バリデーション実施)"""
-        if new_master.empty:
-            return
+    def update_stocks_master(self, incoming_data: pd.DataFrame):
+        """マスタ更新 & 時系列リコンシリエーション (世界最高水準の歴史再構築ロジック)"""
+        if incoming_data.empty:
+            return True
 
-        records = new_master.to_dict("records")
+        # 1. バリデーションと型正規化
+        records = incoming_data.to_dict("records")
         validated = []
         for rec in records:
             try:
-                # 辞書内の None や NaN を適切に処理
                 rec = {k: (v if not pd.isna(v) else None) for k, v in rec.items()}
+                # is_active の型正規化
+                if isinstance(rec.get("is_active"), str):
+                    rec["is_active"] = rec["is_active"].lower() in ["true", "1", "yes"]
                 validated.append(StockMasterRecord(**rec).model_dump())
             except Exception as e:
-                logger.error(f"銘柄マスタのバリデーション失敗 (code: {rec.get('code')}): {e}")
+                logger.error(f"銘柄情報のバリデーション失敗 (code: {rec.get('code')}): {e}")
 
         if not validated:
-            return
-        valid_df = pd.DataFrame(validated)
+            return True
+        incoming_df = pd.DataFrame(validated)
 
-        # 【極限の整合性：時系列ガード】
-        # 既存マスタとマージし、codeごとに last_submitted_at が「より新しい」情報のみを採用する
-        if not self.master_df.empty:
-            # 両方のDFに提出日時があることを保証（古いマスタには入っていない可能性があるため）
-            if "last_submitted_at" not in self.master_df.columns:
-                self.master_df["last_submitted_at"] = "1970-01-01 00:00:00"
-            if "last_submitted_at" not in valid_df.columns:
-                valid_df["last_submitted_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # 2. 既存データとの統合 (リコンシリエーション)
+        # 既存マスタを「過去の状態の一つ」として扱い、全てのタイムラインをマージする
+        current_m = self.master_df.copy()
+        if "last_submitted_at" not in current_m.columns:
+            current_m["last_submitted_at"] = "1970-01-01 00:00:00"
 
-            # 比較用にコピー
-            current_m = self.master_df.copy()
-            incoming_m = valid_df.copy()
+        # 全ての既知の状態を統合
+        all_states = pd.concat([current_m, incoming_df], ignore_index=True)
+        # 重複排除 (同じ code, company_name, last_submitted_at は不要)
+        all_states.drop_duplicates(subset=["code", "company_name", "last_submitted_at"], inplace=True)
 
-            # 現在のマスタをベースに、新しい情報があるものだけを特定
-            # 重複排除のキーとして code を使用
-            combined = pd.concat([current_m, incoming_m], ignore_index=True)
-            # 提出日時の降順でソートし、最初のもの（最新）を残す
-            # これにより、過去の書類が後から処理されても、マスタの情報（社名等）が過去に「巻き戻る」のを物理的に阻止する
-            final_master = combined.sort_values("last_submitted_at", ascending=False).drop_duplicates(
-                subset=["code"], keep="first"
-            )
+        # 3. 社名変更の歴史的変遷を解析
+        name_history = self._load_parquet("name")
+        new_history_events = []
 
-            # 社名変更の検知 (情報の順方向の変化のみを記録)
-            # 既にマスタにある社名と、今回「採用される」新しい社名が異なる場合のみ履歴に残す
-            # ※ただし、今回の「情報の提出日」が保持している最新の提出日より後の場合のみを対象とする
-            merged_for_change = pd.merge(
-                current_m[["code", "company_name", "last_submitted_at"]],
-                incoming_m[["code", "company_name", "last_submitted_at"]],
-                on="code",
-                how="inner",
-                suffixes=("_old", "_new"),
-            )
+        for code, group in all_states.groupby("code"):
+            # 提出日時の昇順でソート
+            sorted_group = group.sort_values("last_submitted_at", ascending=True)
 
-            # 条件：名前が異なり、かつ「新しい書類の日付」が「古い書類の日付」より後の場合のみ
-            # これにより、2022年の書類を処理したときに「2024年の社名が2022年の社名に変わった」という誤検知を防ぐ
-            changed = merged_for_change[
-                (merged_for_change["company_name_old"] != merged_for_change["company_name_new"])
-                & (merged_for_change["last_submitted_at_new"] > merged_for_change["last_submitted_at_old"])
-            ]
+            # 名称が変わった瞬間を特定
+            # 前の行と名称が異なる行を抽出
+            name_changes = sorted_group[sorted_group["company_name"] != sorted_group["company_name"].shift(1)]
 
-            if not changed.empty:
-                new_events = []
-                for _, row in changed.iterrows():
-                    new_events.append(
-                        {
-                            "code": row["code"],
-                            "old_name": row["company_name_old"],
-                            "new_name": row["company_name_new"],
-                            "change_date": row["last_submitted_at_new"][:10],  # 提出日の日付部分
-                        }
-                    )
+            # 最初の行は「変化」ではないので除外（ただし既存履歴がない新規銘柄の場合は後で検討が必要かもしれないが、
+            # 基本的に「変化」を記録するのが name_history の役割）
+            if len(name_changes) > 1:
+                # 2行目以降が名称変更イベント
+                for i in range(1, len(name_changes)):
+                    prev_state = sorted_group.iloc[sorted_group.index.get_loc(name_changes.index[i]) - 1]
+                    curr_state = name_changes.iloc[i]
 
-                # 履歴ファイルに追記
-                name_history = self._load_parquet("name")
-                name_history = pd.concat([name_history, pd.DataFrame(new_events)], ignore_index=True)
-                self._save_and_upload("name", name_history.drop_duplicates(), defer=True)
-                logger.info(f"正当な時系列での社名変更を記録しました: {len(new_events)} 件")
+                    event = {
+                        "code": code,
+                        "old_name": prev_state["company_name"],
+                        "new_name": curr_state["company_name"],
+                        "change_date": curr_state["last_submitted_at"][:10],
+                    }
 
-            self.master_df = final_master
-        else:
-            self.master_df = valid_df
+                    # 既に履歴に存在するかチェック (重複登録防止)
+                    exists = False
+                    if not name_history.empty:
+                        # 同じ code, old_name, new_name があれば重複とみなす
+                        # (change_date は書類によって多少前後する可能性があるため)
+                        exists = not name_history[
+                            (name_history["code"] == code)
+                            & (name_history["old_name"] == event["old_name"])
+                            & (name_history["new_name"] == event["new_name"])
+                        ].empty
+
+                    if not exists:
+                        new_history_events.append(event)
+
+        # 4. 履歴の保存 (Atomic & Non-destructive)
+        if new_history_events:
+            new_hist_df = pd.DataFrame(new_history_events)
+            name_history = pd.concat([name_history, new_hist_df], ignore_index=True).drop_duplicates()
+            self._save_and_upload("name", name_history, defer=True)
+            logger.info(f"時系列リコンシリエーションにより {len(new_history_events)} 件の変遷を特定しました。")
+
+        # 5. マスタの更新 (常に「物理的に最も新しい提出日時」の情報で上書き)
+        # 全状態の中から、code ごとに提出日時が最新のものを抽出
+        self.master_df = all_states.sort_values("last_submitted_at", ascending=False).drop_duplicates(
+            subset=["code"], keep="first"
+        )
 
         # defer=True を指定してコミットバッファに積む
         return self._save_and_upload("master", self.master_df, defer=True)

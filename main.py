@@ -123,75 +123,34 @@ def run_merger(catalog, merger, run_id):
     all_masters_success = True
     processed_count = 0
 
-    # --- A. Stock Master (Catalogデルタから最新情報を抽出) ---
-    # 【修正】Workerはmasterデルタを生成しないため、常にカタログから得られる最新の社名情報を反映
+    # --- A. Stock Master & Name History (Catalogデルタから全イベントを抽出) ---
     if "catalog" in deltas and not deltas["catalog"].empty:
         processed_count += 1
         cat_df = deltas["catalog"]
 
-        # カタログからコードごとの最新社名を抽出
-        latest_from_cat = cat_df.sort_values("submit_at", ascending=True).drop_duplicates(subset=["code"], keep="last")[
-            ["code", "company_name"]
-        ]
+        # 同一バッチ内での全社名状態を抽出 (リコンシリエーション用)
+        # 1つの期間内に A -> B -> C と変わる可能性を考慮し、(code, company_name, submit_at) の固有ペアを取得
+        name_events_in_batch = cat_df.sort_values("submit_at", ascending=True).drop_duplicates(
+            subset=["code", "company_name"]
+        )[["code", "company_name", "submit_at"]]
 
-        current_master = catalog.master_df.copy()
+        # カタログマネージャーにすべての「状態候補」を渡し、時系列でリコンシリエーション（照合）させる
+        # これにより、バッチ内での複数回変更や、過去データのバックフィル時も正しい履歴が生成される
+        # StockMasterRecord モデルに合わせてカラム名を調整
+        name_events_in_batch.rename(columns={"submit_at": "last_submitted_at"}, inplace=True)
 
-        # 既存マスタに最新社名をマージ
-        if current_master.empty:
-            merged_master = latest_from_cat.copy()
-            merged_master["is_active"] = True
-            merged_master["sector"] = "その他"
-            # カタログから最新の提出日時を取得して付与
-            merged_master["last_submitted_at"] = (
-                cat_df.sort_values("submit_at", ascending=True)
-                .drop_duplicates(subset=["code"], keep="last")["submit_at"]
-                .values
-            )
+        # 基本属性の付与
+        name_events_in_batch["is_active"] = True
+        name_events_in_batch["sector"] = "その他"
+
+        if "rec" in name_events_in_batch.columns:
+            name_events_in_batch.drop(columns=["rec"], inplace=True)
+
+        # 【究極の時系列整合性】update_stocks_master 内で既存データとの照合と履歴生成を行う
+        if catalog.update_stocks_master(name_events_in_batch):
+            logger.info("Stock Master & History reconciled from Catalog events (Atomic & Chronological)")
         else:
-            # 最新の提出日時情報を抽出
-            latest_dates = cat_df.sort_values("submit_at", ascending=True).drop_duplicates(
-                subset=["code"], keep="last"
-            )[["code", "submit_at"]]
-
-            # 外部結合して、新しい社名があれば上書き、なければ既存維持
-            merged_master = pd.merge(current_master, latest_from_cat, on="code", how="outer", suffixes=("", "_new"))
-            if "company_name_new" in merged_master.columns:
-                merged_master["company_name"] = merged_master["company_name_new"].fillna(merged_master["company_name"])
-                merged_master.drop(columns=["company_name_new"], inplace=True)
-
-            # 提出日時の更新
-            merged_master = pd.merge(merged_master, latest_dates, on="code", how="left")
-            if "submit_at" in merged_master.columns:
-                if "last_submitted_at" in merged_master.columns:
-                    # 既存の提出日時より新しい場合のみ更新
-                    merged_master["last_submitted_at"] = merged_master[["last_submitted_at", "submit_at"]].max(axis=1)
-                else:
-                    merged_master["last_submitted_at"] = merged_master["submit_at"]
-                merged_master.drop(columns=["submit_at"], inplace=True)
-
-            # デフォルト値補完
-            merged_master["is_active"] = merged_master["is_active"].fillna(True)
-            merged_master["sector"] = merged_master["sector"].fillna("その他")
-
-        if "rec" in merged_master.columns:
-            merged_master.drop(columns=["rec"], inplace=True)
-
-        # 型正規化 (継承ロジック)
-        if merged_master["is_active"].dtype == "object":
-            merged_master["is_active"] = (
-                merged_master["is_active"]
-                .astype(str)
-                .str.lower()
-                .map({"true": True, "false": False, "1": True, "0": False, "none": True, "nan": True})
-                .fillna(True)
-                .astype(bool)
-            )
-
-        # 【超重要】これにより社名変更検知 (update_stocks_master) が走り、かつ時系列ガードが適用される
-        if catalog.update_stocks_master(merged_master):
-            logger.info("Stock Master update staged from Catalog (Atomic & Temporal Guard)")
-        else:
-            logger.error("❌ Failed to stage Global Stock Master")
+            logger.error("❌ Failed to reconcile Global Stock Master")
             all_masters_success = False
 
     # --- B. History (listing, index, name) ---
