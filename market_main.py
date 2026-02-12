@@ -100,8 +100,8 @@ def run_market_pipeline(target_date: str):
                 logger.info("Listing History initialized in buffer.")
 
         except Exception as e:
-            logger.error(f"Stock Master更新失敗: {e}")
-            # ここでは続行をトライ
+            logger.critical(f"Stock Master更新失敗 (Fatal): {e}")
+            raise  # 即座に停止し、部分的なコミットを防止する
 
         # 2. Index Updates (Nikkei225, TOPIX)
         indices = ["Nikkei225", "TOPIX"]
