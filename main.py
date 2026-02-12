@@ -243,7 +243,7 @@ def run_merger(catalog, merger, run_id):
                                 repo_type="dataset",
                                 token=catalog.hf_token,
                             )
-                            logger.info(f"✅ RAWファイル検証成功: {raw_repo_path}")
+                            logger.info(f"✅ RAWファイル検証成功 (代表サンプリング): {raw_repo_path}")
                         except Exception:
                             # 固有のzip名でない可能性も考慮し、フォルダ存在を確認
                             files = catalog.api.list_repo_files(repo_id=catalog.hf_repo, repo_type="dataset")
