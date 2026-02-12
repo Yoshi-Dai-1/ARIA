@@ -528,7 +528,6 @@ class CatalogManager:
             current_m["last_submitted_at"] = None
 
         # 全ての既知の状態を統合
-        ignore_cols = ["last_submitted_at"] if "last_submitted_at" in incoming_df.columns else []
         all_states = pd.concat([current_m, incoming_df], ignore_index=True)
 
         # 重複排除 (同じ code, company_name, last_submitted_at は不要)
