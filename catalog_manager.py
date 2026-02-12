@@ -584,7 +584,7 @@ class CatalogManager:
                         "code": code,
                         "old_name": prev_name,
                         "new_name": curr_name,
-                        "change_date": last_at[:10],
+                        "change_date": last_at,
                     }
 
                     # 重複チェック
