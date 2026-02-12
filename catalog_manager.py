@@ -509,6 +509,9 @@ class CatalogManager:
                 # is_active の型正規化
                 if isinstance(rec.get("is_active"), str):
                     rec["is_active"] = rec["is_active"].lower() in ["true", "1", "yes"]
+                # 日付の正規化 (10文字制限)
+                if rec.get("last_submitted_at"):
+                    rec["last_submitted_at"] = str(rec["last_submitted_at"])[:10]
                 validated.append(StockMasterRecord(**rec).model_dump())
             except Exception as e:
                 logger.error(f"銘柄情報のバリデーション失敗 (code: {rec.get('code')}): {e}")
@@ -520,16 +523,13 @@ class CatalogManager:
         # 2. 既存データとの統合 (リコンシリエーション)
         # 既存マスタを「過去の状態の一つ」として扱い、全てのタイムラインをマージする
         current_m = self.master_df.copy()
-        # カラム自体の存在と、値としての NaN の両方をケア
+        # カラム自体の存在をケア (NULL は NULL のまま維持)
         if "last_submitted_at" not in current_m.columns:
-            current_m["last_submitted_at"] = "1970-01-01"
-        else:
-            current_m["last_submitted_at"] = current_m["last_submitted_at"].fillna("1970-01-01")
+            current_m["last_submitted_at"] = None
 
         # 全ての既知の状態を統合
+        ignore_cols = ["last_submitted_at"] if "last_submitted_at" in incoming_df.columns else []
         all_states = pd.concat([current_m, incoming_df], ignore_index=True)
-        # NaN が残っている場合は最古の日付で埋める (時系列ソートの安定化)
-        all_states["last_submitted_at"] = all_states["last_submitted_at"].fillna("1970-01-01")
 
         # 重複排除 (同じ code, company_name, last_submitted_at は不要)
         all_states.drop_duplicates(subset=["code", "company_name", "last_submitted_at"], inplace=True)
@@ -557,16 +557,16 @@ class CatalogManager:
                 master_entry = current_m[current_m["code"] == code]
                 if not master_entry.empty:
                     prev_name = master_entry.iloc[0]["company_name"]
-                    # 提出日が 1970年なら JPX 由来の暫定名と判断
-                    last_at = master_entry.iloc[0].get("last_submitted_at", "1970")
-                    if str(last_at).startswith("1970"):
+                    # 提出日が NULL なら JPX 由来の暫定名と判断
+                    last_at = master_entry.iloc[0].get("last_submitted_at")
+                    if pd.isna(last_at):
                         is_baseline_from_jpx = True
 
             # --- B. 逐次比較と履歴生成 ---
             for _, curr_state in sorted_group.iterrows():
-                # 既存データ(1970年等の古いマスタ状態)は比較の「対象」ではなく「基点」なのでスキップ
-                last_at = str(curr_state.get("last_submitted_at", ""))
-                if last_at.startswith("1970"):
+                # 既存データ(JPX等の日付なしマスタ状態)は比較の「対象」ではなく「基点」なのでスキップ
+                last_at = curr_state.get("last_submitted_at")
+                if pd.isna(last_at):
                     continue
 
                 curr_name = curr_state["company_name"]
@@ -644,9 +644,8 @@ class CatalogManager:
             # 1. 物理的な最新レコードを取得 (社名と提出日時の決定用)
             latest_rec = group.iloc[0].copy()
 
-            # 2. JPXレコード(1970年固定)を特定 (属性の正解データ)
-            # 型が不明な場合に備え、明示的に str へ変換してから比較
-            jpx_entries = group[group["last_submitted_at"].astype(str).str.startswith("1970")]
+            # 2. JPXレコード(日付なし)を特定 (属性の正解データ)
+            jpx_entries = group[group["last_submitted_at"].isna()]
 
             if not jpx_entries.empty:
                 # JPXが存在する場合、主要属性をJPXから強制取得（EDINET属性を拒絶）

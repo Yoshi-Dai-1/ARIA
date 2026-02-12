@@ -61,22 +61,20 @@ def run_market_pipeline(target_date: str):
 
             # 三値論理（Active/Inactive/Unknown）の適用判定
             active_codes = set(new_master["code"])
-            # 過去にJPXに存在した証拠（1970年スタンプ）があるコードを特定
-            jpx_history_codes = set(
-                current_master[current_master["last_submitted_at"].astype(str).str.startswith("1970")]["code"]
-            )
+            # 過去にJPXに存在した証拠（日付が NULL）があるコードを特定
+            jpx_history_codes = set(current_master[current_master["last_submitted_at"].isna()]["code"])
 
             # 更新用データの構築
             # A. 現役 (True)
             active_updates = new_master.copy()
             active_updates["is_active"] = True
-            active_updates["last_submitted_at"] = "1970-01-01"
+            active_updates["last_submitted_at"] = None
 
             # B. 廃止 (False) : 過去にいたが今はいない
             delisted_codes = jpx_history_codes - active_codes
             delisted_updates = current_master[current_master["code"].isin(delisted_codes)].copy()
             delisted_updates["is_active"] = False
-            delisted_updates["last_submitted_at"] = "1970-01-01"
+            delisted_updates["last_submitted_at"] = None
 
             incoming_updates = pd.concat([active_updates, delisted_updates], ignore_index=True)
 
