@@ -137,10 +137,10 @@ def run_merger(catalog, merger, run_id):
 
         # 提出日時が欠落しているドキュメントは時系列解析から除外 (情報の誠実性を担保)
         initial_event_count = len(name_events_in_batch)
-        name_events_in_batch = name_events_in_batch[name_events_in_batch["submit_at"].notna()]
+        name_events_in_batch = name_events_in_batch[name_events_in_batch["last_submitted_at"].notna()]
         if len(name_events_in_batch) < initial_event_count:
             logger.warning(
-                f"Filtered out {initial_event_count - len(name_events_in_batch)} events with missing submit_at"
+                f"Filtered out {initial_event_count - len(name_events_in_batch)} events with missing last_submitted_at"
             )
 
         # 基本属性の付与
