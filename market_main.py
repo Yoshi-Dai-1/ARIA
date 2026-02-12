@@ -103,8 +103,6 @@ def run_market_pipeline(target_date: str):
 
         except Exception as e:
             logger.error(f"Stock Master更新失敗: {e}")
-            # Master更新失敗は致命的なので終了するか検討。
-            # Master更新失敗は致命的なので終了するか検討。
             # ここでは続行をトライ
 
         # 2. Index Updates (Nikkei225, TOPIX)
