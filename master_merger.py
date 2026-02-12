@@ -74,9 +74,9 @@ class MasterMerger:
                 if not has_bool:
                     combined_df[col] = combined_df[col].astype(str)
                 else:
-                    # ブール値を含む場合は、None を適切に残しつつ型を維持
-                    # Parquet は nullable boolean をサポートしている
-                    pass
+                    # ユーザーの美学（True/False 大文字）を最優先し、表示用文字列として変換
+                    # NULL (None) はそのまま維持することで、マスタの誠実性を保つ
+                    combined_df[col] = combined_df[col].map({True: "True", False: "False", None: None})
 
         local_file.parent.mkdir(parents=True, exist_ok=True)
         combined_df.to_parquet(local_file, compression="zstd", index=False)

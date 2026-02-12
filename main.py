@@ -528,7 +528,7 @@ def main():
             "code": sec_code,
             "company_name": (row.get("filerName") or "").strip() or "Unknown",
             "edinet_code": (row.get("edinetCode") or "").strip() or None,
-            "submit_at": (row.get("submitDateTime") or "").strip() or None,
+            "submit_at": ((row.get("submitDateTime") or "").strip()[:10] or None),
             "fiscal_year": fiscal_year,
             "period_start": period_start,
             "period_end": period_end,
