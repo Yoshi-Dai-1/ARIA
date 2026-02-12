@@ -133,6 +133,7 @@ def run_merger(catalog, merger, run_id):
         name_events_in_batch = cat_df.sort_values("submit_at", ascending=True).drop_duplicates(
             subset=["code", "company_name"]
         )[["code", "company_name", "submit_at"]]
+        name_events_in_batch.rename(columns={"submit_at": "last_submitted_at"}, inplace=True)
 
         # 提出日時が欠落しているドキュメントは時系列解析から除外 (情報の誠実性を担保)
         initial_event_count = len(name_events_in_batch)

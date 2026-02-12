@@ -645,7 +645,8 @@ class CatalogManager:
             latest_rec = group.iloc[0].copy()
 
             # 2. JPXレコード(1970年固定)を特定 (属性の正解データ)
-            jpx_entries = group[group["last_submitted_at"].str.startswith("1970")]
+            # 型が不明な場合に備え、明示的に str へ変換してから比較
+            jpx_entries = group[group["last_submitted_at"].astype(str).str.startswith("1970")]
 
             if not jpx_entries.empty:
                 # JPXが存在する場合、主要属性をJPXから強制取得（EDINET属性を拒絶）
