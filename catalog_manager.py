@@ -509,9 +509,8 @@ class CatalogManager:
                 # is_active の型正規化
                 if isinstance(rec.get("is_active"), str):
                     rec["is_active"] = rec["is_active"].lower() in ["true", "1", "yes"]
-                # 日付の正規化 (10文字制限)
-                if rec.get("last_submitted_at"):
-                    rec["last_submitted_at"] = str(rec["last_submitted_at"])[:10]
+                # 【最適解】情報の損失を伴う切り捨てを廃止し、ソースの精度を維持する
+                # (Datetime型への変換は後続の保存レイヤーまたはPydanticモデルに委ねる)
                 validated.append(StockMasterRecord(**rec).model_dump())
             except Exception as e:
                 logger.error(f"銘柄情報のバリデーション失敗 (code: {rec.get('code')}): {e}")
