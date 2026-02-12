@@ -636,7 +636,7 @@ class CatalogManager:
             # 提出日に関わらず、そのコードにおける「その他」や NULL 以外の最も確かな値を探す
             # (JPXは1970年だがセクター情報は「正」であるため、全体から検索して良い)
             valid = group[col][~group[col].isin(["その他", None, "nan", ""])]
-            return valid.iloc[0] if not valid.empty else "その他"
+            return valid.iloc[0] if not valid.empty else None
 
         # 各コードの最新状態を特定しつつ、属性を補完
         best_records = []
@@ -645,7 +645,8 @@ class CatalogManager:
             latest_rec = group.iloc[0].copy()
 
             # 2. JPXレコード(1970年固定)を特定 (属性の正解データ)
-            jpx_entries = group[group["last_submitted_at"].str.startswith("1970")]
+            # 型耐性のため astype(str) を追加
+            jpx_entries = group[group["last_submitted_at"].astype(str).str.startswith("1970")]
 
             if not jpx_entries.empty:
                 # JPXが存在する場合、主要属性をJPXから強制取得（EDINET属性を拒絶）
@@ -677,7 +678,7 @@ class CatalogManager:
     def get_sector(self, code: str) -> str:
         """証券コードから業種取得"""
         if self.master_df.empty:
-            return "その他"
+            return None
         row = self.master_df[self.master_df["code"] == code]
         if not row.empty:
             return str(row.iloc[0]["sector"])
