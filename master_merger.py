@@ -68,9 +68,15 @@ class MasterMerger:
 
         for col in combined_df.columns:
             if combined_df[col].dtype == "object":
-                # ブール値が含まれる場合は文字列化を避ける
-                if not combined_df[col].apply(lambda x: isinstance(x, bool)).any():
+                # ブール値が含まれる場合は文字列化を避ける (None/NaN が混じっていても型を守る)
+                # s.apply(...) よりも s.isin([True, False]) の方が堅牢
+                has_bool = combined_df[col].isin([True, False]).any()
+                if not has_bool:
                     combined_df[col] = combined_df[col].astype(str)
+                else:
+                    # ブール値を含む場合は、None を適切に残しつつ型を維持
+                    # Parquet は nullable boolean をサポートしている
+                    pass
 
         local_file.parent.mkdir(parents=True, exist_ok=True)
         combined_df.to_parquet(local_file, compression="zstd", index=False)

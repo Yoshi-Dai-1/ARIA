@@ -522,14 +522,14 @@ class CatalogManager:
         current_m = self.master_df.copy()
         # カラム自体の存在と、値としての NaN の両方をケア
         if "last_submitted_at" not in current_m.columns:
-            current_m["last_submitted_at"] = "1970-01-01 00:00:00"
+            current_m["last_submitted_at"] = "1970-01-01"
         else:
-            current_m["last_submitted_at"] = current_m["last_submitted_at"].fillna("1970-01-01 00:00:00")
+            current_m["last_submitted_at"] = current_m["last_submitted_at"].fillna("1970-01-01")
 
         # 全ての既知の状態を統合
         all_states = pd.concat([current_m, incoming_df], ignore_index=True)
         # NaN が残っている場合は最古の日付で埋める (時系列ソートの安定化)
-        all_states["last_submitted_at"] = all_states["last_submitted_at"].fillna("1970-01-01 00:00:00")
+        all_states["last_submitted_at"] = all_states["last_submitted_at"].fillna("1970-01-01")
 
         # 重複排除 (同じ code, company_name, last_submitted_at は不要)
         all_states.drop_duplicates(subset=["code", "company_name", "last_submitted_at"], inplace=True)
@@ -633,7 +633,7 @@ class CatalogManager:
         # セクターと市場情報の「属性継承（Inheritance）」
         # 最新レコードが NULL や "その他" の場合、過去の有効なレコード（JPX等）から引き継ぐ
         def resolve_attr(group, col):
-            # 提出日に関わらず、そのコードにおける「その他」や NULL 以外の最も確かな値を探す
+            # 提出日に関わらず、そのコードにおける NULL 以外の最も確かな値を探す
             # (JPXは1970年だがセクター情報は「正」であるため、全体から検索して良い)
             valid = group[col][~group[col].isin(["その他", None, "nan", ""])]
             return valid.iloc[0] if not valid.empty else None
@@ -645,8 +645,7 @@ class CatalogManager:
             latest_rec = group.iloc[0].copy()
 
             # 2. JPXレコード(1970年固定)を特定 (属性の正解データ)
-            # 型耐性のため astype(str) を追加
-            jpx_entries = group[group["last_submitted_at"].astype(str).str.startswith("1970")]
+            jpx_entries = group[group["last_submitted_at"].str.startswith("1970")]
 
             if not jpx_entries.empty:
                 # JPXが存在する場合、主要属性をJPXから強制取得（EDINET属性を拒絶）
@@ -681,8 +680,9 @@ class CatalogManager:
             return None
         row = self.master_df[self.master_df["code"] == code]
         if not row.empty:
-            return str(row.iloc[0]["sector"])
-        return "その他"
+            val = row.iloc[0]["sector"]
+            return str(val) if val is not None else None
+        return None
 
     def save_delta(
         self, key: str, df: pd.DataFrame, run_id: str, chunk_id: str, custom_filename: str = None, defer: bool = False
