@@ -57,71 +57,39 @@ def run_market_pipeline(target_date: str):
         # 1. Stock Master Update (Active/Inactive Logic)
         try:
             new_master = engine.fetch_jpx_master()
-            current_master = catalog.master_df.copy()  # Load current
+            current_master = catalog.master_df.copy()
 
-            # 三値論理（Active/Inactive/Unknown）の適用
+            # 三値論理（Active/Inactive/Unknown）の適用判定
             active_codes = set(new_master["code"])
-
-            def determine_active_status(row):
-                if row["code"] in active_codes:
-                    return True  # JPXに存在 = Active
-                # 過去にJPXから追加された形跡（1970年スタンプ）があるが、現在はリストにない = 廃止(False)
-                last_at = str(row.get("last_submitted_at", "1970-01-01"))
-                if last_at.startswith("1970"):
-                    return False
-                # JPXに一度も現れていない（EDINETのみ） = 不明(None)
-                return None
-
-            if not current_master.empty:
-                current_master["is_active"] = current_master.apply(determine_active_status, axis=1)
-
-            new_master["is_active"] = True
-            # 【重要】JPX由来のデータ（略称）を「最古」として扱い、EDINET由来の正式名称を保護する
-            new_master["last_submitted_at"] = "1970-01-01"
-
-            # Merge
-            # 時系列順（新しい順）に並べ替えてから重複排除することで、EDINET由来の名前を維持する
-            merged_master = pd.concat([current_master, new_master], ignore_index=True)
-            # NaNを安全に埋める
-            merged_master["last_submitted_at"] = merged_master["last_submitted_at"].fillna("1970-01-01")
-            merged_master = merged_master.sort_values("last_submitted_at", ascending=False).drop_duplicates(
-                subset=["code"], keep="first"
+            # 過去にJPXに存在した証拠（1970年スタンプ）があるコードを特定
+            jpx_history_codes = set(
+                current_master[current_master["last_submitted_at"].astype(str).str.startswith("1970")]["code"]
             )
 
-            # 型を強制（文字列化を防ぐ）
-            if merged_master["is_active"].dtype == "object":
-                # 'False' (文字列) を確実に False (bool) にするために lowercase で判定
-                merged_master["is_active"] = (
-                    merged_master["is_active"]
-                    .astype(str)
-                    .str.lower()
-                    .map(
-                        {
-                            "true": True,
-                            "false": False,
-                            "1": True,
-                            "0": False,
-                            "1.0": True,
-                            "0.0": False,
-                            "none": True,
-                            "nan": True,
-                        }
-                    )
-                    .fillna(True)
-                    .astype(bool)
-                )
+            # 更新用データの構築
+            # A. 現役 (True)
+            active_updates = new_master.copy()
+            active_updates["is_active"] = True
+            active_updates["last_submitted_at"] = "1970-01-01"
+
+            # B. 廃止 (False) : 過去にいたが今はいない
+            delisted_codes = jpx_history_codes - active_codes
+            delisted_updates = current_master[current_master["code"].isin(delisted_codes)].copy()
+            delisted_updates["is_active"] = False
+            delisted_updates["last_submitted_at"] = "1970-01-01"
+
+            incoming_updates = pd.concat([active_updates, delisted_updates], ignore_index=True)
+
+            # 【究極の統合】カタログマネージャの属性承継ロジックに委ねる
+            # これにより、最新の社名(EDINET)に対し、JPXの属性が正しく引き継がれる。
+            if catalog.update_stocks_master(incoming_updates):
+                logger.success("Market Master synchronized and attributes reconciled.")
             else:
-                merged_master["is_active"] = merged_master["is_active"].astype(bool)
+                raise ValueError("Failed to reconcile market master updates.")
 
             # Listing Events生成
             old_listing = catalog.get_listing_history()
-
             listing_events = engine.update_listing_history(catalog.master_df, new_master, old_listing)
-
-            # Save Master (Deferred)
-            # _save_and_upload は内部で _clean_dataframe を呼ぶので安全だが、念のため検証済みデータを使う
-            catalog._save_and_upload("master", merged_master, defer=True)
-            logger.info("Master updated in buffer.")
 
             # Save History (Deferred)
             if not listing_events.empty:
@@ -129,12 +97,13 @@ def run_market_pipeline(target_date: str):
                 catalog._save_and_upload("listing", merged_hist, defer=True)
                 logger.info("Listing History updated in buffer.")
             elif old_listing.empty:
-                # 初回初期化: 空のDFをアップロード（ファイル自体は作成する）
+                # 初回初期化: 空のDFをアップロード
                 catalog._save_and_upload("listing", old_listing, defer=True)
                 logger.info("Listing History initialized in buffer.")
 
         except Exception as e:
             logger.error(f"Stock Master更新失敗: {e}")
+            # Master更新失敗は致命的なので終了するか検討。
             # Master更新失敗は致命的なので終了するか検討。
             # ここでは続行をトライ
 
