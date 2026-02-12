@@ -74,9 +74,10 @@ class MasterMerger:
                 if not has_bool:
                     combined_df[col] = combined_df[col].astype(str)
                 else:
-                    # ユーザーの美学（True/False 大文字）を最優先し、表示用文字列として変換
-                    # NULL (None) はそのまま維持することで、マスタの誠実性を保つ
-                    combined_df[col] = combined_df[col].map({True: "True", False: "False", None: None})
+                    # 【世界標準】論理値型（Boolean）を維持
+                    # 表示ツールによっては true/false となるが、データ解析上の「整合性」「速度」を最優先する。
+                    # None を含む Nullable Boolean として保存。
+                    pass
 
         local_file.parent.mkdir(parents=True, exist_ok=True)
         combined_df.to_parquet(local_file, compression="zstd", index=False)
