@@ -570,6 +570,11 @@ def main():
         # 訂正フラグ
         is_amendment = row.get("withdrawalStatus") != "0" or "訂正" in title
 
+        # 【修正】インデックスに記録するパスを、実際の階層構造（year/month/day）に合わせる
+        # RAW_BASE_DIR からの相対パスとして記録
+        rel_zip_path = str(raw_zip.relative_to(RAW_BASE_DIR.parent)) if zip_ok else None
+        rel_pdf_path = str(raw_pdf.relative_to(RAW_BASE_DIR.parent)) if pdf_ok else None
+
         # カタログ情報のベースを保持 (models.py の解析最適化順序に準拠 - 18カラム構成)
         record = {
             "doc_id": docid,
@@ -586,8 +591,8 @@ def main():
             "title": (title or "").strip() or None,
             "form_code": (form_c or "").strip() or None,
             "ordinance_code": (ord_c or "").strip() or None,
-            "raw_zip_path": f"raw/edinet/{docid}.zip" if zip_ok else None,
-            "pdf_path": f"raw/edinet/{docid}.pdf" if pdf_ok else None,
+            "raw_zip_path": rel_zip_path,
+            "pdf_path": rel_pdf_path,
             "processed_status": "success",
             "source": "EDINET",
         }
