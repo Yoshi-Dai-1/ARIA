@@ -383,7 +383,7 @@ def main():
         if not sec_code:
             skipped_reasons["no_sec_code"] += 1
             continue
-        if len(sec_code) < 5:
+        if len(sec_code) < 4:
             skipped_reasons["invalid_length"] += 1
             # 56件の書類漏れなどの追跡用
             logger.debug(f"書類スキップ (コード短縮): {row.get('docID')} - {sec_code}")
