@@ -14,15 +14,16 @@ from pathlib import Path
 
 import pandas as pd
 import tqdm as tqdm_mod
-from dotenv import load_dotenv
-from loguru import logger
-from tqdm import tqdm
 
 # モジュールのインポート
 from catalog_manager import CatalogManager
+from dotenv import load_dotenv
+from loguru import logger
+from master_merger import MasterMerger
+from tqdm import tqdm
+
 from edinet_engine import EdinetEngine
 from edinet_xbrl_prep.edinet_xbrl_prep.fs_tbl import get_fs_tbl
-from master_merger import MasterMerger
 from network_utils import patch_all_networking
 
 
@@ -47,7 +48,9 @@ def normalize_code(code: str) -> str:
 
 
 # 設定
-DATA_PATH = Path("data").resolve()
+# 【修正】リポジトリのモジュール化に伴い、常にプロジェクトのルートにある 'data' を参照するように調整
+ROOT_DIR = Path(__file__).parent.parent.resolve()
+DATA_PATH = ROOT_DIR / "data"
 RAW_BASE_DIR = DATA_PATH / "raw"
 TEMP_DIR = DATA_PATH / "temp"
 PARALLEL_WORKERS = int(os.getenv("PARALLEL_WORKERS", os.cpu_count() or 4))
