@@ -155,7 +155,17 @@ class CatalogManager:
         # 4. Object型の安定化 (None を保持しつつ文字列化)
         for col in df.columns:
             if df[col].dtype == "object":
-                df[col] = df[col].apply(lambda x: str(x) if (x is not None and not pd.isna(x)) else None)
+                # 【最重要】論理値が含まれる場合は文字列化を回避
+                # 既に 'True' / 'False'（文字列）になってしまっている場合の復旧処置も兼ねる
+                has_string_bools = df[col].isin(["True", "False"]).any()
+                if has_string_bools:
+                    # 文字列の 'True'/'False' を正規の Boolean に戻す (None は維持)
+                    df[col] = df[col].map({"True": True, "False": False, True: True, False: False}, na_action="ignore")
+
+                # 改めてチェックし、純粋な文字列カラムのみを as_type(str) 相当の処理にかける
+                is_pure_bool = df[col].isin([True, False]).any()
+                if not is_pure_bool:
+                    df[col] = df[col].apply(lambda x: str(x) if (x is not None and not pd.isna(x)) else None)
 
         return df
 
