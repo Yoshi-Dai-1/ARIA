@@ -26,7 +26,6 @@ def test_zero_change_clearing():
     # Existing History (Bad): Code 9999 changed from "B" to "A" (Time travel artifact)
     # Rebuild Truth: Code 9999 has always been "A". No changes.
 
-    code = "9999"
     name_history = pd.DataFrame(
         [{"code": "9999", "old_name": "Company B", "new_name": "Company A", "change_date": "2023-01-01"}]
     )

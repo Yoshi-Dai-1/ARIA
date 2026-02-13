@@ -2,11 +2,11 @@ from pathlib import Path
 from typing import Dict, List
 
 import requests
-from loguru import logger
 
 # 内部モジュール（外部ライブラリ）のインポート
 from edinet_xbrl_prep.edinet_xbrl_prep.edinet_api import edinet_response_metadata, request_term
 from edinet_xbrl_prep.edinet_xbrl_prep.link_base_file_analyzer import account_list_common
+from loguru import logger
 from models import EdinetDocument
 
 

@@ -11,12 +11,11 @@ from pathlib import Path
 
 import pandas as pd
 import tqdm as tqdm_mod
-from loguru import logger
-from tqdm import tqdm
-
 from catalog_manager import CatalogManager
+from loguru import logger
 from market_engine import MarketDataEngine
 from network_utils import patch_all_networking
+from tqdm import tqdm
 
 
 def no_op_tqdm(*args, **kwargs):
