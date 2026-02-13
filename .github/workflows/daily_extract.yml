@@ -58,9 +58,10 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO: ${{ vars.HF_REPO }}
+          PYTHONPATH: data_engine
         run: |
           # マトリックス分割に必要な業種情報を最新にするため、Market Pipeline を実行
-          python market_main.py
+          python data_engine/market_main.py
 
       - id: set-matrix
         env:
@@ -71,7 +72,7 @@ jobs:
           EXTRACT_END: ${{ steps.set-dates.outputs.end_date }}
           DISABLE_PANDERA_IMPORT_WARNING: True
         run: |
-          RAW_JSON=$(python main.py --list-only --start "${{ steps.set-dates.outputs.start_date }}" --end "${{ steps.set-dates.outputs.end_date }}" | grep "^JSON_MATRIX_DATA:" | cut -d':' -f2-)
+          RAW_JSON=$(python data_engine/main.py --list-only --start "${{ steps.set-dates.outputs.start_date }}" --end "${{ steps.set-dates.outputs.end_date }}" | grep "^JSON_MATRIX_DATA:" | cut -d':' -f2-)
           DATA=${RAW_JSON:-"[]"}
 
           echo "$DATA" | python -c "
@@ -193,7 +194,7 @@ jobs:
         run: |
           # main.py の引数名は --id_list
           # Worker Mode: Run ID と Chunk ID を指定してデルタファイルを作成
-          python main.py \
+          python data_engine/main.py \
             --start "${{ needs.discovery.outputs.start_date }}" \
             --end "${{ needs.discovery.outputs.end_date }}" \
             --id_list "${{ matrix.chunk.ids }}" \
@@ -227,4 +228,4 @@ jobs:
         run: |
           mkdir -p data
           # Merger Mode: 全デルタを集約・マージしてGlobal更新
-          python main.py --mode merger --run-id "${{ github.run_id }}"
+          python data_engine/main.py --mode merger --run-id "${{ github.run_id }}"

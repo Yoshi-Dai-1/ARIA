@@ -31,9 +31,10 @@ jobs:
           EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }} # 念のため
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO: ${{ vars.HF_REPO }}
+          PYTHONPATH: data_engine
         run: |
           if [ "${{ inputs.target_date }}" != "" ]; then
-            python market_main.py --target-date "${{ inputs.target_date }}"
+            python data_engine/market_main.py --target-date "${{ inputs.target_date }}"
           else
-            python market_main.py
+            python data_engine/market_main.py
           fi
