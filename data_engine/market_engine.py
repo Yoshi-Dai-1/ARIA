@@ -7,7 +7,6 @@ from typing import Dict
 
 import pandas as pd
 from loguru import logger
-
 from network_utils import get_robust_session
 
 

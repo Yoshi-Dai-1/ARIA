@@ -14,9 +14,11 @@ dependencies = [
 ]
 
 [tool.ruff]
-# 除外設定: 外部ライブラリ(サブモジュール)や解析用ノートブックを除外
+# 除外設定: 外部ライブラリやフロントエンド、解析用ノートブックを除外
 exclude = [
     "edinet_xbrl_prep",
+    "web_frontend",
+    "node_modules",
     "*.ipynb",
 ]
 

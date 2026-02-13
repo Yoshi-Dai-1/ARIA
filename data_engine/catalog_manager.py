@@ -546,94 +546,98 @@ class CatalogManager:
         name_history = self._load_parquet("name")
         new_history_events = []
 
+        processed_codes = set()
+
         for code, group in all_states.groupby("code"):
-            # 提出日時の昇順でソート
+            processed_codes.add(code)
+
+            # 提出日時の昇順でソート (これがないと sorted_group が未定義になる)
             sorted_group = group.sort_values("last_submitted_at", ascending=True)
 
-            # --- A. 基点(Baseline)の決定 ---
-            # 1. まずは既に確定した履歴(name_history)から最新の名前を探す (最も信頼できる過去)
-            prev_name = None
+            # --- C. 歴史の完全再構築 (Full History Rebuild) ---
+            # 既存の履歴、現在のマスタ、新規データを全て「イベント」として時系列に並べ直す
+
+            timeline_events = []
+
+            # 1. 既存マスタ & 新規データからのイベント抽出
+            for _, row in sorted_group.iterrows():
+                if pd.notna(row.get("last_submitted_at")):
+                    timeline_events.append(
+                        {"date": row["last_submitted_at"], "name": row["company_name"], "source": "master_or_incoming"}
+                    )
+
+            # 2. 既存履歴(name_history)からのイベント抽出
+            # これまでの記録も「過去の証言」として採用する
             if not name_history.empty:
-                code_history = name_history[name_history["code"] == code]
-                if not code_history.empty:
-                    prev_name = code_history.iloc[-1]["new_name"]
+                code_hist = name_history[name_history["code"] == code]
+                for _, h_row in code_hist.iterrows():
+                    timeline_events.append(
+                        {"date": h_row["change_date"], "name": h_row["new_name"], "source": "history"}
+                    )
 
-            # 2. 履歴がない場合、既存マスタ(stocks_master)の名前を暫定基点とする
-            # ただし、マスタ名は JPX 由来(略称)の可能性がある。
-            is_baseline_from_jpx = False
-            if prev_name is None:
-                master_entry = current_m[current_m["code"] == code]
-                if not master_entry.empty:
-                    prev_name = master_entry.iloc[0]["company_name"]
-                    # 提出日が NULL なら JPX 由来の暫定名と判断
-                    last_at = master_entry.iloc[0].get("last_submitted_at")
-                    if pd.isna(last_at):
-                        is_baseline_from_jpx = True
+            # 3. 時系列ソート (古い順)
+            # 日付型への変換とソート
+            # (注意: 文字列比較でも YYYY-MM-DD 形式なら概ね機能するが、pd.to_datetime推奨)
+            timeline_events.sort(key=lambda x: str(x["date"]))
 
-            # --- B. 逐次比較と履歴生成 ---
-            for _, curr_state in sorted_group.iterrows():
-                # 既存データ(JPX等の日付なしマスタ状態)は比較の「対象」ではなく「基点」なのでスキップ
-                last_at = curr_state.get("last_submitted_at")
-                if pd.isna(last_at):
+            # 4. 歴史の再生 (Replay)
+            current_tracking_name = None
+
+            # 初期値の推論:
+            # タイムラインの最初のイベントの「前」の状態は分からない。
+            # しかし、最初のイベント名が「最初の名前」であることは確定できる。
+
+            rebuilt_code_events = []
+
+            for evt in timeline_events:
+                evt_name = evt["name"]
+                evt_date = evt["date"]
+
+                if current_tracking_name is None:
+                    current_tracking_name = evt_name
                     continue
 
-                curr_name = curr_state["company_name"]
+                # 正規化して比較
+                norm_curr = self._normalize_company_name(current_tracking_name)
+                norm_evt = self._normalize_company_name(evt_name)
 
-                # 基点がない場合 (ARIAで完全新規に発見された銘柄)
-                if prev_name is None:
-                    prev_name = curr_name
-                    continue
+                if norm_curr != norm_evt:
+                    # 変更検知
+                    # 過去に記録されたイベントと全く同じもの(日時・新旧名)であれば、
+                    # 重複排除されるが、ここでは意図的に「再生成」する。
+                    rebuilt_code_events.append(
+                        {"code": code, "old_name": current_tracking_name, "new_name": evt_name, "change_date": evt_date}
+                    )
+                    logger.info(f"🔄 Rebuild History: {code} | {current_tracking_name} -> {evt_name} ({evt_date})")
+                    current_tracking_name = evt_name
 
-                # 正規化比較を行い、実質的な差異がある場合のみ履歴を作成
-                normalized_prev = self._normalize_company_name(prev_name)
-                normalized_curr = self._normalize_company_name(curr_name)
+            # 5. 結果の格納 (メモリ上の更新)
+            # このコードに関する新しい履歴を確定リストに追加
+            # (重複除外は後続の drop_duplicates で行われるが、
+            #  古い誤った履歴(未来->過去)を消すために、後で name_history からこのコード分を除外する必要がある)
+            new_history_events.extend(rebuilt_code_events)
 
-                if normalized_prev != normalized_curr:
-                    # 本物の社名変更として記録
-                    event = {
-                        "code": code,
-                        "old_name": prev_name,
-                        "new_name": curr_name,
-                        "change_date": last_at,
-                    }
-
-                    # 重複チェック
-                    exists = False
-                    if not name_history.empty:
-                        exists = not name_history[
-                            (name_history["code"] == code)
-                            & (name_history["old_name"] == event["old_name"])
-                            & (name_history["new_name"] == event["new_name"])
-                        ].empty
-
-                    if not exists:
-                        new_history_events.append(event)
-                        logger.info(f"✨ 社名変更を検知: {code} | {prev_name} -> {curr_name}")
-
-                    # 基点を更新
-                    prev_name = curr_name
-                    is_baseline_from_jpx = False  # EDINET由来になったのでフラグを落とす
-                else:
-                    # 「形式的な差異(略称→正式名称)」または「同一名称」の場合
-                    # 履歴には残さないが、以降の比較のために基点だけは更新(正式名へ昇格)
-                    if prev_name != curr_name:
-                        if is_baseline_from_jpx:
-                            logger.debug(
-                                f"ℹ️ 基点を略称から正式名称へ昇格 (履歴には残しません): "
-                                f"{code} | {prev_name} -> {curr_name}"
-                            )
-                        prev_name = curr_name
-                        is_baseline_from_jpx = False
         # 4. 履歴の保存 (Atomic & Non-destructive)
+        # 処理対象となったコード(processed_codes)については、
+        # "イベントなし" (=ずっと同じ名前) も含めて、これが「最新の正解」である。
+        # したがって、既存の履歴から processed_codes に該当するものは全て削除し、
+        # 今回生成された new_history_events (あれば) で置き換える。
+
+        if processed_codes and not name_history.empty:
+            name_history = name_history[~name_history["code"].isin(processed_codes)]
+
         if new_history_events:
             new_hist_df = pd.DataFrame(new_history_events)
-            name_history = pd.concat([name_history, new_hist_df], ignore_index=True).drop_duplicates()
+            name_history = pd.concat([name_history, new_hist_df], ignore_index=True)
+
+        if processed_codes:  # 変更があってもなくても、ファイル更新（削除の反映）は必要
+            name_history = name_history.drop_duplicates()
             # defer=True を指定してコミットバッファに積む
             self._save_and_upload("name", name_history, defer=True)
-            logger.info(f"時系列リコンシリエーションにより {len(new_history_events)} 件の変遷を特定しました。")
-        elif name_history.empty:
-            # 初回実行時などで履歴が空の場合でも、ファイルを作成して整合性を保つ
-            self._save_and_upload("name", name_history, defer=True)
+            if new_history_events:
+                logger.info(f"時系列リコンシリエーション: {len(new_history_events)} 件の変遷を特定 (Clean Rebuild)")
+            else:
+                logger.info("時系列リコンシリエーション: 変更なし (履歴はクリーニングされました)")
 
         # 全状態の中から、code ごとに提出日時が最新のものを抽出
         sorted_all = all_states.sort_values("last_submitted_at", ascending=False)
