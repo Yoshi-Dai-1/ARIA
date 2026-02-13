@@ -46,6 +46,24 @@ def normalize_code(code: str) -> str:
     return c + "0" if len(c) == 4 else c
 
 
+def parse_datetime(dt_str: str) -> datetime:
+    """EDINET の submitDateTime (YYYY-MM-DD HH:MM[:SS]) を堅牢にパースする"""
+    if not dt_str:
+        return datetime.now()
+    formats = ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"]
+    for fmt in formats:
+        try:
+            return datetime.strptime(dt_str, fmt)
+        except ValueError:
+            continue
+    # 最終手段: 日付部分だけで試行
+    try:
+        return datetime.strptime(dt_str[:10], "%Y-%m-%d")
+    except Exception:
+        logger.error(f"日時パース失敗: {dt_str}")
+        return datetime.now()
+
+
 # 設定
 # 【修正】リポジトリのモジュール化に伴い、常にプロジェクトのルートにある 'data' を参照するように調整
 ROOT_DIR = Path(__file__).parent.parent.resolve()
@@ -477,7 +495,7 @@ def main():
             continue
 
         submit_date_str = row["submitDateTime"]
-        submit_date = datetime.strptime(submit_date_str, "%Y-%m-%d %H:%M:%S")
+        submit_date = parse_datetime(submit_date_str)
         # 【修正】パス最適化: raw/edinet/year=YYYY/month=MM/
         # 【修正】Hugging Face の1ディレクトリ1万件制限を回避するため、日次フォルダを追加
         # raw/edinet/year=YYYY/month=MM/day=DD/
