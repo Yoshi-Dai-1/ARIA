@@ -6,7 +6,6 @@ os.environ["TQDM_DISABLE"] = "1"
 
 import argparse
 import json
-import os
 import signal
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
