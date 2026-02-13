@@ -13,6 +13,16 @@ description: A meta-skill for identifying, proposing, and creating new specializ
 - **ワークフローの定型化**: 複数ステップのデバッグやデータ移行など、再現性が必要な手順が確立された場合。
 - **認知的負荷の分散**: `top-tier-engineer` などの既存スキルが肥大化し、コンテキスト消費が増大した場合。
 
+## 2. 知能の自律監視・改善義務 (Autonomous Intelligence Management)
+プロジェクトの健全な進化を保つため、スキルアーキテクトは以下の義務を負う。
+
+- **自律的判断**: 全ての Rules, Skills, Workflows の現状を監視し、追加・統合・分離・削除・修正が必要なタイミングを自動で検知する。
+- **報告と透明性**: 修正・変更が必要と判断した場合、即座にユーザーへその理由と背景を報告する。
+- **公式仕様の遵守**: あらゆる改善は、以下の技術基準を絶対的なバイブルとして遵守し、曖昧さを排除して実行する。
+    - [Antigravity Skills Spec](https://antigravity.google/docs/skills)
+    - [Rules & Workflows Spec](https://antigravity.google/docs/rules-workflows)
+    - [Agent Skills Standard (agentskills.io)](https://agentskills.io/home)
+
 ## 3. スキル保守と進化 (Skill Maintenance & Evolution)
 方針の変更やコードの進化に合わせ、既存スキルの「陳腐化」を検知し、以下の対応を行う。
 - **修正提案と義務的な報告**: スキルやマニュアル（KI含む）を書き換える際は、独断で行わず、必ずユーザーへ「背景・理由（なぜ変えるのか？何のメリットがあるのか？）」を初心者にも分かりやすく解説した上で提案し、承認を得る。
