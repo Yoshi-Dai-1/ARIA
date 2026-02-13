@@ -37,6 +37,15 @@ tqdm_mod.tqdm = no_op_tqdm
 # 全体的な通信の堅牢化を適用
 patch_all_networking()
 
+
+def normalize_code(code: str) -> str:
+    """証券コードを 5 桁に正規化する (4桁なら末尾0付与、5桁なら維持)"""
+    if not code:
+        return ""
+    c = str(code).strip()
+    return c + "0" if len(c) == 4 else c
+
+
 # 設定
 DATA_PATH = Path("data").resolve()
 RAW_BASE_DIR = DATA_PATH / "raw"
@@ -78,7 +87,7 @@ def parse_worker(args):
 
         if df is not None and not df.empty:
             df["docid"] = docid
-            df["code"] = str(row.get("secCode", ""))[:4]
+            df["code"] = df["secCode"].apply(normalize_code)
             df["submitDateTime"] = row.get("submitDateTime", "")
             for col in df.columns:
                 if df[col].dtype == "object":
@@ -397,7 +406,7 @@ def main():
             if catalog.is_processed(docid):
                 continue
 
-            raw_sec_code = str(row.get("secCode", "")).strip()[:4]
+            raw_sec_code = normalize_code(str(row.get("secCode", "")).strip())
             # 解析対象の厳密判定条件をマトリックス側でも提供
             matrix_data.append(
                 {
@@ -518,7 +527,7 @@ def main():
             except Exception:
                 num_months = None  # 計算失敗時も NULL
 
-        sec_code = row.get("secCode", "")[:4]
+        sec_code = normalize_code(row.get("secCode", ""))
         # 訂正フラグ
         is_amendment = row.get("withdrawalStatus") != "0" or "訂正" in title
 
@@ -678,7 +687,10 @@ def main():
                             # セクター判別用
                             meta_row = next(m for m in all_meta if m["docID"] == did)
                             processed_infos.append(
-                                {"docID": did, "sector": catalog.get_sector(meta_row.get("secCode", "")[:4])}
+                                {
+                                    "docID": did,
+                                    "sector": catalog.get_sector(normalize_code(meta_row.get("secCode", ""))),
+                                }
                             )
 
                 # バッチごとに登録可能な未定記録を登録

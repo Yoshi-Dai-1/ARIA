@@ -147,9 +147,10 @@ class CatalogManager:
             if "num_months" in df.columns:
                 df["num_months"] = pd.to_numeric(df["num_months"], errors="coerce").astype("Int64")
 
-        # 3. マスタの場合、codeを確実に文字列化
-        if key == "master" and "code" in df.columns:
-            df["code"] = df["code"].astype(str).str.strip()
+        # 3. 証券コードの正規化 (5桁統一: 4桁なら末尾0付与)
+        targets = ["master", "listing", "index", "name"]
+        if key in targets and "code" in df.columns:
+            df["code"] = df["code"].astype(str).str.strip().apply(lambda x: x + "0" if len(x) == 4 else x)
 
         # 4. Object型の安定化 (None を保持しつつ文字列化)
         for col in df.columns:

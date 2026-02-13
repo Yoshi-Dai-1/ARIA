@@ -11,6 +11,14 @@ from loguru import logger
 from network_utils import get_robust_session
 
 
+def normalize_code(code: str) -> str:
+    """証券コードを 5 桁に正規化する (4桁なら末尾0付与、5桁なら維持)"""
+    if not code:
+        return ""
+    c = str(code).strip()
+    return c + "0" if len(c) == 4 else c
+
+
 class IndexStrategy(ABC):
     """指数ごとのデータ取得ロジックの基底クラス"""
 
@@ -72,7 +80,7 @@ class NikkeiStrategy(IndexStrategy):
             df = df.dropna(subset=[code_col, weight_col])
 
             # コードを文字列化 (4桁想定)
-            df["code"] = df[code_col].astype(str).str.replace(".0", "", regex=False).str.strip()
+            df["code"] = df[code_col].astype(str).str.replace(".0", "", regex=False).str.strip().apply(normalize_code)
             # 4桁未満の場合は左パディング (例: 1 -> 0001 は稀だが念のため)
             df = df[df["code"].str.match(r"^\d+$")]
 
@@ -122,7 +130,7 @@ class TopixStrategy(IndexStrategy):
             df = df[[code_col, weight_col]].rename(columns={code_col: "code", weight_col: "weight"})
 
             # 型変換
-            df["code"] = df["code"].astype(str).str.strip()
+            df["code"] = df["code"].astype(str).str.strip().apply(normalize_code)
 
             def parse_weight(x):
                 if isinstance(x, str):
@@ -170,7 +178,7 @@ class MarketDataEngine:
         df = df.rename(
             columns={"コード": "code", "銘柄名": "company_name", "33業種区分": "sector", "市場・商品区分": "market"}
         )
-        df["code"] = df["code"].str[:4]
+        df["code"] = df["code"].apply(normalize_code)
         return df[["code", "company_name", "sector", "market"]]
 
     def update_listing_history(
@@ -196,13 +204,18 @@ class MarketDataEngine:
             delisted = old_history[old_history["type"] == "DELISTING"]
             delisted_codes = set(delisted["code"])
 
+        # 【重要】前回 Active だったもののみを廃止判定の母数とする (Unknown無視)
+        active_in_old = (
+            set(old_master[old_master["is_active"].fillna(False)]["code"]) if not old_master.empty else set()
+        )
+
         # 新規・再上場
         for code in new_codes - old_codes:
             event_type = "RE-LISTING" if code in delisted_codes else "LISTING"
             events.append({"code": code, "type": event_type, "event_date": today})
 
-        # 廃止
-        for code in old_codes - new_codes:
+        # 廃止: 前回上場していたが、今回いなくなったもの
+        for code in active_in_old - new_codes:
             events.append({"code": code, "type": "DELISTING", "event_date": today})
 
         return pd.DataFrame(events)
