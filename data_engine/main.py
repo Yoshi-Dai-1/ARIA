@@ -352,7 +352,8 @@ def main():
     logger.add(log_dir / "pipeline_{time}.log", rotation="10 MB", level="INFO")
 
     # タクソノミURL定義の読み込み
-    taxonomy_urls_path = Path("taxonomy_urls.json")
+    # 【修正】リポジトリのモジュール化に伴い、プログラムと同じディレクトリにある設定ファイルを確実に参照する
+    taxonomy_urls_path = Path(__file__).parent / "taxonomy_urls.json"
     taxonomy_urls = {}
     if taxonomy_urls_path.exists():
         try:
