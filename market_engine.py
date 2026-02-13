@@ -211,7 +211,7 @@ class MarketDataEngine:
 
         # 新規・再上場
         for code in new_codes - old_codes:
-            event_type = "RE-LISTING" if code in delisted_codes else "LISTING"
+            event_type = "RE_LISTING" if code in delisted_codes else "LISTING"
             events.append({"code": code, "type": event_type, "event_date": today})
 
         # 廃止: 前回上場していたが、今回いなくなったもの
