@@ -57,56 +57,37 @@ def run_market_pipeline(target_date: str):
         # 1. Stock Master Update (Active/Inactive Logic)
         try:
             new_master = engine.fetch_jpx_master()
-            current_master = catalog.master_df.copy()  # Load current
+            current_master = catalog.master_df.copy()
 
-            # Active判定
+            # 三値論理（Active/Inactive/Unknown）の適用判定
             active_codes = set(new_master["code"])
-            if not current_master.empty:
-                if "is_active" not in current_master.columns:
-                    current_master["is_active"] = True
-                current_master["is_active"] = current_master["code"].isin(active_codes)
+            # 過去にJPXに存在した証拠（日付が NULL）があるコードを特定
+            jpx_history_codes = set(current_master[current_master["last_submitted_at"].isna()]["code"])
 
-            new_master["is_active"] = True
+            # 更新用データの構築
+            # A. 現役 (True)
+            active_updates = new_master.copy()
+            active_updates["is_active"] = True
+            active_updates["last_submitted_at"] = None
 
-            # Merge
-            merged_master = pd.concat([current_master, new_master], ignore_index=True).drop_duplicates(
-                subset=["code"], keep="last"
-            )
+            # B. 廃止 (False) : 過去にいたが今はいない
+            delisted_codes = jpx_history_codes - active_codes
+            delisted_updates = current_master[current_master["code"].isin(delisted_codes)].copy()
+            delisted_updates["is_active"] = False
+            delisted_updates["last_submitted_at"] = None
 
-            # 型を強制（文字列化を防ぐ）
-            if merged_master["is_active"].dtype == "object":
-                # 'False' (文字列) を確実に False (bool) にするために lowercase で判定
-                merged_master["is_active"] = (
-                    merged_master["is_active"]
-                    .astype(str)
-                    .str.lower()
-                    .map(
-                        {
-                            "true": True,
-                            "false": False,
-                            "1": True,
-                            "0": False,
-                            "1.0": True,
-                            "0.0": False,
-                            "none": True,
-                            "nan": True,
-                        }
-                    )
-                    .fillna(True)
-                    .astype(bool)
-                )
+            incoming_updates = pd.concat([active_updates, delisted_updates], ignore_index=True)
+
+            # 【究極の統合】カタログマネージャの属性承継ロジックに委ねる
+            # これにより、最新の社名(EDINET)に対し、JPXの属性が正しく引き継がれる。
+            if catalog.update_stocks_master(incoming_updates):
+                logger.success("Market Master synchronized and attributes reconciled.")
             else:
-                merged_master["is_active"] = merged_master["is_active"].astype(bool)
+                raise ValueError("Failed to reconcile market master updates.")
 
             # Listing Events生成
             old_listing = catalog.get_listing_history()
-
             listing_events = engine.update_listing_history(catalog.master_df, new_master, old_listing)
-
-            # Save Master (Deferred)
-            # _save_and_upload は内部で _clean_dataframe を呼ぶので安全だが、念のため検証済みデータを使う
-            catalog._save_and_upload("master", merged_master, defer=True)
-            logger.info("Master updated in buffer.")
 
             # Save History (Deferred)
             if not listing_events.empty:
@@ -114,14 +95,13 @@ def run_market_pipeline(target_date: str):
                 catalog._save_and_upload("listing", merged_hist, defer=True)
                 logger.info("Listing History updated in buffer.")
             elif old_listing.empty:
-                # 初回初期化: 空のDFをアップロード（ファイル自体は作成する）
+                # 初回初期化: 空のDFをアップロード
                 catalog._save_and_upload("listing", old_listing, defer=True)
                 logger.info("Listing History initialized in buffer.")
 
         except Exception as e:
-            logger.error(f"Stock Master更新失敗: {e}")
-            # Master更新失敗は致命的なので終了するか検討。
-            # ここでは続行をトライ
+            logger.critical(f"Stock Master更新失敗 (Fatal): {e}")
+            raise  # 即座に停止し、部分的なコミットを防止する
 
         # 2. Index Updates (Nikkei225, TOPIX)
         indices = ["Nikkei225", "TOPIX"]

@@ -48,7 +48,8 @@ financial-lakehouse/
 ├── meta/                           # メタデータ
 │   ├── stocks_master.parquet       # 証券コード, 銘柄名, is_activeフラグ
 │   ├── listing_history.parquet     # 上場・廃止・再上場イベント履歴
-│   └── index_history.parquet       # 指数採用・除外イベント履歴
+│   ├── index_history.parquet       # 指数採用・除外イベント履歴
+│   └── name_history.parquet        # 社名変更イベント履歴
 ├── master/                         # 分析用マスタデータ
 │   ├── financial_values/           # 財務数値（BS, PL, CF, SS）
 │   │   └── bin=XX/data.parquet     # 証券コード上2桁で不変分割

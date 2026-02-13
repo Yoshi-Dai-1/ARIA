@@ -37,6 +37,15 @@ tqdm_mod.tqdm = no_op_tqdm
 # 全体的な通信の堅牢化を適用
 patch_all_networking()
 
+
+def normalize_code(code: str) -> str:
+    """証券コードを 5 桁に正規化する (4桁なら末尾0付与、5桁なら維持)"""
+    if not code:
+        return ""
+    c = str(code).strip()
+    return c + "0" if len(c) == 4 else c
+
+
 # 設定
 DATA_PATH = Path("data").resolve()
 RAW_BASE_DIR = DATA_PATH / "raw"
@@ -78,7 +87,7 @@ def parse_worker(args):
 
         if df is not None and not df.empty:
             df["docid"] = docid
-            df["code"] = str(row.get("secCode", ""))[:4]
+            df["code"] = df["secCode"].apply(normalize_code)
             df["submitDateTime"] = row.get("submitDateTime", "")
             for col in df.columns:
                 if df[col].dtype == "object":
@@ -103,87 +112,58 @@ def parse_worker(args):
 
 
 def run_merger(catalog, merger, run_id):
-    """Mergerモード: デルタファイルの集約とGlobal更新 (Master First 戦略)"""
+    """Mergerモード: デルタファイルの集約とGlobal更新 (Atomic Commit & Rollback 戦略)"""
     logger.info(f"=== Merger Process Started (Run ID: {run_id}) ===")
 
-    # 1. ハウスキーピング (古いデルタの削除 - 常に実行してOK)
+    # 1. 準備：ロールバック用のスナップショット取得
+    catalog.take_snapshot()
+
+    # 2. ハウスキーピング (古いデルタの削除)
     catalog.cleanup_deltas(run_id, cleanup_old=True)
 
     # 2. 有効なデルタの収集
     deltas = catalog.load_deltas(run_id)
     if not deltas:
         logger.warning("有効なデルタデータが見つかりませんでした (No valid chunks found).")
-        # データがない場合はクリーンアップして終了（何も更新していないので安全）
         catalog.cleanup_deltas(run_id, cleanup_old=False)
-        # データがない場合でも、後続のクリーンアップロジックで処理されるように return を削除
-        # catalog.cleanup_deltas(run_id, cleanup_old=False) # この行は削除
+        return
 
-    # 3. マージとGlobal更新 (Strategy: Master/Data First -> Catalog Last)
-    # これにより、Catalogが進んでMasterが更新されない（データロスト）を防ぐ。
-
+    # 3. マージとGlobal更新 (Atomic Commit: すべて defer=True でバッファに積む)
     all_masters_success = True
     processed_count = 0
 
-    # --- A. Stock Master ---
-    if "master" in deltas and not deltas["master"].empty:
+    # --- A. Stock Master & Name History (Catalogデルタから全イベントを抽出) ---
+    if "catalog" in deltas and not deltas["catalog"].empty:
         processed_count += 1
-        new_master = deltas["master"]
-        # JPX最新リストにあるコードのセット
-        active_codes = set(new_master["code"])
+        cat_df = deltas["catalog"]
 
-        # 既存マスタの is_active を更新
-        current_master = catalog.master_df.copy()
-        if not current_master.empty:
-            if "is_active" not in current_master.columns:
-                current_master["is_active"] = True  # カラムがない場合は初期化
+        # 同一バッチ内での全社名状態を抽出 (リコンシリエーション用)
+        # 1つの期間内に A -> B -> C と変わる可能性を考慮し、(code, company_name, submit_at) の固有ペアを取得
+        name_events_in_batch = cat_df.sort_values("submit_at", ascending=True).drop_duplicates(
+            subset=["code", "company_name"]
+        )[["code", "company_name", "submit_at"]]
+        name_events_in_batch.rename(columns={"submit_at": "last_submitted_at"}, inplace=True)
 
-            # 既存レコードのステータス更新
-            current_master["is_active"] = current_master["code"].isin(active_codes)
-
-        # 新規データの is_active は当然 True
-        new_master["is_active"] = True
-
-        # マージ (既存の状態更新済みデータ + 新規データ)
-        merged_master = pd.concat([current_master, new_master], ignore_index=True).drop_duplicates(
-            subset=["code"], keep="last"
-        )
-
-        # recカラムなどのクリーンアップ（もしあれば）
-        if "rec" in merged_master.columns:
-            merged_master.drop(columns=["rec"], inplace=True)
-
-        # 型を強制（文字列化を防ぐ）
-        if merged_master["is_active"].dtype == "object":
-            # 'False' (文字列) を確実に False (bool) にするために lowercase で判定
-            merged_master["is_active"] = (
-                merged_master["is_active"]
-                .astype(str)
-                .str.lower()
-                .map(
-                    {
-                        "true": True,
-                        "false": False,
-                        "1": True,
-                        "0": False,
-                        "1.0": True,
-                        "0.0": False,
-                        "none": True,
-                        "nan": True,
-                    }
-                )
-                .fillna(True)
-                .astype(bool)
+        # 提出日時が欠落しているドキュメントは時系列解析から除外 (情報の誠実性を担保)
+        initial_event_count = len(name_events_in_batch)
+        name_events_in_batch = name_events_in_batch[name_events_in_batch["last_submitted_at"].notna()]
+        if len(name_events_in_batch) < initial_event_count:
+            logger.warning(
+                f"Filtered out {initial_event_count - len(name_events_in_batch)} events with missing last_submitted_at"
             )
-        else:
-            merged_master["is_active"] = merged_master["is_active"].astype(bool)
 
-        if catalog._save_and_upload("master", merged_master):
-            logger.success(
-                f"Global Stock Master Updated (Active: {merged_master['is_active'].astype(int).sum()} / "
-                f"Total: {len(merged_master)})"
-            )
+        # 基本属性の付与
+        # EDINET由来は初期状態で Unknown (None) とし、JPX同期で初めて Active/Inactive に確定させる
+        name_events_in_batch["is_active"] = None
+
+        if "rec" in name_events_in_batch.columns:
+            name_events_in_batch.drop(columns=["rec"], inplace=True)
+
+        # 【究極の時系列整合性】update_stocks_master 内で既存データとの照合と履歴生成を行う
+        if catalog.update_stocks_master(name_events_in_batch):
+            logger.info("Stock Master & History reconciled from Catalog events (Atomic & Chronological)")
         else:
-            logger.error("❌ Failed to update Global Stock Master")
+            logger.error("❌ Failed to reconcile Global Stock Master")
             all_masters_success = False
 
     # --- B. History (listing, index, name) ---
@@ -193,56 +173,112 @@ def run_merger(catalog, merger, run_id):
             new_hist = deltas[key]
             current_hist = catalog._load_parquet(key)
             merged_hist = pd.concat([current_hist, new_hist], ignore_index=True).drop_duplicates()
-            if catalog._save_and_upload(key, merged_hist):
-                logger.success(f"Global {key} History Updated")
+            # 履歴も defer=True でバッファリング
+            if catalog._save_and_upload(key, merged_hist, defer=True):
+                logger.info(f"Global {key} History staged (Atomic)")
             else:
-                logger.error(f"❌ Failed to update Global {key} History")
+                logger.error(f"❌ Failed to stage Global {key} History")
                 all_masters_success = False
 
     # --- C. Financial / Text (Sector based) ---
     for key, sector_df in deltas.items():
         if (key.startswith("financial_") or key.startswith("text_")) and not sector_df.empty:
             processed_count += 1
-            # キーから識別子(bin または sector)を復元
             identifier = key.replace("financial_", "").replace("text_", "")
             m_type = "financial_values" if key.startswith("financial_") else "qualitative_text"
 
-            # MasterMerger (Standard Mode) でアップロード
-            # セクター引数は bin 識別子を渡すが、Merger内部でデータからbinを再計算するため整合性は維持される
-            if not merger.merge_and_upload(identifier, m_type, sector_df, worker_mode=False):
-                logger.error(f"❌ Failed to update {m_type} for {identifier}")
+            # defer=True を明示的に指定
+            if not merger.merge_and_upload(
+                identifier, m_type, sector_df, worker_mode=False, catalog_manager=catalog, defer=True
+            ):
+                logger.error(f"❌ Failed to stage {m_type} for {identifier}")
                 all_masters_success = False
 
-    # --- D. Catalog Update (Commit Log) ---
-    catalog_updated = False
+    # --- D. Catalog & RAW Assets ---
     if all_masters_success:
+        # RAWデータのアップロード復旧 (Atomicバッファに積む)
+        if RAW_BASE_DIR.exists() and any(RAW_BASE_DIR.iterdir()):
+            processed_count += 1
+            catalog.upload_raw_folder(RAW_BASE_DIR, path_in_repo="raw", defer=True)
+            logger.info("RAW assets staged for upload (Atomic)")
+
         if "catalog" in deltas and not deltas["catalog"].empty:
             processed_count += 1
             new_df = deltas["catalog"]
             merged_catalog = pd.concat([catalog.catalog_df, new_df], ignore_index=True).drop_duplicates(
                 subset=["doc_id"], keep="last"
             )
-            if catalog._save_and_upload("catalog", merged_catalog):
-                logger.success(f"Global Catalog Updated (Total: {len(merged_catalog)} rows)")
-                catalog_updated = True
+            # カタログも予約
+            catalog._save_and_upload("catalog", merged_catalog, defer=True)
+            logger.info("Global Catalog staged (Atomic)")
+
+        # 【アトミック・コミット実行】
+        if processed_count > 0:
+            if catalog.push_commit(f"Merger Atomic Success: {run_id}"):
+                logger.success(
+                    f"=== Merger完了: 全データをアトミックに更新しました (Total: {processed_count} files) ==="
+                )
+                # メモリ上のカタログ状態を確定させる
+                catalog.catalog_df = merged_catalog
+
+                # 【極限の堅牢性：Read-after-Write Verification (RaW-V)】
+                # コミット直後に、キャッシュを無視してリモートから再取得し、実際に書き込まれたことを検証する
+                logger.info("極限整合性検証 (RaW-V: カタログ, マスタ, RAW) を実行中...")
+                try:
+                    # 1. カタログ & マスタの検証 (force_download=True で最新を強制取得)
+                    vf_catalog = catalog._load_parquet("catalog", force_download=True)
+                    vf_master = catalog._load_parquet("master", force_download=True)
+
+                    if vf_catalog.empty or vf_master.empty:
+                        raise ValueError("リモートの基幹ファイルが空です。")
+
+                    # 2. RAWデータの存在検証 (サンプリング)
+                    if not deltas["catalog"].empty:
+                        sample_doc = deltas["catalog"].iloc[0]["doc_id"]
+
+                        # カタログ上の存在確認
+                        if sample_doc not in vf_catalog["doc_id"].values:
+                            raise ValueError(
+                                f"検知失敗: 追加されたはずの書類 {sample_doc} がリモートカタログに見当たりません。"
+                            )
+
+                        # RAWファイルの存在確認 (エビデンス)
+                        raw_repo_path = f"raw/{sample_doc}/{sample_doc}.zip"
+                        try:
+                            # 存在確認のみなのでメタデータ取得を試みる
+                            catalog.api.get_paths_info(
+                                repo_id=catalog.hf_repo,
+                                paths=[raw_repo_path],
+                                repo_type="dataset",
+                                token=catalog.hf_token,
+                            )
+                            logger.info(f"✅ RAWファイル検証成功 (代表サンプリング): {raw_repo_path}")
+                        except Exception:
+                            # 固有のzip名でない可能性も考慮し、フォルダ存在を確認
+                            files = catalog.api.list_repo_files(repo_id=catalog.hf_repo, repo_type="dataset")
+                            if not any(f.startswith(f"raw/{sample_doc}/") for f in files):
+                                raise ValueError(
+                                    f"RAW検証失敗: 書類 {sample_doc} のRAWデータがリモートに存在しません。"
+                                ) from None
+
+                    logger.success("✅ RaW-V 成功: 全データの書き込みと整合性がリモート上で確認されました。")
+                    catalog.cleanup_deltas(run_id, cleanup_old=False)
+                except Exception as e:
+                    logger.critical(f"❌ 整合性不整合を検知 (RaW-V ERROR): {e}")
+                    # 【世界最高の対応：自動ロールバック】
+                    if catalog.rollback(f"RaW-V Failure Rollback: {e}"):
+                        logger.success("✅ 自動ロールバックに成功しました。不完全なデータは破棄されました。")
+                    else:
+                        logger.critical("❌ ロールバックに失敗しました。データが不安定な状態です！手動介入が必要です。")
+                    sys.exit(1)
             else:
-                logger.error("❌ Failed to update Global Catalog")
+                logger.error("❌ 最終バッチコミットに失敗しました。データ整合性は維持されています。")
+                sys.exit(1)
         else:
-            catalog_updated = True  # Catalog自体の更新がない場合は成功とみなす
+            logger.info("処理対象のデータはありませんでした。")
     else:
-        logger.error("⛔ Master更新に失敗があるため、Catalog更新をスキップしました (データ整合性保護)")
-
-    if processed_count == 0:
-        logger.info("処理対象のデータはありませんでした。クリーンアップのみ実行します。")
-
-    # 4. クリーンアップ
-    # 更新に成功したか、あるいはそもそも処理対象がなかった場合に実行
-    if all_masters_success and catalog_updated:
-        catalog.cleanup_deltas(run_id, cleanup_old=False)
-        logger.info("=== Merger Process Completed Successfully ===")
-    else:
-        logger.warning("⚠️ 処理の失敗（または整合性不備）を検知したため、今回のDeltaファイルを保持します。")
-        logger.info("=== Merger Process Completed with Errors ===")
+        logger.error("⛔ Master更新準備中にエラーが発生したため、コミットを中断しました (整合性保護)")
+        logger.info("=== Merger Process Completed with Errors (No changes applied) ===")
 
 
 def main():
@@ -289,6 +325,11 @@ def main():
     if not api_key:
         logger.critical("EDINET_API_KEY が設定されていません。")
         return
+
+    if args.start:
+        args.start = args.start.strip()
+    if args.end:
+        args.end = args.end.strip()
 
     if not args.start:
         args.start = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
@@ -342,7 +383,7 @@ def main():
         if not sec_code:
             skipped_reasons["no_sec_code"] += 1
             continue
-        if len(sec_code) < 5:
+        if len(sec_code) < 4:
             skipped_reasons["invalid_length"] += 1
             # 56件の書類漏れなどの追跡用
             logger.debug(f"書類スキップ (コード短縮): {row.get('docID')} - {sec_code}")
@@ -365,7 +406,7 @@ def main():
             if catalog.is_processed(docid):
                 continue
 
-            raw_sec_code = str(row.get("secCode", "")).strip()[:4]
+            raw_sec_code = normalize_code(str(row.get("secCode", "")).strip())
             # 解析対象の厳密判定条件をマトリックス側でも提供
             matrix_data.append(
                 {
@@ -474,12 +515,11 @@ def main():
             try:
                 d1 = datetime.strptime(period_start, "%Y-%m-%d")
                 d2 = datetime.strptime(period_end, "%Y-%m-%d")
-                # 日数差を月数に換算 (+1日して端数を丸める)
-                diff_days = (d2 - d1).days + 1
-                calc_months = round(diff_days / 30.4375)  # 365.25 / 12
-
                 # 通常は 12, 9, 6, 3 などに収束。
                 # 異常値（0以下 または 24ヶ月超）は NULL として扱い、嘘の情報を記録しない
+                diff_days = (d2 - d1).days + 1
+                calc_months = round(diff_days / 30.4375)  # 365.25 / 12 (平均月日数)
+
                 if 1 <= calc_months <= 24:
                     num_months = calc_months
                 else:
@@ -487,7 +527,7 @@ def main():
             except Exception:
                 num_months = None  # 計算失敗時も NULL
 
-        sec_code = row.get("secCode", "")[:4]
+        sec_code = normalize_code(row.get("secCode", ""))
         # 訂正フラグ
         is_amendment = row.get("withdrawalStatus") != "0" or "訂正" in title
 
@@ -647,7 +687,10 @@ def main():
                             # セクター判別用
                             meta_row = next(m for m in all_meta if m["docID"] == did)
                             processed_infos.append(
-                                {"docID": did, "sector": catalog.get_sector(meta_row.get("secCode", "")[:4])}
+                                {
+                                    "docID": did,
+                                    "sector": catalog.get_sector(normalize_code(meta_row.get("secCode", ""))),
+                                }
                             )
 
                 # バッチごとに登録可能な未定記録を登録

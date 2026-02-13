@@ -74,9 +74,10 @@ class StockMasterRecord(BaseModel):
 
     code: str
     company_name: str
-    sector: Optional[str] = "その他"
+    sector: Optional[str] = None
     market: Optional[str] = None
-    is_active: bool = True
+    is_active: Optional[bool] = None
+    last_submitted_at: Optional[str] = None  # 時系列ガード用：情報の最新性を担保する提出日時
 
 
 class ListingEvent(BaseModel):
@@ -93,5 +94,14 @@ class IndexEvent(BaseModel):
 
     index_name: str
     code: str
-    type: str  # ADD, REMOVE
+    type: str  # ADITION, REMOVAL
     event_date: str
+
+
+class NameChangeEvent(BaseModel):
+    """社名変更イベントの記録モデル"""
+
+    code: str
+    old_name: str
+    new_name: str
+    change_date: str

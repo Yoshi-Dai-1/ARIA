@@ -30,6 +30,7 @@ class MasterMerger:
         if new_data.empty:
             return True
 
+        if worker_mode:
             # 【重要】不変シャッディング: 証券コードの上2桁(bin)で物理分割
             # これにより業種が変わっても物理的な保存場所(パス)が不変に保たれます。
             # 例: 7203 -> bin=72
@@ -67,17 +68,25 @@ class MasterMerger:
 
         for col in combined_df.columns:
             if combined_df[col].dtype == "object":
-                # ブール値が含まれる場合は文字列化を避ける
-                if not combined_df[col].apply(lambda x: isinstance(x, bool)).any():
+                # ブール値が含まれる場合は文字列化を避ける (None/NaN が混じっていても型を守る)
+                # s.apply(...) よりも s.isin([True, False]) の方が堅牢
+                has_bool = combined_df[col].isin([True, False]).any()
+                if not has_bool:
                     combined_df[col] = combined_df[col].astype(str)
+                else:
+                    # 【世界標準】論理値型（Boolean）を維持
+                    # 表示ツールによっては true/false となるが、データ解析上の「整合性」「速度」を最優先する。
+                    # None を含む Nullable Boolean として保存。
+                    pass
 
         local_file.parent.mkdir(parents=True, exist_ok=True)
         combined_df.to_parquet(local_file, compression="zstd", index=False)
 
         if self.api:
+            # 【重要】defer=True の場合は、モードに関わらずコミットバッファに積む
             if defer and catalog_manager:
                 catalog_manager.add_commit_operation(repo_path, local_file)
-                logger.debug(f"Master更新をバッファに追加: bin={bin_val}")
+                logger.debug(f"Master更新をバッファに追加: bin={bin_val} ({master_type})")
                 return True
 
             max_retries = 5  # 3回から5回に強化

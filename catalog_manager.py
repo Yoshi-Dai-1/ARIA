@@ -1,6 +1,7 @@
 import random
+import re
 import time
-from datetime import datetime
+import unicodedata
 from pathlib import Path
 from typing import Dict, List
 
@@ -33,8 +34,9 @@ class CatalogManager:
         self.catalog_df = self._load_parquet("catalog")
         self.master_df = self._load_parquet("master")
 
-        # 【追加】バッチコミット用バッファ
+        # 【最重要】一括コミット用バッファ
         self._commit_operations = {}
+        self._snapshots = {}  # 整合性保護のためのロールバックスナップショット
         logger.info("CatalogManager を初期化しました。")
 
         # 全ファイルの整合性チェックと最新スキーマへのアップグレード
@@ -145,9 +147,10 @@ class CatalogManager:
             if "num_months" in df.columns:
                 df["num_months"] = pd.to_numeric(df["num_months"], errors="coerce").astype("Int64")
 
-        # 3. マスタの場合、codeを確実に文字列化
-        if key == "master" and "code" in df.columns:
-            df["code"] = df["code"].astype(str).str.strip()
+        # 3. 証券コードの正規化 (5桁統一: 4桁なら末尾0付与)
+        targets = ["master", "listing", "index", "name"]
+        if key in targets and "code" in df.columns:
+            df["code"] = df["code"].astype(str).str.strip().apply(lambda x: x + "0" if len(x) == 4 else x)
 
         # 4. Object型の安定化 (None を保持しつつ文字列化)
         for col in df.columns:
@@ -156,16 +159,95 @@ class CatalogManager:
 
         return df
 
+    def _normalize_company_name(self, name: str) -> str:
+        """比較判定のために法人格や空白を除去して正規化する (NFKC対応版)"""
+        if not name or not isinstance(name, str):
+            return ""
+
+        # 1. NFKC正規化 (全角数字・英字を半角に、㈱ などを (株) に分解)
+        n = unicodedata.normalize("NFKC", name)
+
+        # 2. 全ての空白除去
+        n = n.replace(" ", "").replace("\u3000", "")
+
+        # 3. 代表的な法人格表記を除去
+        # NFKC後の (株) や (有) などに対応できるようパターンを整理
+        patterns = [
+            r"株式会社",
+            r"有限会社",
+            r"合同会社",
+            r"合資会社",
+            r"合名会社",
+            r"一般社団法人",
+            r"一般財団法人",
+            r"公益社団法人",
+            r"公益財団法人",
+            r"\(株\)",
+            r"\(有\)",
+            r"\(合\)",
+            r"\(社\)",
+            r"\(財\)",
+        ]
+        for p in patterns:
+            n = re.sub(p, "", n)
+
+        return n.strip()
+
     def add_commit_operation(self, repo_path: str, local_path: Path):
         """コミットバッファに操作を追加（重複は最新で上書き）"""
         self._commit_operations[repo_path] = CommitOperationAdd(path_in_repo=repo_path, path_or_fileobj=str(local_path))
         logger.debug(f"コミットバッファに追加: {repo_path}")
 
-    def _load_parquet(self, key: str) -> pd.DataFrame:
+    def take_snapshot(self):
+        """現在のGlobal状態のスナップショットをメモリに取得 (不整合発生時のロールバック用)"""
+        # 主要ファイルをロードしてスナップショットに保存
+        self._snapshots = {
+            "catalog": self.catalog_df.copy(),
+            "master": self.master_df.copy(),
+            "listing": self._load_parquet("listing").copy(),
+            "index": self._load_parquet("index").copy(),
+            "name": self._load_parquet("name").copy(),
+        }
+        logger.info("Global 状態のスナップショットを取得しました (安全性確保)")
+
+    def rollback(self, message: str = "RaW-V Failure: Automated Recovery Rollback"):
+        """スナップショットの状態を強制的に書き戻し、Globalデータの整合性を復旧する"""
+        if not self._snapshots:
+            logger.error("❌ スナップショットが存在しないため、ロールバックできません。")
+            return False
+
+        logger.warning(f"⛔ ロールバックを開始します: {message}")
+
+        # 既存のコミット予約をすべて破棄
+        self._commit_operations = {}
+
+        # スナップショットの内容を強制的に上書き予約
+        for key, df in self._snapshots.items():
+            self._save_and_upload(key, df, defer=True)
+
+        # 一括コミットの実行 (事実上の差し戻し)
+        success = self.push_commit(f"ROLLBACK: {message}")
+        if success:
+            logger.success("✅ ロールバック・コミットが完了しました。整合性は復旧されました。")
+            # メモリ上の最新状態もスナップショットに戻す
+            self.catalog_df = self._snapshots["catalog"]
+            self.master_df = self._snapshots["master"]
+        else:
+            logger.critical(
+                "❌ ロールバック自体に失敗しました！"
+                "Hugging Face上のデータが壊れている可能性があります。直ちに手動確認が必要です。"
+            )
+        return success
+
+    def _load_parquet(self, key: str, force_download: bool = False) -> pd.DataFrame:
         filename = self.paths[key]
         try:
             local_path = hf_hub_download(
-                repo_id=self.hf_repo, filename=filename, repo_type="dataset", token=self.hf_token
+                repo_id=self.hf_repo,
+                filename=filename,
+                repo_type="dataset",
+                token=self.hf_token,
+                force_download=force_download,
             )
             df = pd.read_parquet(local_path)
             # 【絶対ガード】読み込み直後にクレンジング
@@ -295,6 +377,7 @@ class CatalogManager:
 
                     logger.warning(f"アップロード一時エラー: {filename} - {e} - Retrying ({attempt + 1}/5)...")
                     time.sleep(10 * (attempt + 1))
+            logger.error(f"❌ アップロードに最終的に失敗しました: {filename}")
             return False
         return True
 
@@ -413,56 +496,178 @@ class CatalogManager:
         """現在の指数採用履歴マスタを取得"""
         return self._load_parquet("index")
 
-    def update_stocks_master(self, new_master: pd.DataFrame):
-        """マスタ更新 (Pydantic バリデーション実施)"""
-        if new_master.empty:
-            return
+    def update_stocks_master(self, incoming_data: pd.DataFrame):
+        """マスタ更新 & 時系列リコンシリエーション (世界最高水準の歴史再構築ロジック)"""
+        if incoming_data.empty:
+            return True
 
-        records = new_master.to_dict("records")
+        # 1. バリデーションと型正規化
+        records = incoming_data.to_dict("records")
         validated = []
         for rec in records:
             try:
+                rec = {k: (v if not pd.isna(v) else None) for k, v in rec.items()}
+                # is_active の型正規化
+                if isinstance(rec.get("is_active"), str):
+                    rec["is_active"] = rec["is_active"].lower() in ["true", "1", "yes"]
+                # 【最適解】情報の損失を伴う切り捨てを廃止し、ソースの精度を維持する
+                # (Datetime型への変換は後続の保存レイヤーまたはPydanticモデルに委ねる)
                 validated.append(StockMasterRecord(**rec).model_dump())
             except Exception as e:
-                logger.error(f"銘柄マスタのバリデーション失敗 (code: {rec.get('code')}): {e}")
+                logger.error(f"銘柄情報のバリデーション失敗 (code: {rec.get('code')}): {e}")
 
         if not validated:
-            return
-        valid_df = pd.DataFrame(validated)
+            return True
+        incoming_df = pd.DataFrame(validated)
 
-        # 社名変更チェック
-        if not self.master_df.empty:
-            merged = pd.merge(
-                self.master_df[["code", "company_name"]],
-                valid_df[["code", "company_name"]],
-                on="code",
-                suffixes=("_old", "_new"),
-            )
-            changed = merged[merged["company_name_old"] != merged["company_name_new"]]
-            if not changed.empty:
-                today = datetime.now().strftime("%Y-%m-%d")
-                name_history = self._load_parquet("name")
-                for _, row in changed.iterrows():
-                    name_history = pd.concat(
-                        [
-                            name_history,
-                            pd.DataFrame(
-                                [
-                                    {
-                                        "code": row["code"],
-                                        "old_name": row["company_name_old"],
-                                        "new_name": row["company_name_new"],
-                                        "change_date": today,
-                                    }
-                                ]
-                            ),
-                        ],
-                        ignore_index=True,
-                    )
-                self._save_and_upload("name", name_history.drop_duplicates())
+        # 2. 既存データとの統合 (リコンシリエーション)
+        # 既存マスタを「過去の状態の一つ」として扱い、全てのタイムラインをマージする
+        current_m = self.master_df.copy()
+        # カラム自体の存在をケア (NULL は NULL のまま維持)
+        if "last_submitted_at" not in current_m.columns:
+            current_m["last_submitted_at"] = None
 
-        self.master_df = valid_df
-        return self._save_and_upload("master", self.master_df)  # 【修正】戻り値を返す
+        # 全ての既知の状態を統合
+        all_states = pd.concat([current_m, incoming_df], ignore_index=True)
+
+        # 重複排除 (同じ code, company_name, last_submitted_at は不要)
+        all_states.drop_duplicates(subset=["code", "company_name", "last_submitted_at"], inplace=True)
+
+        # 3. 社名変更の歴史的変遷を解析
+        name_history = self._load_parquet("name")
+        new_history_events = []
+
+        for code, group in all_states.groupby("code"):
+            # 提出日時の昇順でソート
+            sorted_group = group.sort_values("last_submitted_at", ascending=True)
+
+            # --- A. 基点(Baseline)の決定 ---
+            # 1. まずは既に確定した履歴(name_history)から最新の名前を探す (最も信頼できる過去)
+            prev_name = None
+            if not name_history.empty:
+                code_history = name_history[name_history["code"] == code]
+                if not code_history.empty:
+                    prev_name = code_history.iloc[-1]["new_name"]
+
+            # 2. 履歴がない場合、既存マスタ(stocks_master)の名前を暫定基点とする
+            # ただし、マスタ名は JPX 由来(略称)の可能性がある。
+            is_baseline_from_jpx = False
+            if prev_name is None:
+                master_entry = current_m[current_m["code"] == code]
+                if not master_entry.empty:
+                    prev_name = master_entry.iloc[0]["company_name"]
+                    # 提出日が NULL なら JPX 由来の暫定名と判断
+                    last_at = master_entry.iloc[0].get("last_submitted_at")
+                    if pd.isna(last_at):
+                        is_baseline_from_jpx = True
+
+            # --- B. 逐次比較と履歴生成 ---
+            for _, curr_state in sorted_group.iterrows():
+                # 既存データ(JPX等の日付なしマスタ状態)は比較の「対象」ではなく「基点」なのでスキップ
+                last_at = curr_state.get("last_submitted_at")
+                if pd.isna(last_at):
+                    continue
+
+                curr_name = curr_state["company_name"]
+
+                # 基点がない場合 (ARIAで完全新規に発見された銘柄)
+                if prev_name is None:
+                    prev_name = curr_name
+                    continue
+
+                # 正規化比較を行い、実質的な差異がある場合のみ履歴を作成
+                normalized_prev = self._normalize_company_name(prev_name)
+                normalized_curr = self._normalize_company_name(curr_name)
+
+                if normalized_prev != normalized_curr:
+                    # 本物の社名変更として記録
+                    event = {
+                        "code": code,
+                        "old_name": prev_name,
+                        "new_name": curr_name,
+                        "change_date": last_at,
+                    }
+
+                    # 重複チェック
+                    exists = False
+                    if not name_history.empty:
+                        exists = not name_history[
+                            (name_history["code"] == code)
+                            & (name_history["old_name"] == event["old_name"])
+                            & (name_history["new_name"] == event["new_name"])
+                        ].empty
+
+                    if not exists:
+                        new_history_events.append(event)
+                        logger.info(f"✨ 社名変更を検知: {code} | {prev_name} -> {curr_name}")
+
+                    # 基点を更新
+                    prev_name = curr_name
+                    is_baseline_from_jpx = False  # EDINET由来になったのでフラグを落とす
+                else:
+                    # 「形式的な差異(略称→正式名称)」または「同一名称」の場合
+                    # 履歴には残さないが、以降の比較のために基点だけは更新(正式名へ昇格)
+                    if prev_name != curr_name:
+                        if is_baseline_from_jpx:
+                            logger.debug(
+                                f"ℹ️ 基点を略称から正式名称へ昇格 (履歴には残しません): "
+                                f"{code} | {prev_name} -> {curr_name}"
+                            )
+                        prev_name = curr_name
+                        is_baseline_from_jpx = False
+        # 4. 履歴の保存 (Atomic & Non-destructive)
+        if new_history_events:
+            new_hist_df = pd.DataFrame(new_history_events)
+            name_history = pd.concat([name_history, new_hist_df], ignore_index=True).drop_duplicates()
+            # defer=True を指定してコミットバッファに積む
+            self._save_and_upload("name", name_history, defer=True)
+            logger.info(f"時系列リコンシリエーションにより {len(new_history_events)} 件の変遷を特定しました。")
+        elif name_history.empty:
+            # 初回実行時などで履歴が空の場合でも、ファイルを作成して整合性を保つ
+            self._save_and_upload("name", name_history, defer=True)
+
+        # 全状態の中から、code ごとに提出日時が最新のものを抽出
+        sorted_all = all_states.sort_values("last_submitted_at", ascending=False)
+
+        # セクターと市場情報の「属性継承（Inheritance）」
+        # 最新レコードが NULL や "その他" の場合、過去の有効なレコード（JPX等）から引き継ぐ
+        def resolve_attr(group, col):
+            # 提出日に関わらず、そのコードにおける NULL 以外の最も確かな値を探す
+            # (JPXは1970年だがセクター情報は「正」であるため、全体から検索して良い)
+            valid = group[col][~group[col].isin(["その他", None, "nan", ""])]
+            return valid.iloc[0] if not valid.empty else None
+
+        # 各コードの最新状態を特定しつつ、属性を補完
+        best_records = []
+        for _, group in sorted_all.groupby("code", sort=False):
+            # 1. 物理的な最新レコードを取得 (社名と提出日時の決定用)
+            latest_rec = group.iloc[0].copy()
+
+            # 2. JPXレコード(日付なし)を特定 (属性の正解データ)
+            jpx_entries = group[group["last_submitted_at"].isna()]
+
+            if not jpx_entries.empty:
+                # JPXが存在する場合、主要属性をJPXから強制取得（EDINET属性を拒絶）
+                jpx_rec = jpx_entries.iloc[0]
+                latest_rec["sector"] = jpx_rec["sector"]
+                latest_rec["market"] = jpx_rec["market"]
+                latest_rec["is_active"] = jpx_rec["is_active"]
+                # 万が一 JPX のセクターが不全な場合は、過去の有効な属性から拾う（ただし優先度はJPX）
+                if latest_rec["sector"] in ["その他", None, "nan", ""]:
+                    latest_rec["sector"] = resolve_attr(group, "sector")
+            else:
+                # JPXに一度も登録されたことがない(完全新規上場等)の場合
+                # JPXによる承認(同期)があるまでは、Unknown (None) 状態で隔離する
+                latest_rec["is_active"] = None
+                latest_rec["sector"] = None
+                latest_rec["market"] = None
+
+            best_records.append(latest_rec)
+
+        self.master_df = pd.DataFrame(best_records)
+
+        # defer=True を指定してコミットバッファに積む
+        return self._save_and_upload("master", self.master_df, defer=True)
 
     def get_last_index_list(self, index_name: str) -> pd.DataFrame:
         """指定指数の構成銘柄を取得 (Phase 3用)"""
@@ -471,11 +676,12 @@ class CatalogManager:
     def get_sector(self, code: str) -> str:
         """証券コードから業種取得"""
         if self.master_df.empty:
-            return "その他"
+            return None
         row = self.master_df[self.master_df["code"] == code]
         if not row.empty:
-            return str(row.iloc[0]["sector"])
-        return "その他"
+            val = row.iloc[0]["sector"]
+            return str(val) if val is not None else None
+        return None
 
     def save_delta(
         self, key: str, df: pd.DataFrame, run_id: str, chunk_id: str, custom_filename: str = None, defer: bool = False
@@ -614,49 +820,82 @@ class CatalogManager:
             return {}
 
     def push_commit(self, message: str = "Batch update from ARIA") -> bool:
-        """バッファに溜まった操作を一括でコミット実行"""
+        """
+        バッファに溜まった操作をコミット実行。
+        【究極の安定化】操作数が多い場合は、HF側の負荷と429エラーを避けるため、自動的に分割してコミットする。
+        """
         if not self.api or not self._commit_operations:
             return True
 
-        max_retries = 8  # リトライ回数を増やして競合に備える
         ops_list = list(self._commit_operations.values())
+        total_ops = len(ops_list)
 
-        for attempt in range(max_retries):
-            try:
-                self.api.create_commit(
-                    repo_id=self.hf_repo,
-                    repo_type="dataset",
-                    operations=ops_list,
-                    commit_message=message,
-                    token=self.hf_token,
-                )
-                logger.success(f"✅ バッチコミット成功: {len(ops_list)} 操作")
-                self._commit_operations = {}  # クリア
-                return True
-            except Exception as e:
-                # 429 レート制限
-                if isinstance(e, HfHubHTTPError) and e.response.status_code == 429:
-                    wait_time = int(e.response.headers.get("Retry-After", 60)) + 5
-                    logger.warning(f"Commit Rate limit exceeded. Waiting {wait_time}s... ({attempt + 1}/{max_retries})")
-                    time.sleep(wait_time)
-                    continue
+        # 1コミットあたりの最大操作数
+        # レート制限 (128回/時) を回避するため、バッチサイズを拡大してコミット回数を削減する
+        # HF側でタイムアウトしないギリギリのラインとして 500件程度が最適
+        batch_size = 500
+        batches = [ops_list[i : i + batch_size] for i in range(0, total_ops, batch_size)]
 
-                # 409 コンフリクト または 412 前提条件失敗 (他のジョブが同時にコミットした)
-                if isinstance(e, HfHubHTTPError) and e.response.status_code in [409, 412]:
-                    # 指数バックオフ + ジッター
-                    wait_time = (2**attempt) + (random.uniform(5, 15))
-                    logger.warning(
-                        f"Commit Conflict ({e.response.status_code}). "
-                        f"Retrying in {wait_time:.2f}s... ({attempt + 1}/{max_retries})"
+        logger.info(f"🚀 コミット送信開始: 合計 {total_ops} 操作を {len(batches)} バッチに分割して実行します")
+
+        for i, batch in enumerate(batches):
+            batch_msg = f"{message} (part {i + 1}/{len(batches)})"
+            max_retries = 12
+            success = False
+
+            for attempt in range(max_retries):
+                try:
+                    self.api.create_commit(
+                        repo_id=self.hf_repo,
+                        repo_type="dataset",
+                        operations=batch,
+                        commit_message=batch_msg,
+                        token=self.hf_token,
                     )
-                    time.sleep(wait_time)
-                    continue
+                    success = True
+                    break
+                except Exception as e:
+                    status_code = getattr(getattr(e, "response", None), "status_code", None)
 
-                logger.warning(f"コミット失敗: {e} - Retrying ({attempt + 1}/{max_retries})...")
-                time.sleep(10 * (attempt + 1))
+                    # 429 レート制限 または 500 サーバーエラー
+                    if status_code in [429, 500]:
+                        # 429の場合はより長く待機 (HFの回復を待つ)
+                        wait_time = int(getattr(e.response.headers, "get", lambda x, y: y)("Retry-After", 60))
+                        wait_time = max(wait_time, 60) + (attempt * 30) + random.uniform(5, 15)
+                        logger.warning(
+                            f"HF Server Error ({status_code}). Waiting {wait_time:.1f}s... "
+                            f"(Batch {i + 1}, Attempt {attempt + 1}/{max_retries})"
+                        )
+                        time.sleep(wait_time)
+                        continue
 
-        logger.error("❌ バッチコミットに最終的に失敗しました")
-        return False
+                    # 409 コンフリクト または 412 前提条件失敗
+                    if status_code in [409, 412]:
+                        wait_time = (2 ** (attempt + 2)) + (random.uniform(10, 30))
+                        logger.warning(
+                            f"Commit Conflict ({status_code}). Retrying in {wait_time:.2f}s... "
+                            f"(Batch {i + 1}, Attempt {attempt + 1}/{max_retries})"
+                        )
+                        time.sleep(wait_time)
+                        continue
+
+                    # タイムアウト等のネットワーク例外
+                    logger.warning(
+                        f"通信エラー: {e} - Retrying... (Batch {i + 1}, Attempt {attempt + 1}/{max_retries})"
+                    )
+                    time.sleep(30 * (attempt + 1))
+
+            if not success:
+                logger.error(f"❌ バッチ {i + 1} の送信に最終的に失敗しました。")
+                return False
+
+            # バッチ間に短い休憩を挟んでHF側の負荷を逃がす
+            if i < len(batches) - 1:
+                time.sleep(random.uniform(3, 7))
+
+        logger.success(f"✅ 全 {total_ops} 操作のバッチコミットが完了しました")
+        self._commit_operations = {}  # クリア
+        return True
 
     def cleanup_deltas(self, run_id: str, cleanup_old: bool = True):
         """一時ファイルのクリーンアップ (Merger用)"""
