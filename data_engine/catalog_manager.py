@@ -10,7 +10,6 @@ import requests
 from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi, hf_hub_download
 from huggingface_hub.utils import EntryNotFoundError, HfHubHTTPError, RepositoryNotFoundError
 from loguru import logger
-
 from models import CatalogRecord, StockMasterRecord
 
 
@@ -843,7 +842,11 @@ class CatalogManager:
         # 1コミットあたりの最大操作数
         # レート制限 (128回/時) を回避するため、バッチサイズを拡大してコミット回数を削減する
         # HF側でタイムアウトしないギリギリのラインとして 500件程度が最適
-        batch_size = 500
+        # 【修正】Hugging Face API 制限 (128 req/hour) とタイムアウト回避のため、
+        # GHA並列数(20) を考慮してバッチサイズを 200 に縮小し、合計リクエスト数を抑制する。
+        # (600 files / 200 = 3 commits * 20 jobs = 60 req < 128 req)
+        batch_size = 200
+
         batches = [ops_list[i : i + batch_size] for i in range(0, total_ops, batch_size)]
 
         logger.info(f"🚀 コミット送信開始: 合計 {total_ops} 操作を {len(batches)} バッチに分割して実行します")

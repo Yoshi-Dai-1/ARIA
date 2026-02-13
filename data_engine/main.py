@@ -89,7 +89,16 @@ def parse_worker(args):
 
         if df is not None and not df.empty:
             df["docid"] = docid
-            df["code"] = df["secCode"].apply(normalize_code)
+            # 【修正】ブログ記事(https://norororo.hatenablog.com/entry/2024/12/20/081109)に基づき、
+            # secCode は XBRL 解析結果(df)ではなく、APIメタデータ(row)から注入する。
+            # 【修正】NULL基底アーキテクチャに基づき、不明な場合は "99990" ではなく None を設定する。
+            # これにより、後続の処理で「不明」であることが明確になる (binningの結果は "bin=No" となる想定)
+            sec_code_meta = row.get("secCode")
+            if sec_code_meta and str(sec_code_meta).strip():
+                df["code"] = normalize_code(sec_code_meta)
+            else:
+                df["code"] = None
+
             df["submitDateTime"] = row.get("submitDateTime", "")
             for col in df.columns:
                 if df[col].dtype == "object":
@@ -466,12 +475,21 @@ def main():
         if not target_ids and catalog.is_processed(docid):
             continue
 
-        y, m = row["submitDateTime"][:4], row["submitDateTime"][5:7]
+        submit_date_str = row["submitDateTime"]
+        submit_date = datetime.strptime(submit_date_str, "%Y-%m-%d %H:%M:%S")
         # 【修正】パス最適化: raw/edinet/year=YYYY/month=MM/
-        raw_dir = RAW_BASE_DIR / "edinet" / f"year={y}" / f"month={m}"
-        raw_dir.mkdir(parents=True, exist_ok=True)
-        raw_zip = raw_dir / f"{docid}.zip"
-        raw_pdf = raw_dir / f"{docid}.pdf"
+        # 【修正】Hugging Face の1ディレクトリ1万件制限を回避するため、日次フォルダを追加
+        # raw/edinet/year=YYYY/month=MM/day=DD/
+        save_dir = (
+            RAW_BASE_DIR
+            / "edinet"
+            / f"year={submit_date.year}"
+            / f"month={submit_date.month:02d}"
+            / f"day={submit_date.day:02d}"
+        )
+        save_dir.mkdir(parents=True, exist_ok=True)
+        raw_zip = save_dir / f"{docid}.zip"
+        raw_pdf = save_dir / f"{docid}.pdf"
 
         # ダウンロード実行 (フラグに基づき正確に試行)
         has_xbrl = row.get("xbrlFlag") == "1"
