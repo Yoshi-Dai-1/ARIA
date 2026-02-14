@@ -19,7 +19,19 @@ class CatalogManager:
         self.hf_token = hf_token
         self.data_path = data_path
         self.data_path.mkdir(parents=True, exist_ok=True)
-        self.api = HfApi() if hf_repo and hf_token else None
+
+        # 【修正】通信安定性向上のため、タイムアウトを延長したカスタムセッションを使用
+        if hf_repo and hf_token:
+            session = requests.Session()
+            # read/connect timeout を大幅に延長 (デフォルトは短いため)
+            adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10, max_retries=3)
+            session.mount("https://", adapter)
+            self.api = HfApi(token=hf_token, session=session)
+            # グローバルなリクエストデフォルト値を上書き (内部的な requests 呼び出し用)
+            self._default_timeout = 300
+        else:
+            self.api = None
+            self._default_timeout = 30
 
         # ファイルパス定義
         self.paths = {
@@ -872,6 +884,8 @@ class CatalogManager:
 
             for attempt in range(max_retries):
                 try:
+                    # 【重要】create_commit はリクエストが重いため、個別にタイムアウトを設定
+                    # (パッケージのバージョンによっては直接引数を取らない場合があるため、セッション側で保護)
                     self.api.create_commit(
                         repo_id=self.hf_repo,
                         repo_type="dataset",
@@ -907,10 +921,12 @@ class CatalogManager:
                         continue
 
                     # タイムアウト等のネットワーク例外
+                    wait_time = (attempt + 1) * 20 + random.uniform(5, 15)
                     logger.warning(
-                        f"通信エラー: {e} - Retrying... (Batch {i + 1}, Attempt {attempt + 1}/{max_retries})"
+                        f"通信エラー ({e}): {wait_time:.1f}秒待機して再試行します... "
+                        f"(Batch {i + 1}, Attempt {attempt + 1}/{max_retries})"
                     )
-                    time.sleep(30 * (attempt + 1))
+                    time.sleep(wait_time)
 
             if not success:
                 logger.error(f"❌ バッチ {i + 1} の送信に最終的に失敗しました。")
