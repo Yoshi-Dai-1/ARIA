@@ -2,9 +2,9 @@ name: Hourly 10-Year Backfill
 
 on:
   schedule:
-    # JST 01:15 - 23:15 (UTC 16:15 - 14:15 next day)
-    # 日次処理 (JST 00:00) との衝突を避ける
-    - cron: '15 16-23,0-14 * * *'
+    # JST 01:15 - 07:15, 09:15 - 23:15
+    # JST 08:15 (UTC 23:15) は Daily Indices (UTC 23:30) と重なるためスキップ
+    - cron: '15 16-22,0-14 * * *'
   workflow_dispatch:
     inputs:
       debug_mode:
