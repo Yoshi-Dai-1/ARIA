@@ -468,11 +468,11 @@ def main():
     loaded_acc = {}
     skipped_types = {}  # 新たに追加
 
-    target_ids = args.id_list.split(",") if args.id_list else None
-
     # 解析タスクの追加 (XBRL がある Yuho/Shihanki のみ)
-    # 開発者ブログの指定 + 追加ロール (CF, SS, Notes)
-    # サブモジュール作成者の記事に基づくロール定義の適正化
+    target_ids = args.id_list.split(",") if args.id_list else None
+    found_target_ids = set()
+
+    # ... (fs_dict, quant_roles, text_roles definitions) ...
     fs_dict = {
         "BS": ["_BalanceSheet", "_ConsolidatedBalanceSheet"],
         "PL": ["_StatementOfIncome", "_ConsolidatedStatementOfIncome"],
@@ -481,9 +481,6 @@ def main():
         "notes": ["_Notes", "_ConsolidatedNotes"],
         "report": ["_CabinetOfficeOrdinanceOnDisclosure"],
     }
-
-    # 【修正】定量データと定性データの分離を適正化
-    # 定性注記（notes）は qualitative_text へ、財務諸表本体は financial_values へ
     quant_roles = fs_dict["BS"] + fs_dict["PL"] + fs_dict["CF"] + fs_dict["SS"]
     text_roles = fs_dict["report"] + fs_dict["notes"]
 
@@ -493,6 +490,10 @@ def main():
 
         if target_ids and docid not in target_ids:
             continue
+
+        if target_ids:
+            found_target_ids.add(docid)
+
         if not target_ids and catalog.is_processed(docid):
             continue
 
@@ -660,10 +661,19 @@ def main():
         processed_count = len(potential_catalog_records)
         if not args.id_list and processed_count % 50 == 0:
             logger.info(f"ダウンロード進捗: {processed_count} / {len(all_meta)} 件完了")
-
-            # 【Smart Batching】以前は50件ごとにアップロードしていましたが、
-            # HFのコミット制限(128回/時)を回避するため、Workerでは最後に一度だけ行います。
             pass
+
+    # 【重要】メタデータ不整合の検知 (Worker Mode 専用ガード)
+    if target_ids:
+        missing_ids = set(target_ids) - found_target_ids
+        if missing_ids:
+            logger.critical(
+                "【重大な不整合検知 (Drift)】Discoveryで見つかった以下のIDが、"
+                f"Worker実行時のメタデータ取得では見つかりませんでした: {list(missing_ids)}"
+            )
+            logger.info(
+                "これはEDINET APIの応答不整合、または証券コードフィルタリングによるスキップの可能性があります。"
+            )
 
     # 【修正】カタログレコードの収集を一本化し、上書きロストを防止
     # 以前は「解析対象外」と「解析対象」で別々に save_delta を呼んでおり、後者が前者を上書きしていた
