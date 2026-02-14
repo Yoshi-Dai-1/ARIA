@@ -28,3 +28,4 @@ loguru
 ruff
 pytest
 duckdb
+tzdata
