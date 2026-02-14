@@ -13,12 +13,13 @@ on:
         default: false
 
 jobs:
-  backfill:
+  discovery:
     runs-on: ubuntu-latest
-    timeout-minutes: 60 # 1時間で強制終了（次のバッチに譲る）
-    permissions:
-      contents: write
-    
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      start_date: ${{ steps.set-dates.outputs.start_date }}
+      end_date: ${{ steps.set-dates.outputs.end_date }}
+      finished: ${{ steps.set-dates.outputs.finished }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -35,13 +36,12 @@ jobs:
           pip install -r requirements.txt
           
       - name: Calculate Target Period
-        id: calc
+        id: set-dates
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO: ${{ vars.HF_REPO }}
           PYTHONPATH: data_engine
         run: |
-          # 期間計算スクリプト実行
           OUTPUT=$(python data_engine/backfill_manager.py)
           
           if [[ "$OUTPUT" == *"FINISHED"* ]]; then
@@ -50,7 +50,6 @@ jobs:
             exit 0
           fi
           
-          # "START=YYYY-MM-DD" 形式で出力されるのでパース
           START=$(echo "$OUTPUT" | grep "START=" | cut -d'=' -f2)
           END=$(echo "$OUTPUT" | grep "END=" | cut -d'=' -f2)
           
@@ -59,42 +58,123 @@ jobs:
           echo "end_date=$END" >> $GITHUB_OUTPUT
           echo "finished=false" >> $GITHUB_OUTPUT
 
-      - name: Execute Backfill (Main Engine)
-        if: steps.calc.outputs.finished == 'false' && github.event.inputs.debug_mode != 'true'
+      - name: Generate Matrix
+        id: set-matrix
+        if: steps.set-dates.outputs.finished == 'false'
+        env:
+          EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
+          HF_REPO: ${{ vars.HF_REPO }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          PYTHONPATH: data_engine
+        run: |
+          # 14日分の全書類をリストアップし、銘柄重みに基づき20分割（マトリックス生成）
+          RAW_JSON=$(python data_engine/main.py --list-only --start "${{ steps.set-dates.outputs.start_date }}" --end "${{ steps.set-dates.outputs.end_date }}" | grep "^JSON_MATRIX_DATA:" | cut -d':' -f2-)
+          DATA=${RAW_JSON:-"[]"}
+
+          echo "$DATA" | python -c "
+          import json, sys
+          try:
+              data = json.loads(sys.stdin.read())
+              if not data:
+                  print('matrix=[]')
+                  sys.exit(0)
+
+              # 銘柄単位でグループ化して分配 (20並列)
+              company_map = {}
+              for item in data:
+                  code = item.get('code', '9999')
+                  company_map.setdefault(code, []).append(item)
+
+              company_tasks = []
+              for code, items in company_map.items():
+                  weight = 10
+                  for x in items:
+                      is_yuho = x.get('type') == '120' and x.get('ord') == '010' and x.get('form') == '030000'
+                      weight += 50 if is_yuho else 2
+                  company_tasks.append({'ids': [x['id'] for x in items], 'weight': weight})
+
+              company_tasks.sort(key=lambda x: x['weight'], reverse=True)
+              n_jobs = 20
+              buckets = [[] for _ in range(n_jobs)]
+              bucket_weights = [0] * n_jobs
+              for task in company_tasks:
+                  idx = bucket_weights.index(min(bucket_weights))
+                  buckets[idx].extend(task['ids'])
+                  bucket_weights[idx] += task['weight']
+
+              res = [{'ids': ','.join(b), 'idx': i, 'weight': bucket_weights[i]} for i, b in enumerate(buckets) if b]
+              print(f'matrix={json.dumps(res)}')
+          except Exception:
+              print('matrix=[]')
+          " >> $GITHUB_OUTPUT
+
+  extract:
+    needs: discovery
+    if: needs.discovery.outputs.finished == 'false' && needs.discovery.outputs.matrix != '[]' && needs.discovery.outputs.matrix != ''
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        chunk: ${{ fromJson(needs.discovery.outputs.matrix) }}
+    timeout-minutes: 60
+    name: backfill-extract (${{ matrix.chunk.idx }}, weight ${{ matrix.chunk.weight }})
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Execute Backfill Worker
         env:
           EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO: ${{ vars.HF_REPO }}
           PYTHONPATH: data_engine
         run: |
-          # main.py を呼び出して取得・保存・カタログ登録
-          # --mode worker としているが、単体実行なら merger 無しで完結するかは main.py 次第
-          # Phase 3 の main.py は単体実行でもカタログDeltaを保存する設計。
-          # Global Merge は日次バッチ（Merger）に任せるか、ここでやるか。
-          # 整合性のため、ここでも Merger モードを最後に呼ぶのが安全。
-          
-          RUN_ID="backfill-${{ steps.calc.outputs.start_date }}"
-          
-          # 1. Fetch & Parse
-          echo "Running worker..."
-          # 全書類取得のためフィルタリングなし（main.pyのデフォルト挙動を確認済）
+          RUN_ID="backfill-${{ needs.discovery.outputs.start_date }}"
           python data_engine/main.py \
-            --start "${{ steps.calc.outputs.start_date }}" \
-            --end "${{ steps.calc.outputs.end_date }}" \
+            --start "${{ needs.discovery.outputs.start_date }}" \
+            --end "${{ needs.discovery.outputs.end_date }}" \
+            --id_list "${{ matrix.chunk.ids }}" \
             --mode worker \
             --run-id "$RUN_ID" \
-            --chunk-id "0"
+            --chunk-id "${{ matrix.chunk.idx }}"
 
-          # 2. Merge (Catalog Update)
-          echo "Running merger..."
-          python data_engine/main.py --mode merger --run-id "$RUN_ID"
-
-      - name: Update Cursor
-        if: steps.calc.outputs.finished == 'false' && success() && github.event.inputs.debug_mode != 'true'
+  finalize:
+    needs: [discovery, extract]
+    if: always() && needs.discovery.outputs.finished == 'false' && !cancelled()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Finalize Backfill (Merger & Cursor Update)
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO: ${{ vars.HF_REPO }}
           PYTHONPATH: data_engine
         run: |
-          # 成功したらカーソルを更新（完了した end_date を渡し、次は end_date + 1 から始める）
-          python data_engine/backfill_manager.py --update-cursor "${{ steps.calc.outputs.end_date }}"
+          RUN_ID="backfill-${{ needs.discovery.outputs.start_date }}"
+          # 1. Merge all chunks for this 14-day window
+          python data_engine/main.py --mode merger --run-id "$RUN_ID"
+          
+          # 2. Update Cursor if merger was successful (or at least ran)
+          # Note: If some chunks failed, merger might be incomplete, but forward progress depends on your risk tolerance.
+          # ARIA standard: Only update cursor if the job is not a 'Run valid check only'
+          if [[ "${{ github.event.inputs.debug_mode }}" != "true" ]]; then
+            python data_engine/backfill_manager.py --update-cursor "${{ needs.discovery.outputs.end_date }}"
+          fi
