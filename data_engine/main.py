@@ -98,6 +98,16 @@ def parse_worker(args):
 
         extract_dir.mkdir(parents=True, exist_ok=True)  # 【修正】Submodule側のログ保存で落ちないよう事前に作成
 
+        # 【フェーズ2：Deep Extraction】三井物産(S100LJUR)等の gla 参照エラー対策
+        # サブモジュールの「つまみ食い解凍」による FileNotFoundError を防ぐため、
+        # 解析に必要な PublicDoc / AuditDoc 配下の全ファイルを事前に強制展開する
+        from zipfile import ZipFile
+
+        with ZipFile(str(raw_zip)) as zf:
+            for member in zf.namelist():
+                if "PublicDoc" in member or "AuditDoc" in member:
+                    zf.extract(member, extract_dir)
+
         # 開発者ブログ推奨の get_fs_tbl を呼び出し
         df = get_fs_tbl(
             account_list_common_obj=acc_obj,
