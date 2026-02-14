@@ -71,7 +71,9 @@ class NikkeiStrategy(IndexStrategy):
             # コードが数値として解釈できる行のみを残す
             # また、カラム名に「ウエイト」と「ウエート」の表記揺れがあるため正規表現で対応
             code_col = next((c for c in df.columns if re.search(r"コード|Code", c, re.IGNORECASE)), None)
-            weight_col = next((c for c in df.columns if re.search(r"ウエ[イート]|Weight", c, re.IGNORECASE)), None)
+            weight_col = next(
+                (c for c in df.columns if re.search(r"ウエ[イート]|ウェ[イート]|Weight", c, re.IGNORECASE)), None
+            )
 
             if not code_col or not weight_col:
                 raise ValueError(f"必須カラムが見つかりません。Columns: {df.columns}")

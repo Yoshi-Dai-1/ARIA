@@ -113,7 +113,8 @@ def run_market_pipeline(target_date: str, mode: str = "all"):
                 try:
                     # A. Fetch Latest Data
                     df_new = engine.fetch_index_data(index_name)
-                    if df_new.empty or len(df_new) < 50:  # 異常検知 (TOPIXなら2000以上あるはず)
+                    # 【修正】Nikkei High Dividend 50 等、銘柄数が少ない指数を考慮して閾値を 40 に緩和
+                    if df_new.empty or len(df_new) < 40:
                         logger.error(f"取得データが少なすぎます ({len(df_new)} rows). スキップします。")
                         continue
 

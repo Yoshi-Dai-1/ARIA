@@ -2,7 +2,7 @@ name: Daily Indices Update
 
 on:
   schedule:
-    - cron: '30 23 * * *'  # JST 08:30 (Market Open前)
+    - cron: '30 21 * * *'  # 毎日日本時間 06:30 (UTC 21:30) - Market Masterの30分後
   workflow_dispatch:
     # inputs: None (Target Date removed as per user request)
 
