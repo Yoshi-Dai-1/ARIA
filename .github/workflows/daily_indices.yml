@@ -2,38 +2,42 @@ name: Daily Indices Update
 
 on:
   schedule:
-    - cron: '30 21 * * *'  # 毎日日本時間 06:30 (UTC 21:30) - Market Masterの30分後
+    - cron: '30 23 * * *'  # JST 08:30 (Market Open前)
   workflow_dispatch:
-    inputs:
-      target_date:
-        description: 'Target Date (YYYY-MM-DD)'
-        required: false
+    # inputs: None (Target Date removed as per user request)
 
 jobs:
   update_indices:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.12'
           cache: 'pip'
-
+          
       - name: Install dependencies
         run: |
+          pip install --upgrade pip
           pip install -r requirements.txt
+          
+      - name: Verify Environment
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_REPO: ${{ vars.HF_REPO }}
+        run: |
+           if [ -z "$HF_TOKEN" ]; then echo "HF_TOKEN not set"; exit 1; fi
+           if [ -z "$HF_REPO" ]; then echo "HF_REPO not set"; exit 1; fi
 
-      - name: Run Market Indices Pipeline
+      - name: Run Market Pipeline
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO: ${{ vars.HF_REPO }}
           PYTHONPATH: data_engine
         run: |
-          if [ "${{ inputs.target_date }}" != "" ]; then
-            python data_engine/market_main.py --mode indices --target-date "${{ inputs.target_date }}"
-          else
-            python data_engine/market_main.py --mode indices
-          fi
+          # Target Date は内部で「昨日」に自動設定されるため引数不要
+          python data_engine/market_main.py --mode all
