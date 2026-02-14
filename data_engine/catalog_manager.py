@@ -537,10 +537,15 @@ class CatalogManager:
             current_m["last_submitted_at"] = None
 
         # 全ての既知の状態を統合
+        # 【重要】インデックスをリセットして結合
         all_states = pd.concat([current_m, incoming_df], ignore_index=True)
 
-        # 重複排除 (同じ code, company_name, last_submitted_at は不要)
-        all_states.drop_duplicates(subset=["code", "company_name", "last_submitted_at"], inplace=True)
+        # 重複排除 (属性の変化も「新しい証言」として受け入れる)
+        # 以前は subset=["code", "company_name", "last_submitted_at"] のみだったため、
+        # NULL属性の古いレコードが最新のJPX属性をブロックしていた。
+        all_states.drop_duplicates(
+            subset=["code", "company_name", "last_submitted_at", "is_active", "sector", "market"], inplace=True
+        )
 
         # 3. 社名変更の歴史的変遷を解析
         name_history = self._load_parquet("name")
