@@ -89,7 +89,10 @@ def parse_worker(args):
     """並列処理用ワーカー関数"""
     docid, row, acc_obj, raw_zip, role_kws, task_type = args
     # 【修正】タスクタイプごとに個別の作業ディレクトリを作成し、競合（Race Condition）を回避
-    extract_dir = TEMP_DIR / f"{docid}_{task_type}"
+    # extract_dir = TEMP_DIR / f"{docid}_{task_type}"
+    # 【効率化】Deep Extraction で既に展開済みの共通ディレクトリを使用することで、
+    # parse_worker ごとに再度解凍する無駄を避ける
+    extract_dir = TEMP_DIR / f"extract_{docid}"
     try:
         if acc_obj is None:
             return docid, None, "Account list not loaded"
@@ -659,6 +662,14 @@ def main():
             codes_info = f"[Type:{dtc}, Ord:{ord_c}, Form:{form_c}]"
             # ターゲット有報なのにXBRLがない場合、または単にターゲット外である場合を区別
             reason = f"XBRLなし {codes_info}" if is_target_yuho else f"{form_name} {codes_info}"
+
+            if not is_target_yuho:
+                # 解析対象外の書類（臨時報告書など）
+                # これらは「解析しないこと」が正解なので、ステータスは 'success' (完了) とする
+                record["processed_status"] = "success"
+            elif is_target_yuho and not zip_ok:
+                # ターゲット有報なのにXBRLがないのは異常（要リトライまたは調査）-> failure
+                record["processed_status"] = "failure"
 
             logger.info(f"【スキップ済として記録】: {docid} | {title} | {status_str} | 理由: {reason}")
             skipped_types[dtc] = skipped_types.get(dtc, 0) + 1
