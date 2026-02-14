@@ -596,7 +596,7 @@ def main():
             "ordinance_code": (ord_c or "").strip() or None,
             "raw_zip_path": rel_zip_path,
             "pdf_path": rel_pdf_path,
-            "processed_status": "success",
+            "processed_status": "pending",  # 初期値は pending（未実施）
             "source": "EDINET",
         }
         potential_catalog_records[docid] = record
@@ -637,7 +637,7 @@ def main():
                 logger.info(f"【解析対象】: {docid} | 事業年度: {ty} | {title}")
             except Exception as e:
                 logger.error(f"【解析中止】タクソノミ判定失敗 ({docid}): {e}")
-                record["processed_status"] = "failure"
+                record["processed_status"] = "failure"  # 明示的に失敗を記録
                 new_catalog_records.append(record)
                 continue
             finally:
@@ -723,8 +723,8 @@ def main():
 
                         if err:
                             logger.error(f"解析結果({t_type}): {did} - {err}")
-                            # 両方のタスク(financial/text)が失敗した場合のみfailureとする等の厳密さは一旦置くが、
-                            # エラーがあれば警告レベルを引き上げる
+                            # エラーがあれば failure とする（リトライ対象にするため）
+                            # ただし、連結/個別の片方しかない場合の正常なスキップ（No objects...）は除く
                             if "No objects to concatenate" not in err:
                                 target_rec["processed_status"] = "failure"
                         elif res_df is not None:

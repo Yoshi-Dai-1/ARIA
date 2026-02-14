@@ -306,7 +306,12 @@ class CatalogManager:
     def is_processed(self, doc_id: str) -> bool:
         if self.catalog_df.empty:
             return False
-        return doc_id in self.catalog_df["doc_id"].values
+        # doc_id が存在し、かつステータスが 'success' の場合のみ「処理済み」とみなす
+        # これにより、pending や failure の書類は自動的に再処理の対象になる
+        processed = self.catalog_df[
+            (self.catalog_df["doc_id"] == doc_id) & (self.catalog_df["processed_status"] == "success")
+        ]
+        return not processed.empty
 
     def update_catalog(self, new_records: List[Dict]) -> bool:
         """カタログを更新 (Pydanticバリデーション実施)"""
