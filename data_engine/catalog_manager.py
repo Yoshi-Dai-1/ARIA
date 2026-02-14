@@ -923,10 +923,12 @@ class CatalogManager:
             files = self.api.list_repo_files(repo_id=self.hf_repo, repo_type="dataset")
             delta_root = "temp/deltas"
 
-            # 古いフォルダの削除 (24時間以上経過したものを対象とする)
+            # 削除対象のファイルリストを作成
+            delete_files = []
+
             if cleanup_old:
+                # 24時間以上経過したものを対象とする
                 now = time.time()
-                delete_ops = []
                 expired_runs = set()
 
                 for f in files:
@@ -937,46 +939,76 @@ class CatalogManager:
                         continue
                     r_id = parts[2]
 
-                    # run_id が数値（timestamp）である前提で古いものを判定
                     try:
                         timestamp = int(r_id)
                         if (now - timestamp) > 86400:  # 24時間以上
-                            delete_ops.append(f)
+                            delete_files.append(f)
                             expired_runs.add(r_id)
                     except ValueError:
-                        # 数値でないフォルダは無視するか、別の基準で消す
                         pass
 
-                if delete_ops:
+                if delete_files:
                     logger.info(f"古い一時フォルダを清掃中... (24時間以上経過: {len(expired_runs)} runs)")
-                    for i in range(0, len(delete_ops), 50):
-                        batch = delete_ops[i : i + 50]
-                        # 削除操作オブジェクトのリストを作成
-                        del_ops = [CommitOperationDelete(path_in_repo=p) for p in batch]
-                        self.api.create_commit(
-                            repo_id=self.hf_repo,
-                            repo_type="dataset",
-                            operations=del_ops,
-                            commit_message="Automatic garbage collection of old deltas",
-                        )
 
-            # 今回のフォルダ削除（全完了後用）
             else:
+                # 今回のランIDのみ対象
                 target_prefix = f"{delta_root}/{run_id}"
-                delete_ops = [f for f in files if f.startswith(target_prefix)]
+                delete_files = [f for f in files if f.startswith(target_prefix)]
+                if delete_files:
+                    logger.info(f"今回の一時ファイルを削除中... {run_id} ({len(delete_files)} files)")
 
-                if delete_ops:
-                    logger.info(f"今回の一時ファイルを削除中... {run_id} ({len(delete_ops)} files)")
-                    for i in range(0, len(delete_ops), 50):
-                        batch = delete_ops[i : i + 50]
-                        del_ops = [CommitOperationDelete(path_in_repo=p) for p in batch]
+            if not delete_files:
+                return
+
+            # バッチサイズを拡大 (50 -> 500) してAPIコール数を削減
+            batch_size = 500
+            total_batches = (len(delete_files) + batch_size - 1) // batch_size
+
+            for i in range(0, len(delete_files), batch_size):
+                batch = delete_files[i : i + batch_size]
+                del_ops = [CommitOperationDelete(path_in_repo=p) for p in batch]
+
+                batch_num = (i // batch_size) + 1
+                commit_msg = f"Cleanup deltas (Batch {batch_num}/{total_batches})"
+
+                # リトライロジック (Backoff)
+                max_retries = 10
+                success = False
+                for attempt in range(max_retries):
+                    try:
                         self.api.create_commit(
                             repo_id=self.hf_repo,
                             repo_type="dataset",
                             operations=del_ops,
-                            commit_message=f"Cleanup successfully merged deltas: {run_id}",
+                            commit_message=commit_msg,
+                            token=self.hf_token,
                         )
-                    logger.success(f"Cleanup completed: {run_id}")
+                        success = True
+                        break
+                    except Exception as e:
+                        if isinstance(e, HfHubHTTPError) and e.response.status_code == 429:
+                            wait_time = int(e.response.headers.get("Retry-After", 60)) + 5
+                            logger.warning(
+                                f"Cleanup Rate limit exceeded. Waiting {wait_time}s... "
+                                f"(Batch {batch_num}/{total_batches}, Attempt {attempt + 1})"
+                            )
+                            time.sleep(wait_time)
+                            continue
+
+                        logger.warning(
+                            f"Cleanup error: {e}. Retrying... "
+                            f"(Batch {batch_num}/{total_batches}, Attempt {attempt + 1})"
+                        )
+                        time.sleep(10 * (attempt + 1))
+
+                if success:
+                    logger.debug(f"Cleanup batch {batch_num}/{total_batches} done.")
+                    if batch_num < total_batches:
+                        time.sleep(2)  # バッチ間のクールダウン
+                else:
+                    logger.error(f"❌ Cleanup batch {batch_num} failed permanently.")
+
+            logger.success("Cleanup sequence completed.")
 
         except Exception as e:
-            logger.error(f"クリーンアップ失敗: {e}")
+            logger.error(f"クリーンアップ全体失敗: {e}")

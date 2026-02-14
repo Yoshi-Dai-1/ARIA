@@ -1,8 +1,8 @@
-name: Daily Market Data
+name: Daily Indices Update
 
 on:
-#  schedule:
-#    - cron: '0 21 * * *'  # 毎日日本時間 06:00 (UTC 21:00) -> daily_extract (00:00) と重複するため停止
+  schedule:
+    - cron: '30 21 * * *'  # 毎日日本時間 06:30 (UTC 21:30) - Market Masterの30分後
   workflow_dispatch:
     inputs:
       target_date:
@@ -10,7 +10,7 @@ on:
         required: false
 
 jobs:
-  update_market_data:
+  update_indices:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -26,15 +26,14 @@ jobs:
         run: |
           pip install -r requirements.txt
 
-      - name: Run Market Data Pipeline
+      - name: Run Market Indices Pipeline
         env:
-          EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }} # 念のため
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO: ${{ vars.HF_REPO }}
           PYTHONPATH: data_engine
         run: |
           if [ "${{ inputs.target_date }}" != "" ]; then
-            python data_engine/market_main.py --mode master --target-date "${{ inputs.target_date }}"
+            python data_engine/market_main.py --mode indices --target-date "${{ inputs.target_date }}"
           else
-            python data_engine/market_main.py --mode master
+            python data_engine/market_main.py --mode indices
           fi

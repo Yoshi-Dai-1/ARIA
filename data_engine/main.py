@@ -96,6 +96,8 @@ def parse_worker(args):
 
         logger.debug(f"解析開始: {docid} (Path: {raw_zip})")
 
+        extract_dir.mkdir(parents=True, exist_ok=True)  # 【修正】Submodule側のログ保存で落ちないよう事前に作成
+
         # 開発者ブログ推奨の get_fs_tbl を呼び出し
         df = get_fs_tbl(
             account_list_common_obj=acc_obj,

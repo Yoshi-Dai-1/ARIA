@@ -19,20 +19,17 @@
 - **Market Data Pipeline**: EDINETとは独立した市場データ収集エンジン (Nikkei 225, TOPIX対応)
 - **Hugging Face Integration**: データセット `[YOUR_USERNAME]/financial-lakehouse` で公開
 
-## アーキテクチャ
+## アーキテクチャ (Monorepo)
 
-本プロジェクトは2つの独立したパイプラインで構成されています。
+本プロジェクトは **Monorepo** 構成を採用しており、データ収集エンジンとWebフロントエンドが分かれています。
 
+### 1. Data Engine (`data_engine/`)
+Pythonによる堅牢なデータ処理基盤。
+- **EDINET Data Pipeline (`main.py`)**: 開示書類の並列収集・解析 (Worker/Merger)。
+- **Market Data Pipeline (`market_main.py`)**: 市場データと銘柄属性の同期。
 
-### 1. EDINET Data Pipeline (`main.py`)
-有価証券報告書などの開示書類を収集・解析します。
-- **Worker Mode**: 書類をダウンロード・解析し、中間Deltaファイルを作成。
-- **Merger Mode**: 全Workerの成果物を統合し、整合性を検証した上でMaster/Catalogを更新。
-
-### 2. Market Data Pipeline (`market_main.py`)
-市場データ（株価指数、銘柄マスタ）を管理します。
-- **Stock Master**: JPX公式サイトから最新銘柄リストを取得し、上場・廃止・再上場を自動判定。
-- **Indices**: 日経225、TOPIXの構成銘柄とウエイトを毎日Snapshotとして保存 (Shift-JIS/403回避対応済)。
+### 2. Web Frontend (`web_frontend/`)
+Vite + React による投資分析ダッシュボード（開発中）。
 
 ## データ構造
 
@@ -42,7 +39,7 @@ Hugging Face上のデータ構造はスケーラビリティを考慮して設�
 financial-lakehouse/
 ├── raw/                            # 生データ（ZIP, PDF）
 │   └── edinet/
-│       └── year=YYYY/month=MM/     # 年月パーティション
+│       └── year=YYYY/month=MM/day=DD/ # 日次パーティション (1万件制限回避)
 ├── catalog/                        # ドキュメントインデックス
 │   └── documents_index.parquet
 ├── meta/                           # メタデータ
@@ -80,10 +77,10 @@ HF_TOKEN=your_huggingface_token
 
 ```bash
 # Workerモード (解析とDelta作成)
-python main.py --mode worker --run-id <RUN_ID> --chunk-id <CHUNK_ID> --start 2024-06-01 --end 2024-06-01
+PYTHONPATH=data_engine python data_engine/main.py --mode worker --run-id <RUN_ID> --chunk-id <CHUNK_ID> --start 2024-06-01 --end 2024-06-01
 
 # Mergerモード (統合とMaster更新)
-python main.py --mode merger --run-id <RUN_ID>
+PYTHONPATH=data_engine python data_engine/main.py --mode merger --run-id <RUN_ID>
 ```
 
 ### 2. 市場データ収集
@@ -92,10 +89,10 @@ python main.py --mode merger --run-id <RUN_ID>
 
 ```bash
 # 昨日分のデータを取得 (デフォルト)
-python market_main.py
+PYTHONPATH=data_engine python data_engine/market_main.py
 
 # 特定日を指定して取得 (過去データの補完など)
-python market_main.py --target-date 2024-06-01
+PYTHONPATH=data_engine python data_engine/market_main.py --target-date 2024-06-01
 ```
 
 ## ライセンス

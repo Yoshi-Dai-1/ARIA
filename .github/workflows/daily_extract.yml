@@ -60,8 +60,8 @@ jobs:
           HF_REPO: ${{ vars.HF_REPO }}
           PYTHONPATH: data_engine
         run: |
-          # マトリックス分割に必要な業種情報を最新にするため、Market Pipeline を実行
-          python data_engine/market_main.py
+          # マトリックス分割に必要な業種情報を最新にするため、Market Pipeline を実行 (Masterのみ)
+          python data_engine/market_main.py --mode master
 
       - id: set-matrix
         env:

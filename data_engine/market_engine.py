@@ -32,11 +32,12 @@ class IndexStrategy(ABC):
 
 
 class NikkeiStrategy(IndexStrategy):
-    """日経225 (Nikkei Source)"""
+    """日経225 (Nikkei Source) および同形式のCSV用"""
 
-    def __init__(self):
+    def __init__(self, url: str = None):
         # ユーザー指定のアーカイブ版URL (403を回避しやすい)
-        self.url = "https://indexes.nikkei.co.jp/nkave/archives/file/nikkei_stock_average_weight_jp.csv"
+        default_url = "https://indexes.nikkei.co.jp/nkave/archives/file/nikkei_stock_average_weight_jp.csv"
+        self.url = url if url else default_url
         self.headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -154,6 +155,15 @@ class MarketDataEngine:
         self.data_path = data_path
         self.strategies: Dict[str, IndexStrategy] = {
             "Nikkei225": NikkeiStrategy(),
+            "NikkeiHighDiv50": NikkeiStrategy(
+                "https://indexes.nikkei.co.jp/nkave/archives/file/nikkei_high_dividend_yield_50_weight_jp.csv"
+            ),
+            "JPXNikkei400": NikkeiStrategy(
+                "https://indexes.nikkei.co.jp/nkave/archives/file/jpx_nikkei_index_400_weight_jp.csv"
+            ),
+            "JPXNikkeiMidSmall": NikkeiStrategy(
+                "https://indexes.nikkei.co.jp/nkave/archives/file/jpx_nikkei_mid_small_weight_jp.csv"
+            ),
             "TOPIX": TopixStrategy(),
         }
         self.jpx_url = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
