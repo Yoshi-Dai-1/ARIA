@@ -18,6 +18,7 @@
 - **Parallel Processing**: GitHub Actions Matrixによる高速並列データ収集 (Worker/Mergerアーキテクチャ)
 - **Market Data Pipeline**: EDINETとは独立した市場データ収集エンジン (Nikkei 225, TOPIX対応)
 - **Hugging Face Integration**: データセット `[YOUR_USERNAME]/financial-lakehouse` で公開
+- **10-Year Automated Backfill**: 2014年まで遡って全書類を自動収集するオートパイロット機能
 
 ## アーキテクチャ (Monorepo)
 
@@ -26,6 +27,7 @@
 ### 1. Data Engine (`data_engine/`)
 Pythonによる堅牢なデータ処理基盤。
 - **EDINET Data Pipeline (`main.py`)**: 開示書類の並列収集・解析 (Worker/Merger)。
+- **Backfill Manager (`backfill_manager.py`)**: 2014年からの過去データ取得を管理するカーソルロジック。
 - **Market Data Pipeline (`market_main.py`)**: 市場データと銘柄属性の同期。
 
 ### 2. Web Frontend (`web_frontend/`)
@@ -46,7 +48,8 @@ financial-lakehouse/
 │   ├── stocks_master.parquet       # 証券コード, 銘柄名, is_activeフラグ
 │   ├── listing_history.parquet     # 上場・廃止・再上場イベント履歴
 │   ├── index_history.parquet       # 指数採用・除外イベント履歴
-│   └── name_history.parquet        # 社名変更イベント履歴
+│   ├── name_history.parquet        # 社名変更イベント履歴
+│   └── backfill_cursor.json        # バックフィル進行状況（次に取得する日付）
 ├── master/                         # 分析用マスタデータ
 │   ├── financial_values/           # 財務数値（BS, PL, CF, SS）
 │   │   └── bin=XX/data.parquet     # 証券コード上2桁で不変分割
@@ -83,16 +86,20 @@ PYTHONPATH=data_engine python data_engine/main.py --mode worker --run-id <RUN_ID
 PYTHONPATH=data_engine python data_engine/main.py --mode merger --run-id <RUN_ID>
 ```
 
-### 2. 市場データ収集
+### 2. 過去データの自動バックフィル (10年分)
 
-毎日 06:00 JST に自動実行され、前日分のデータを取得します。
+`hourly_backfill.yml` により、毎時15分（JST 01:15-07:15, 09:15-23:15）に自動実行されます。2014年4月1日までの全データを、14日刻みで「過去から現在へ（Forward）」順に取得します。
+
+### 3. 市場データ収集
+
+毎日 06:30 JST に自動実行され、前日分のデータを取得します。
 
 ```bash
 # 昨日分のデータを取得 (デフォルト)
-PYTHONPATH=data_engine python data_engine/market_main.py
+PYTHONPATH=data_engine python data_engine/market_main.py --mode all
 
 # 特定日を指定して取得 (過去データの補完など)
-PYTHONPATH=data_engine python data_engine/market_main.py --target-date 2024-06-01
+PYTHONPATH=data_engine python data_engine/market_main.py --mode all --target-date 2024-06-01
 ```
 
 ## ライセンス
