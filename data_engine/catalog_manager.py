@@ -20,18 +20,16 @@ class CatalogManager:
         self.data_path = data_path
         self.data_path.mkdir(parents=True, exist_ok=True)
 
-        # 【修正】通信安定性向上のため、タイムアウトを延長したカスタムセッションを使用
+        # 【修正】通信安定性向上のため、タイムアウト環境変数を設定
+        # huggingface_hub v0.20+ / 1.x は環境変数を参照してタイムアウトを制御します
         if hf_repo and hf_token:
-            session = requests.Session()
-            # read/connect timeout を大幅に延長 (デフォルトは短いため)
-            adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10, max_retries=3)
-            session.mount("https://", adapter)
-            self.api = HfApi(token=hf_token, session=session)
-            # グローバルなリクエストデフォルト値を上書き (内部的な requests 呼び出し用)
-            self._default_timeout = 300
+            import os
+
+            os.environ["HF_HUB_TIMEOUT"] = "300"
+            os.environ["HF_HUB_HTTP_TIMEOUT"] = "300"
+            self.api = HfApi(token=hf_token)
         else:
             self.api = None
-            self._default_timeout = 30
 
         # ファイルパス定義
         self.paths = {
