@@ -60,7 +60,7 @@ jobs:
           echo "finished=false" >> $GITHUB_OUTPUT
 
       - name: Execute Backfill (Main Engine)
-        if: steps.calc.outputs.finished == 'false'
+        if: steps.calc.outputs.finished == 'false' && github.event.inputs.debug_mode != 'true'
         env:
           EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -90,7 +90,7 @@ jobs:
           python data_engine/main.py --mode merger --run-id "$RUN_ID"
 
       - name: Update Cursor
-        if: steps.calc.outputs.finished == 'false' && success()
+        if: steps.calc.outputs.finished == 'false' && success() && github.event.inputs.debug_mode != 'true'
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO: ${{ vars.HF_REPO }}
