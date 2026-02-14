@@ -96,5 +96,5 @@ jobs:
           HF_REPO: ${{ vars.HF_REPO }}
           PYTHONPATH: data_engine
         run: |
-          # 成功したらカーソルを更新（今回の start_date を渡すことで、次は start_date - 1 になる）
-          python data_engine/backfill_manager.py --update-cursor "${{ steps.calc.outputs.start_date }}"
+          # 成功したらカーソルを更新（完了した end_date を渡し、次は end_date + 1 から始める）
+          python data_engine/backfill_manager.py --update-cursor "${{ steps.calc.outputs.end_date }}"

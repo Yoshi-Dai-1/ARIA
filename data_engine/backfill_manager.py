@@ -72,25 +72,25 @@ def calculate_next_period():
     cursor = load_cursor()
 
     if cursor and "next_target_start" in cursor:
-        # カーソルがある場合：その日付から BACKFILL_DAYS 分遡る
-        # cursor["next_target_start"] は、前回取得した期間の「前日」になっているはず
-        cursor_date = datetime.strptime(cursor["next_target_start"], "%Y-%m-%d").date()
-        end_date = cursor_date
+        # カーソルがある場合：その日付から BACKFILL_DAYS 分進める (過去->未来)
+        start_date = datetime.strptime(cursor["next_target_start"], "%Y-%m-%d").date()
     else:
-        # 初回：昨日を開始点とする（日次バッチとの重複を避けるため、少し余裕を持つ）
-        end_date = get_jst_today() - timedelta(days=1)
+        # 初回：最も古い取得可能日（2014-04-01）を開始点とする
+        # 理由：古いデータほどAPIから消えるリスクが高いため、先に確保する「保全優先」戦略
+        start_date = LIMIT_DATE
 
-    # 限界チェック
-    if end_date < LIMIT_DATE:
-        print(f"Reached limit date ({LIMIT_DATE}). Backfill complete.")
+    # 終了日の計算
+    end_date = start_date + timedelta(days=BACKFILL_DAYS - 1)
+
+    # 未来に行き過ぎないようクリップ（昨日は日次バッチがやるので、その前日まで）
+    yesterday = get_jst_today() - timedelta(days=1)
+
+    if start_date >= yesterday:
+        print("Reached present day. Backfill complete.")
         return None, None
 
-    # 開始日の計算
-    start_date = end_date - timedelta(days=BACKFILL_DAYS - 1)  # end_dateを含めてBACKFILL_DAYS日間
-
-    # 開始日が限界を超えていたらクリップする
-    if start_date < LIMIT_DATE:
-        start_date = LIMIT_DATE
+    if end_date >= yesterday:
+        end_date = yesterday - timedelta(days=1)
 
     return start_date, end_date
 
@@ -102,11 +102,10 @@ def main():
     args = parser.parse_args()
 
     if args.update_cursor:
-        # カーソル強制更新モード（成功後に呼ばれる想定）
-        # 引数で渡された日付の「前日」を次のターゲットにする
-        done_date = datetime.strptime(args.update_cursor, "%Y-%m-%d").date()
-        next_target = done_date - timedelta(days=1)
-        save_cursor(next_target.strftime("%Y-%m-%d"))
+        # カーソル更新：完了した期間の「翌日」を次の開始点にする
+        done_end_date = datetime.strptime(args.update_cursor, "%Y-%m-%d").date()
+        next_start = done_end_date + timedelta(days=1)
+        save_cursor(next_start.strftime("%Y-%m-%d"))
         return
 
     start, end = calculate_next_period()
