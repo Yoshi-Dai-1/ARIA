@@ -455,10 +455,11 @@ def main():
         filtered_meta.append(row)
 
     all_meta = filtered_meta
-    if initial_count > len(all_meta) and not args.id_list:
+    if not args.id_list:
         logger.info(
-            f"(証券コードなし: {skipped_reasons['no_sec_code']} 件, "
-            f"コード不正/短縮: {skipped_reasons['invalid_length']} 件)"
+            f"最終処理対象書類数: {len(all_meta)} 件 "
+            f"(全 {initial_count} 件中 | 証券コードなし: {skipped_reasons['no_sec_code']} 件, "
+            f"コード不正: {skipped_reasons['invalid_length']} 件)"
         )
 
     # 【重要】不整合(Drift)対策：メタデータをファイルに保存/読み込み

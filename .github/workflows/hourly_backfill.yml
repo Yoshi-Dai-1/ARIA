@@ -98,6 +98,13 @@ jobs:
               data2 = json.loads(sys.argv[2])
               data = data1 + data2
 
+              # 処理対象件数の可視化 (ユーザー要望)
+              sys.stderr.write(f'--- Document Count Summary ---\n')
+              sys.stderr.write(f'  Target Period: {len(data1)} docs\n')
+              sys.stderr.write(f'  Retry Period : {len(data2)} docs\n')
+              sys.stderr.write(f'  Total Merged : {len(data)} docs\n')
+              sys.stderr.write(f'------------------------------\n')
+
               # 物理的なメタデータキャッシュの統合 (Drift防止の核心)
               # disc1 と disc2 をマージして最終的な discovery_metadata.json を作成
               with open('data/meta/disc1.json', 'r') as f1, open('data/meta/disc2.json', 'r') as f2:
