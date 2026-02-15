@@ -316,10 +316,11 @@ class CatalogManager:
     def is_processed(self, doc_id: str) -> bool:
         if self.catalog_df.empty:
             return False
-        # doc_id が存在し、かつステータスが 'success' の場合のみ「処理済み」とみなす
+        # doc_id が存在し、かつステータスが 'success' または 'retracted' (取下済) の場合のみ「処理済み」とみなす
         # これにより、pending や failure の書類は自動的に再処理の対象になる
+        # retracted の書類は再送しても無意味なため、処理済みとして扱う
         processed = self.catalog_df[
-            (self.catalog_df["doc_id"] == doc_id) & (self.catalog_df["processed_status"] == "success")
+            (self.catalog_df["doc_id"] == doc_id) & (self.catalog_df["processed_status"].isin(["success", "retracted"]))
         ]
         return not processed.empty
 

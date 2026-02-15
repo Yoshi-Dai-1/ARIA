@@ -38,7 +38,7 @@ class EdinetDocument(BaseModel):
 
 
 class CatalogRecord(BaseModel):
-    """統合ドキュメントカタログ (documents_index.parquet) のレコードモデル (25カラム構成)"""
+    """統合ドキュメントカタログ (documents_index.parquet) のレコードモデル (26カラム構成)"""
 
     # 1. Identifiers (識別子・基本情報)
     doc_id: str
@@ -47,6 +47,7 @@ class CatalogRecord(BaseModel):
     company_name: str
     edinet_code: Optional[str] = None
     issuer_edinet_code: Optional[str] = None  # 発行者EDINETコード
+    fund_code: Optional[str] = None  # ファンドコード (投資信託等)
 
     # 2. Timeline (時間軸)
     submit_at: str

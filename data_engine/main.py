@@ -614,8 +614,12 @@ def main():
                 num_months = None  # 計算失敗時も NULL
 
         sec_code = normalize_code(row.get("secCode", ""))
-        # 訂正フラグ
-        is_amendment = row.get("withdrawalStatus") != "0" or "訂正" in title
+        # 訂正フラグの厳密判定
+        # 1. parentDocID が存在するか
+        # 2. 書類種別コード(docTypeCode) の末尾が '1' (例: 有報 120 に対する訂正 121)
+        # 3. タイトルに「訂正」が含まれる
+        parent_id = row.get("parentDocID")
+        is_amendment = parent_id is not None or str(dtc).endswith("1") or "訂正" in (title or "")
 
         # 【重大】取下済（withdrawalStatus == '1'）の書類は解析しても無意味なため、
         # ステータスを 'retracted' とし、正常系から除外する
@@ -630,7 +634,7 @@ def main():
         rel_zip_path = str(raw_zip.relative_to(RAW_BASE_DIR.parent)) if zip_ok else None
         rel_pdf_path = str(raw_pdf.relative_to(RAW_BASE_DIR.parent)) if pdf_ok else None
 
-        # カタログ情報のベースを保持 (models.py の 25カラム構成に準拠)
+        # カタログ情報のベースを保持 (models.py の 26カラム構成に準拠)
         record = {
             "doc_id": docid,
             "jcn": row.get("JCN"),
@@ -638,6 +642,7 @@ def main():
             "company_name": (row.get("filerName") or "").strip() or "Unknown",
             "edinet_code": (row.get("edinetCode") or "").strip() or None,
             "issuer_edinet_code": row.get("issuerEdinetCode"),
+            "fund_code": row.get("fundCode"),
             "submit_at": (row.get("submitDateTime") or "").strip() or None,
             "fiscal_year": fiscal_year,
             "period_start": period_start,
@@ -649,7 +654,7 @@ def main():
             "form_code": (form_c or "").strip() or None,
             "ordinance_code": (ord_c or "").strip() or None,
             "is_amendment": is_amendment,
-            "parent_doc_id": row.get("parentDocID"),
+            "parent_doc_id": parent_id,
             "withdrawal_status": w_status,
             "disclosure_status": row.get("disclosureStatus"),
             "current_report_reason": row.get("currentReportReason"),
