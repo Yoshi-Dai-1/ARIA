@@ -160,7 +160,7 @@ def parse_worker(args):
 
         err_detail = traceback.format_exc()
         logger.error(f"解析例外: {docid} ({task_type})\n{err_detail}")
-        return docid, None, f"{str(e)}", task_type
+        return docid, None, f"{str(e)}", (task_type, None)
     finally:
         if extract_dir.exists():
             import shutil
