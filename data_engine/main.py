@@ -367,8 +367,11 @@ def main():
     chunk_id = args.chunk_id
 
     if not api_key:
-        logger.critical("EDINET_API_KEY が設定されていません。")
-        return
+        if args.mode != "merger" and not args.list_only:
+            logger.critical("EDINET_API_KEY が設定されていません。")
+            return
+        else:
+            logger.debug(f"EDINET_API_KEY 未設定ですが、{args.mode} モードのため続行します。")
 
     if args.start:
         args.start = args.start.strip()

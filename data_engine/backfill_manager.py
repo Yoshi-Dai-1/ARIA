@@ -46,6 +46,7 @@ def save_cursor(next_start_date_str):
     cursor_data = {"next_target_start": next_start_date_str}
     local_path = META_DIR / CURSOR_FILE
 
+    META_DIR.mkdir(parents=True, exist_ok=True)
     with open(local_path, "w") as f:
         json.dump(cursor_data, f, indent=2)
 
