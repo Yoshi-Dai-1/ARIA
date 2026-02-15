@@ -906,38 +906,46 @@ class CatalogManager:
                     )
                     success = True
                     break
-                except Exception as e:
-                    status_code = getattr(getattr(e, "response", None), "status_code", None)
+                except BaseException as e:
+                    if isinstance(e, Exception):
+                        status_code = getattr(getattr(e, "response", None), "status_code", None)
 
-                    # 429 レート制限 または 500 サーバーエラー
-                    if status_code in [429, 500]:
-                        # 429の場合はより長く待機 (HFの回復を待つ)
-                        wait_time = int(getattr(e.response.headers, "get", lambda x, y: y)("Retry-After", 60))
-                        wait_time = max(wait_time, 60) + (attempt * 30) + random.uniform(5, 15)
+                        # 429 レート制限 または 500 サーバーエラー
+                        if status_code in [429, 500]:
+                            # 429の場合はより長く待機 (HFの回復を待つ)
+                            wait_time = int(getattr(e.response.headers, "get", lambda x, y: y)("Retry-After", 60))
+                            wait_time = max(wait_time, 60) + (attempt * 30) + random.uniform(5, 15)
+                            logger.warning(
+                                f"HF Server Error ({status_code}). Waiting {wait_time:.1f}s... "
+                                f"(Batch {i + 1}, Attempt {attempt + 1}/{max_retries})"
+                            )
+                            time.sleep(wait_time)
+                            continue
+
+                        # 409 コンフリクト または 412 前提条件失敗
+                        if status_code in [409, 412]:
+                            # 20並列以上の環境下では、待機時間を広めに分散させる (10〜70秒 + 指数)
+                            wait_time = (2 ** (attempt + 1)) * 5 + (random.uniform(10, 60))
+                            logger.warning(
+                                f"Commit Conflict ({status_code}). Retrying in {wait_time:.2f}s... "
+                                f"(Batch {i + 1}, Attempt {attempt + 1}/{max_retries})"
+                            )
+                            time.sleep(wait_time)
+                            continue
+
+                        # タイムアウト等のネットワーク例外
+                        wait_time = (attempt + 1) * 20 + random.uniform(5, 15)
                         logger.warning(
-                            f"HF Server Error ({status_code}). Waiting {wait_time:.1f}s... "
+                            f"通信エラー ({e}): {wait_time:.1f}秒待機して再試行します... "
                             f"(Batch {i + 1}, Attempt {attempt + 1}/{max_retries})"
                         )
                         time.sleep(wait_time)
-                        continue
-
-                    # 409 コンフリクト または 412 前提条件失敗
-                    if status_code in [409, 412]:
-                        wait_time = (2 ** (attempt + 2)) + (random.uniform(10, 30))
-                        logger.warning(
-                            f"Commit Conflict ({status_code}). Retrying in {wait_time:.2f}s... "
-                            f"(Batch {i + 1}, Attempt {attempt + 1}/{max_retries})"
+                    else:
+                        # KeyboardInterrupt や SystemExit など、通常の例外以外で終了する場合
+                        logger.critical(
+                            f"⚠️ プロセスがシグナルまたは致命的な例外によって中断されました: {type(e).__name__}"
                         )
-                        time.sleep(wait_time)
-                        continue
-
-                    # タイムアウト等のネットワーク例外
-                    wait_time = (attempt + 1) * 20 + random.uniform(5, 15)
-                    logger.warning(
-                        f"通信エラー ({e}): {wait_time:.1f}秒待機して再試行します... "
-                        f"(Batch {i + 1}, Attempt {attempt + 1}/{max_retries})"
-                    )
-                    time.sleep(wait_time)
+                        raise e
 
             if not success:
                 logger.error(f"❌ バッチ {i + 1} の送信に最終的に失敗しました。")
