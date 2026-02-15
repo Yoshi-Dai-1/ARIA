@@ -235,32 +235,39 @@ class linkbasefile():
             )
 
     def detect_account_list_year(self):
-        head_list=list(set(self.get_presentation_account_list_obj.export_account_list_df().schima_taxonomi_head))
-        head_jpcrp=[head for head in head_list if "http://disclosure.edinet-fsa.go.jp/taxonomy/jpcrp" in head][0]
-        if "2023-12-01" in head_jpcrp:
-            self.account_list_year="2024"
-        elif "2022-11-01" in head_jpcrp:
-            self.account_list_year="2023"
-        elif "2021-11-01" in head_jpcrp:
-            self.account_list_year="2022"
-        elif "2020-11-01" in head_jpcrp:
-            self.account_list_year="2021"
-        elif "2019-11-01" in head_jpcrp:
-            self.account_list_year="2020"
-        elif "2019-02-28" in head_jpcrp:
-            self.account_list_year="2019"
-        elif "2018-02-28" in head_jpcrp:
-            self.account_list_year="2018"
-        elif "2017-02-28" in head_jpcrp:
-            self.account_list_year="2017"
-        elif "2016-02-29" in head_jpcrp:
-            self.account_list_year="2016"
-        elif "2015-03-31" in head_jpcrp:
-            self.account_list_year="2015"
-        elif "2013-08-31" in head_jpcrp:
-            self.account_list_year="2014"
-        else:
-            self.account_list_year="-"
+        head_list = list(set(self.get_presentation_account_list_obj.export_account_list_df().schima_taxonomi_head))
+        
+        # 判定用マッピング (日付 -> 年代版)
+        taxo_map = {
+            "2025-11-01": "2026",
+            "2024-11-01": "2025",
+            "2023-12-01": "2024",
+            "2022-11-01": "2023",
+            "2021-11-01": "2022",
+            "2020-11-01": "2021",
+            "2019-11-01": "2020",
+            "2019-02-28": "2019",
+            "2018-02-28": "2018",
+            "2017-02-28": "2017",
+            "2016-02-29": "2016",
+            "2015-03-31": "2015",
+            "2013-08-31": "2014",
+        }
+
+        # 優先順位: 開示府令用(jpcrp) > 財務諸表本表用(jppfs) > DEI(jpdei)
+        # 毎年更新される可能性が高い順から探し、年代特定が可能な名前空間を採用する。
+        targets = ["/taxonomy/jpcrp", "/taxonomy/jppfs", "/taxonomy/jpdei"]
+        
+        for t in targets:
+            # 優先度順に名前空間を走査
+            candidate_heads = [h for h in head_list if t in h]
+            for head in candidate_heads:
+                for date_pattern, year_val in taxo_map.items():
+                    if date_pattern in head:
+                        self.account_list_year = year_val
+                        return self.account_list_year
+                        
+        self.account_list_year = "-"
         return self.account_list_year
     
     def make_account_label_common(self,account_list_common_obj):
