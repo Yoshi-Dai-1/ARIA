@@ -749,18 +749,13 @@ def main():
 
     # 【重要】メタデータ不整合の検知 (Worker Mode 専用ガード)
     if target_ids:
-        # found_target_ids には「見つかったもの」に加え、「意図的に非解析対象としてスキップしたもの」も含めることで、
-        # 真の意味で「APIから消えた ID」のみをドリフトとして検知する。
-        # ※ new_catalog_records に入っているものは Worker 段階で存在を確認できている。
-        found_and_skipped = found_target_ids.union({r["doc_id"] for r in new_catalog_records})
-        missing_ids = set(target_ids) - found_and_skipped
+        missing_ids = set(target_ids) - found_target_ids
         if missing_ids:
             logger.critical(
                 "【重大な不整合検知 (Drift)】Discoveryで見つかった以下のIDが、"
                 f"Worker実行時のメタデータ取得では見つかりませんでした: {list(missing_ids)}"
             )
             logger.info("これは EDINET API の一時的な応答遅延、または不整合の可能性があります。")
-
     # 【修正】カタログレコードの収集を一本化し、上書きロストを防止
     # 以前は「解析対象外」と「解析対象」で別々に save_delta を呼んでおり、後者が前者を上書きしていた
     final_catalog_records = []
