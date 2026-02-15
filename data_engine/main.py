@@ -635,14 +635,15 @@ def main():
         rel_pdf_path = str(raw_pdf.relative_to(RAW_BASE_DIR.parent)) if pdf_ok else None
 
         # カタログ情報のベースを保持 (models.py の 26カラム構成に準拠)
+        # 全ての項目において (val or "").strip() or None を徹底し、空文字を NULL 正規化する
         record = {
             "doc_id": docid,
-            "jcn": row.get("JCN"),
+            "jcn": (row.get("JCN") or "").strip() or None,
             "code": sec_code,
             "company_name": (row.get("filerName") or "").strip() or "Unknown",
             "edinet_code": (row.get("edinetCode") or "").strip() or None,
-            "issuer_edinet_code": row.get("issuerEdinetCode"),
-            "fund_code": row.get("fundCode"),
+            "issuer_edinet_code": (row.get("issuerEdinetCode") or "").strip() or None,
+            "fund_code": (row.get("fundCode") or "").strip() or None,
             "submit_at": (row.get("submitDateTime") or "").strip() or None,
             "fiscal_year": fiscal_year,
             "period_start": period_start,
@@ -654,10 +655,10 @@ def main():
             "form_code": (form_c or "").strip() or None,
             "ordinance_code": (ord_c or "").strip() or None,
             "is_amendment": is_amendment,
-            "parent_doc_id": parent_id,
-            "withdrawal_status": w_status,
-            "disclosure_status": row.get("disclosureStatus"),
-            "current_report_reason": row.get("currentReportReason"),
+            "parent_doc_id": (parent_id or "").strip() or None,
+            "withdrawal_status": (w_status or "").strip() or None,
+            "disclosure_status": (row.get("disclosureStatus") or "").strip() or None,
+            "current_report_reason": (row.get("currentReportReason") or "").strip() or None,
             "raw_zip_path": rel_zip_path,
             "pdf_path": rel_pdf_path,
             "processed_status": final_status,
