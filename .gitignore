@@ -8,7 +8,7 @@ venv/
 ENV/
 
 # EDINET データ関連（巨大なため、ローカルからのプログラミングによるプッシュを防止）
-data/raw/
+data/
 data/qualitative/
 data/20*/
 *.db
