@@ -141,7 +141,7 @@ def parse_worker(args):
             # 【追加】サブモジュールに手を加えず会計基準を抽出
             # get_xbrl_rapper が extract_dir に書き出した log_dict.json を読み込む
             accounting_std = None
-            log_path = extract_dir / "log_dict.json"
+            log_path = extract_dir / "XBRL" / "PublicDoc" / "log_dict.json"
             if log_path.exists():
                 try:
                     with open(log_path, "r", encoding="utf-8") as f:
