@@ -74,26 +74,37 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           PYTHONPATH: data_engine
         run: |
-          # 1. 通常取得期間のリストアップ
+          # 1. 通常取得期間のリストアップ (Artifact/Cache保存)
           JSON1=$(python data_engine/main.py --list-only --start "${{ steps.set-dates.outputs.start_date }}" --end "${{ steps.set-dates.outputs.end_date }}" | grep "^JSON_MATRIX_DATA:" | cut -d':' -f2-)
           DATA1=${JSON1:-"[]"}
+          mv data/meta/discovery_metadata.json data/meta/disc1.json
 
-          # 2. 再試行期間 (過去2ヶ月) のリストアップ (既に success なものは main.py 側でスキップされる)
+          # 2. 再試行期間 (過去2ヶ月) のリストアップ (Artifact/Cache保存)
           RETRY_START="${{ steps.set-dates.outputs.retry_start }}"
           if [[ -n "$RETRY_START" ]]; then
             JSON2=$(python data_engine/main.py --list-only --start "$RETRY_START" --end "${{ steps.set-dates.outputs.retry_end }}" | grep "^JSON_MATRIX_DATA:" | cut -d':' -f2-)
             DATA2=${JSON2:-"[]"}
+            mv data/meta/discovery_metadata.json data/meta/disc2.json
           else
             DATA2="[]"
+            echo "[]" > data/meta/disc2.json
           fi
 
-          # 3. マージとマトリックス生成 (Pythonで結合)
+          # 3. マージとマトリックス生成 & メタデータキャッシュの統合
           echo "$DATA1" "$DATA2" | python -c "
-          import json, sys
+          import json, sys, os
           try:
               data1 = json.loads(sys.argv[1])
               data2 = json.loads(sys.argv[2])
               data = data1 + data2
+
+              # 物理的なメタデータキャッシュの統合 (Drift防止の核心)
+              # disc1 と disc2 をマージして最終的な discovery_metadata.json を作成
+              with open('data/meta/disc1.json', 'r') as f1, open('data/meta/disc2.json', 'r') as f2:
+                  m1 = json.load(f1)
+                  m2 = json.load(f2)
+                  with open('data/meta/discovery_metadata.json', 'w') as out:
+                      json.dump(m1 + m2, out, ensure_ascii=False, indent=2)
 
               if not data:
                   print('matrix=[]')
