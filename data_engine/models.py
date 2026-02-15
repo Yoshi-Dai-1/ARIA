@@ -38,7 +38,7 @@ class EdinetDocument(BaseModel):
 
 
 class CatalogRecord(BaseModel):
-    """統合ドキュメントカタログ (documents_index.parquet) のレコードモデル (24カラム構成)"""
+    """統合ドキュメントカタログ (documents_index.parquet) のレコードモデル (25カラム構成)"""
 
     # 1. Identifiers (識別子・基本情報)
     doc_id: str
@@ -65,7 +65,9 @@ class CatalogRecord(BaseModel):
     ordinance_code: Optional[str] = None
     is_amendment: bool = False
     parent_doc_id: Optional[str] = None  # 訂正対象の親書類ID
+    withdrawal_status: Optional[str] = None  # 取下区分 (1:取下済)
     disclosure_status: Optional[str] = None  # 開示ステータス (1:OK, 2:修正 etc.)
+    current_report_reason: Optional[str] = None  # 臨時報告書の提出理由
 
     # 5. Infrastructure (システム管理情報)
     raw_zip_path: Optional[str] = None

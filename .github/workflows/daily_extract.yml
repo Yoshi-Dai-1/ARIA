@@ -149,6 +149,13 @@ jobs:
               print('matrix=[]')
           " >> $GITHUB_OUTPUT
 
+      - name: Upload Metadata Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: discovery-metadata
+          path: data/meta/discovery_metadata.json
+          retention-days: 1
+
   extract:
     needs: discovery
     if: needs.discovery.outputs.matrix != '[]' && needs.discovery.outputs.matrix != ''
@@ -173,6 +180,11 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
+      - name: Download Metadata Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: discovery-metadata
+          path: data/meta/
       - name: Lint and Format with Ruff
         run: |
           ruff format .
@@ -220,6 +232,11 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
+      - name: Download Metadata Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: discovery-metadata
+          path: data/meta/
       - name: Run Finalize (Merger)
         env:
           EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
