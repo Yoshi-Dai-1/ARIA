@@ -115,8 +115,18 @@ def main():
         print("FINISHED")  # GHA側で検知するためのキーワード
         return
 
+    # 【追加】再試行期間の計算（カーソルの開始日から過去60日分）
+    retry_start = start - timedelta(days=60)
+    if retry_start < LIMIT_DATE:
+        retry_start = LIMIT_DATE
+    retry_end = start - timedelta(days=1)
+
     print(f"START={start.strftime('%Y-%m-%d')}")
     print(f"END={end.strftime('%Y-%m-%d')}")
+
+    if retry_start < start:
+        print(f"RETRY_START={retry_start.strftime('%Y-%m-%d')}")
+        print(f"RETRY_END={retry_end.strftime('%Y-%m-%d')}")
 
 
 if __name__ == "__main__":
