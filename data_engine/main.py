@@ -454,10 +454,25 @@ def main():
     all_meta = filtered_meta
     if initial_count > len(all_meta) and not args.id_list:
         logger.info(
-            f"フィルタリング結果: 初期 {initial_count} 件 -> 保持 {len(all_meta)} 件 "
             f"(証券コードなし: {skipped_reasons['no_sec_code']} 件, "
             f"コード不正/短縮: {skipped_reasons['invalid_length']} 件)"
         )
+
+    # 【重要】不整合(Drift)対策：メタデータをファイルに保存/読み込み
+    # Workerモード時、Discoveryと同じ情報を共有することでAPIの応答不整合をゼロにする
+    meta_cache_path = Path("data/meta/discovery_metadata.json")
+    if args.list_only:
+        meta_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(meta_cache_path, "w", encoding="utf-8") as f:
+            json.dump(all_meta, f, ensure_ascii=False, indent=2)
+        logger.info(f"Discoveryメタデータを保存しました: {meta_cache_path}")
+    elif args.mode == "worker" and meta_cache_path.exists():
+        try:
+            with open(meta_cache_path, "r", encoding="utf-8") as f:
+                all_meta = json.load(f)
+            logger.info("Discovery時のメタデータキャッシュを利用してDriftを防止します。")
+        except Exception as e:
+            logger.warning(f"メタデータキャッシュの読み込みに失敗しました: {e}")
 
     # 2. GHAマトリックス用出力
     if args.list_only:
@@ -607,13 +622,13 @@ def main():
         rel_zip_path = str(raw_zip.relative_to(RAW_BASE_DIR.parent)) if zip_ok else None
         rel_pdf_path = str(raw_pdf.relative_to(RAW_BASE_DIR.parent)) if pdf_ok else None
 
-        # カタログ情報のベースを保持 (models.py の解析最適化順序に準拠 - 18カラム構成)
+        # カタログ情報のベースを保持 (models.py の 24カラム構成に準拠)
         record = {
             "doc_id": docid,
+            "jcn": row.get("JCN"),
             "code": sec_code,
             "company_name": (row.get("filerName") or "").strip() or "Unknown",
             "edinet_code": (row.get("edinetCode") or "").strip() or None,
-            "jcn": row.get("JCN"),
             "issuer_edinet_code": row.get("issuerEdinetCode"),
             "submit_at": (row.get("submitDateTime") or "").strip() or None,
             "fiscal_year": fiscal_year,
@@ -628,6 +643,7 @@ def main():
             "is_amendment": is_amendment,
             "parent_doc_id": row.get("parentDocID"),
             "disclosure_status": row.get("disclosureStatus"),
+            "current_report_reason": row.get("currentReportReason"),
             "raw_zip_path": rel_zip_path,
             "pdf_path": rel_pdf_path,
             "processed_status": "pending",  # 初期値は pending（未実施）
