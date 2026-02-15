@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -37,7 +38,7 @@ def load_cursor():
         with open(local_path, "r") as f:
             return json.load(f)
     except Exception as e:
-        print(f"Cursor load failed (First run?): {e}")
+        print(f"Cursor load failed (First run?): {e}", file=sys.stderr)
         return None
 
 
@@ -59,9 +60,9 @@ def save_cursor(next_start_date_str):
             repo_type="dataset",
             commit_message=f"Update backfill cursor to {next_start_date_str}",
         )
-        print(f"Cursor updated: {next_start_date_str}")
+        print(f"Cursor updated: {next_start_date_str}", file=sys.stderr)
     except Exception as e:
-        print(f"Failed to upload cursor: {e}")
+        print(f"Failed to upload cursor: {e}", file=sys.stderr)
         # カーソル更新失敗は致命的ではない（再実行されるだけ）が、ログは残す
 
 

@@ -52,10 +52,10 @@ jobs:
             exit 0
           fi
           
-          START=$(echo "$OUTPUT" | grep "START=" | cut -d'=' -f2)
-          END=$(echo "$OUTPUT" | grep "END=" | cut -d'=' -f2)
-          RETRY_START=$(echo "$OUTPUT" | grep "RETRY_START=" | cut -d'=' -f2 || echo "")
-          RETRY_END=$(echo "$OUTPUT" | grep "RETRY_END=" | cut -d'=' -f2 || echo "")
+          START=$(echo "$OUTPUT" | grep "^START=" | cut -d'=' -f2)
+          END=$(echo "$OUTPUT" | grep "^END=" | cut -d'=' -f2)
+          RETRY_START=$(echo "$OUTPUT" | grep "^RETRY_START=" | cut -d'=' -f2 || echo "")
+          RETRY_END=$(echo "$OUTPUT" | grep "^RETRY_END=" | cut -d'=' -f2 || echo "")
           
           echo "Target Period: $START ~ $END"
           echo "Retry Period: $RETRY_START ~ $RETRY_END"
