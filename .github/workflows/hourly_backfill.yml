@@ -157,6 +157,11 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
+      - name: Download Metadata Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: discovery-metadata
+          path: data/meta/
       - name: Execute Backfill Worker
         env:
           EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
