@@ -648,13 +648,10 @@ class CatalogManager:
             new_history_events.extend(rebuilt_code_events)
 
         # 4. 履歴の保存 (Atomic & Non-destructive)
-        # 処理対象となったコード(processed_codes)については、
-        # "イベントなし" (=ずっと同じ名前) も含めて、これが「最新の正解」である。
-        # したがって、既存の履歴から processed_codes に該当するものは全て削除し、
-        # 今回生成された new_history_events (あれば) で置き換える。
-
-        if processed_codes and not name_history.empty:
-            name_history = name_history[~name_history["code"].isin(processed_codes)]
+        # 【修正】History Evaporation（履歴の蒸発）バグを修正。
+        # 以前は processed_codes に該当する全履歴を削除していたが、
+        # これでは別期間の実行時に既存の履歴が消えてしまう。
+        # 既存の履歴を保持したまま、新しい変遷のみをマージして重複排除する。
 
         if new_history_events:
             new_hist_df = pd.DataFrame(new_history_events)

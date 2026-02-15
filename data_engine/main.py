@@ -100,7 +100,9 @@ def parse_worker(args):
 
         logger.debug(f"解析開始: {docid} (Path: {raw_zip})")
 
-        extract_dir.mkdir(parents=True, exist_ok=True)  # 【修正】Submodule側のログ保存で落ちないよう事前に作成
+        # 【根治】サブモジュールが中間ファイルを書き出す深い階層 (XBRL/PublicDoc) を事前に強制作成。
+        # 親ディレクトリ (extract_dir) の作成だけでは、open() 時に FileNotFoundError が発生するケースがあるため。
+        (extract_dir / "XBRL" / "PublicDoc").mkdir(parents=True, exist_ok=True)
 
         # 【フェーズ2：Deep Extraction】三井物産(S100LJUR)等の gla 参照エラー対策
         # サブモジュールの「つまみ食い解凍」による FileNotFoundError を防ぐため、
@@ -747,15 +749,17 @@ def main():
 
     # 【重要】メタデータ不整合の検知 (Worker Mode 専用ガード)
     if target_ids:
-        missing_ids = set(target_ids) - found_target_ids
+        # found_target_ids には「見つかったもの」に加え、「意図的に非解析対象としてスキップしたもの」も含めることで、
+        # 真の意味で「APIから消えた ID」のみをドリフトとして検知する。
+        # ※ new_catalog_records に入っているものは Worker 段階で存在を確認できている。
+        found_and_skipped = found_target_ids.union({r["doc_id"] for r in new_catalog_records})
+        missing_ids = set(target_ids) - found_and_skipped
         if missing_ids:
             logger.critical(
                 "【重大な不整合検知 (Drift)】Discoveryで見つかった以下のIDが、"
                 f"Worker実行時のメタデータ取得では見つかりませんでした: {list(missing_ids)}"
             )
-            logger.info(
-                "これはEDINET APIの応答不整合、または証券コードフィルタリングによるスキップの可能性があります。"
-            )
+            logger.info("これは EDINET API の一時的な応答遅延、または不整合の可能性があります。")
 
     # 【修正】カタログレコードの収集を一本化し、上書きロストを防止
     # 以前は「解析対象外」と「解析対象」で別々に save_delta を呼んでおり、後者が前者を上書きしていた
@@ -810,9 +814,12 @@ def main():
                             # ただし、連結/個別の片方しかない場合の正常なスキップ（No objects...）は除く
                             if "No objects to concatenate" not in err:
                                 target_rec["processed_status"] = "failure"
+                            # 【厳格化】片方が成功していても、他方で重大なエラーが出ていれば成功とみなさない
                         elif res_df is not None:
-                            # 少なくとも一方の解析に成功していれば成功
-                            target_rec["processed_status"] = "success"
+                            # 少なくとも一方の解析に成功していれば一旦 success とするが、
+                            # すでに failure (他方のエラー) になっている場合は上書きしない
+                            if target_rec.get("processed_status") != "failure":
+                                target_rec["processed_status"] = "success"
 
                             if t_type == "financial_values":
                                 quant_only = res_df[res_df["isTextBlock_flg"] == 0]
