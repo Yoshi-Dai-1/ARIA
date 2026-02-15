@@ -17,7 +17,7 @@
 - **Work Class Robustness**: 中間デルタファイルとMaster First戦略による完全なデータ整合性
 - **Parallel Processing**: GitHub Actions Matrixによる高速並列データ収集 (20並列)
 - **Market Data Pipeline**: EDINETとは独立した市場データ収集エンジン (Nikkei 225, TOPIX対応)
-- **Hugging Face Integration**: データセット `Yoshi-Dai/financial-lakehouse` で公開
+- **Hugging Face Integration**: データセット `[YOUR_USERNAME]/financial-lakehouse` で公開可能
 - **Automated Backfill (2018-Present)**: 2018年からの全書類を20並列で遡り取得するオートパイロット機能
 
 ## アーキテクチャ (Monorepo)
