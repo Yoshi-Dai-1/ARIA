@@ -3,7 +3,7 @@ import re
 import time
 import unicodedata
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import pandas as pd
 import requests
@@ -323,6 +323,15 @@ class CatalogManager:
             (self.catalog_df["doc_id"] == doc_id) & (self.catalog_df["processed_status"].isin(["success", "retracted"]))
         ]
         return not processed.empty
+
+    def get_status(self, doc_id: str) -> Optional[str]:
+        """指定した doc_id の現在のステータスを取得"""
+        if self.catalog_df.empty:
+            return None
+        match = self.catalog_df[self.catalog_df["doc_id"] == doc_id]
+        if match.empty:
+            return None
+        return match.iloc[0]["processed_status"]
 
     def update_catalog(self, new_records: List[Dict]) -> bool:
         """カタログを更新 (Pydanticバリデーション実施)"""
@@ -832,8 +841,12 @@ class CatalogManager:
                                 break
                             except Exception as e:
                                 if att == attempts - 1:
-                                    logger.error(f"❌ デルタ読み込み失敗 ({remote_path}): {e}")
-                                    raise
+                                    # 【重大】破損ファイルをスキップして統合を継続する (全損を防ぐ)
+                                    logger.error(
+                                        f"❌ デルタ読み込み失敗 ({remote_path}): {e} - このファイルはスキップし、統合を続行します。"
+                                    )
+                                    # ここで raise せず、次のファイルへ進む
+                                    continue
                                 logger.warning(f"デルタ読み込み再試行中... ({att + 1}) {remote_path}")
                                 time.sleep(5)
 
