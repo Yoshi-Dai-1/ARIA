@@ -137,10 +137,23 @@ def parse_worker(args):
                 if df[col].dtype == "object":
                     df[col] = df[col].astype(str)
             logger.debug(f"解析成功: {docid} ({task_type}) | 抽出レコード数: {len(df)}")
-            return docid, df, None, task_type
+
+            # 【追加】サブモジュールに手を加えず会計基準を抽出
+            # get_xbrl_rapper が extract_dir に書き出した log_dict.json を読み込む
+            accounting_std = None
+            log_path = extract_dir / "log_dict.json"
+            if log_path.exists():
+                try:
+                    with open(log_path, "r", encoding="utf-8") as f:
+                        log_data = json.load(f)
+                    accounting_std = log_data.get("AccountingStandardsDEI")
+                except Exception as e:
+                    logger.warning(f"log_dict.json の読み込み失敗 ({docid}): {e}")
+
+            return docid, df, None, (task_type, accounting_std)
 
         msg = "No objects to concatenate" if (df is None or df.empty) else "Empty Results"
-        return docid, None, msg, task_type
+        return docid, None, msg, (task_type, None)
 
     except Exception as e:
         import traceback
@@ -600,16 +613,21 @@ def main():
             "code": sec_code,
             "company_name": (row.get("filerName") or "").strip() or "Unknown",
             "edinet_code": (row.get("edinetCode") or "").strip() or None,
+            "jcn": row.get("JCN"),
+            "issuer_edinet_code": row.get("issuerEdinetCode"),
             "submit_at": (row.get("submitDateTime") or "").strip() or None,
             "fiscal_year": fiscal_year,
             "period_start": period_start,
             "period_end": period_end,
             "num_months": num_months,
-            "is_amendment": is_amendment,
+            "accounting_standard": None,  # 後ほど解析結果から注入
             "doc_type": dtc or "",
             "title": (title or "").strip() or None,
             "form_code": (form_c or "").strip() or None,
             "ordinance_code": (ord_c or "").strip() or None,
+            "is_amendment": is_amendment,
+            "parent_doc_id": row.get("parentDocID"),
+            "disclosure_status": row.get("disclosureStatus"),
             "raw_zip_path": rel_zip_path,
             "pdf_path": rel_pdf_path,
             "processed_status": "pending",  # 初期値は pending（未実施）
@@ -739,7 +757,8 @@ def main():
                 futures = [executor.submit(parse_worker, t) for t in batch]
 
                 for f in as_completed(futures):
-                    did, res_df, err, t_type = f.result()
+                    did, res_df, err, worker_meta = f.result()
+                    t_type, accounting_std = worker_meta
 
                     # 解析完了後に parsing_target_ids にあるレコードのステータスを更新
                     if did in potential_catalog_records:
@@ -763,6 +782,10 @@ def main():
                                 txt_only = res_df[res_df["isTextBlock_flg"] == 1]
                                 if not txt_only.empty:
                                     all_text_dfs.append(txt_only)
+
+                            # 会計基準の抽出 (Worker の戻り値から取得)
+                            if accounting_std:
+                                target_rec["accounting_standard"] = str(accounting_std)
 
                             # セクター判別用
                             meta_row = next(m for m in all_meta if m["docID"] == did)
