@@ -88,7 +88,7 @@ def calculate_next_period():
     yesterday = get_jst_today() - timedelta(days=1)
 
     if start_date >= yesterday:
-        print("Reached present day. Backfill complete.")
+        print("FINISHED", file=sys.stderr)
         return None, None
 
     if end_date >= yesterday:
