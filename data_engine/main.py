@@ -92,7 +92,7 @@ def parse_worker(args):
     # extract_dir = TEMP_DIR / f"{docid}_{task_type}"
     # 【効率化】Deep Extraction で既に展開済みの共通ディレクトリを使用することで、
     # parse_worker ごとに再度解凍する無駄を避ける
-    extract_dir = TEMP_DIR / f"extract_{docid}"
+    extract_dir = TEMP_DIR / f"extract_{docid}_{task_type}"
     try:
         if acc_obj is None:
             return docid, None, "Account list not loaded"
