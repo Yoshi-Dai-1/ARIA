@@ -16,7 +16,7 @@ HF_TOKEN = os.getenv("HF_TOKEN")
 # 1回の遡り期間（14日＝2週間）
 BACKFILL_DAYS = 14
 # 限界日（これより前はAPIリストからの取得が不可：実機調査済み）
-LIMIT_DATE = date(2018, 1, 4)
+LIMIT_DATE = date(2018, 1, 1)
 
 
 def get_jst_today():
@@ -68,7 +68,7 @@ def save_cursor(next_start_date_str):
 def calculate_next_period():
     """
     カーソルを確認し、次に取得すべき期間（start_date, end_date）を決定する。
-    期間は 'end_date' から 'start_date' へと過去に向かって進む。
+    期間は 'start_date' から 'end_date' へと未来に向かって進む（保全優先：古い方から順に確保）。
     """
     cursor = load_cursor()
 
@@ -76,7 +76,7 @@ def calculate_next_period():
         # カーソルがある場合：その日付から BACKFILL_DAYS 分進める (過去->未来)
         start_date = datetime.strptime(cursor["next_target_start"], "%Y-%m-%d").date()
     else:
-        # 初回：最も古い取得可能日（2014-04-01）を開始点とする
+        # 初回：最も古い取得可能日（2018-01-01）を開始点とする
         # 理由：古いデータほどAPIから消えるリスクが高いため、先に確保する「保全優先」戦略
         start_date = LIMIT_DATE
 

@@ -1,4 +1,4 @@
-name: Hourly 10-Year Backfill
+name: Hourly Historical Backfill (2018-Present)
 
 on:
   schedule:
