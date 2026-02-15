@@ -60,8 +60,8 @@ class CatalogRecord(BaseModel):
     accounting_standard: Optional[str] = None  # 会計基準 (J-GAAP, IFRS, etc.)
 
     # 4. Document Details (書類詳細特性)
-    doc_type: str
-    title: str
+    doc_type: Optional[str] = None
+    title: Optional[str] = None
     form_code: Optional[str] = None
     ordinance_code: Optional[str] = None
     is_amendment: bool = False

@@ -124,7 +124,7 @@ class CatalogManager:
             logger.debug(f"{key}: Removed unnecessary columns: {cols_to_drop}")
             df = df.drop(columns=cols_to_drop)
 
-        # 2. カタログの場合、モデル定義のカラム構成を強制 (18カラム化)
+        # 2. カタログの場合、モデル定義のカラム構成を強制 (現在は26カラム)
         if key == "catalog":
             # NaN を None に置換
             df = df.replace({pd.NA: None, float("nan"): None})
@@ -842,9 +842,8 @@ class CatalogManager:
                             except Exception as e:
                                 if att == attempts - 1:
                                     # 【重大】破損ファイルをスキップして統合を継続する (全損を防ぐ)
-                                    logger.error(
-                                        f"❌ デルタ読み込み失敗 ({remote_path}): {e} - このファイルはスキップし、統合を続行します。"
-                                    )
+                                    msg = f"❌ デルタ読み込み失敗 ({remote_path}): {e} - スキップして続行します。"
+                                    logger.error(msg)
                                     # ここで raise せず、次のファイルへ進む
                                     continue
                                 logger.warning(f"デルタ読み込み再試行中... ({att + 1}) {remote_path}")

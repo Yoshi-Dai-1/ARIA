@@ -479,8 +479,16 @@ def main():
         matrix_data = []
         for row in all_meta:
             docid = row["docID"]
+
+            # 【重要】不整合(Withdrawal Sync)対策
+            # 既に成功(success)としてカタログにあっても、API側で取下(withdrawalStatus=='1')が発生している場合、
+            # カタログを更新(retractedに)するためにスキップ対象から外す
             if catalog.is_processed(docid):
-                continue
+                api_retracted = row.get("withdrawalStatus") == "1"
+                local_status = catalog.get_status(docid)
+                # すでにカタログ側も retracted ならスキップ継続、success なのに APIが取下なら再処理(更新)へ
+                if not (api_retracted and local_status != "retracted"):
+                    continue
 
             raw_sec_code = normalize_code(str(row.get("secCode", "")).strip())
             # 解析対象の厳密判定条件をマトリックス側でも提供
