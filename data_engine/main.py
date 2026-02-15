@@ -617,12 +617,20 @@ def main():
         # 訂正フラグ
         is_amendment = row.get("withdrawalStatus") != "0" or "訂正" in title
 
+        # 【重大】取下済（withdrawalStatus == '1'）の書類は解析しても無意味なため、
+        # ステータスを 'retracted' とし、正常系から除外する
+        w_status = row.get("withdrawalStatus")
+        final_status = "pending"
+        if w_status == "1":
+            final_status = "retracted"
+            logger.warning(f"【取下済書類を検知】: {docid} は解析対象から除外します。")
+
         # 【修正】インデックスに記録するパスを、実際の階層構造（year/month/day）に合わせる
         # RAW_BASE_DIR からの相対パスとして記録
         rel_zip_path = str(raw_zip.relative_to(RAW_BASE_DIR.parent)) if zip_ok else None
         rel_pdf_path = str(raw_pdf.relative_to(RAW_BASE_DIR.parent)) if pdf_ok else None
 
-        # カタログ情報のベースを保持 (models.py の 24カラム構成に準拠)
+        # カタログ情報のベースを保持 (models.py の 25カラム構成に準拠)
         record = {
             "doc_id": docid,
             "jcn": row.get("JCN"),
@@ -642,11 +650,12 @@ def main():
             "ordinance_code": (ord_c or "").strip() or None,
             "is_amendment": is_amendment,
             "parent_doc_id": row.get("parentDocID"),
+            "withdrawal_status": w_status,
             "disclosure_status": row.get("disclosureStatus"),
             "current_report_reason": row.get("currentReportReason"),
             "raw_zip_path": rel_zip_path,
             "pdf_path": rel_pdf_path,
-            "processed_status": "pending",  # 初期値は pending（未実施）
+            "processed_status": final_status,
             "source": "EDINET",
         }
         potential_catalog_records[docid] = record
