@@ -15,10 +15,10 @@
 ## 特徴
 
 - **Work Class Robustness**: 中間デルタファイルとMaster First戦略による完全なデータ整合性
-- **Parallel Processing**: GitHub Actions Matrixによる高速並列データ収集 (Worker/Mergerアーキテクチャ)
+- **Parallel Processing**: GitHub Actions Matrixによる高速並列データ収集 (20並列)
 - **Market Data Pipeline**: EDINETとは独立した市場データ収集エンジン (Nikkei 225, TOPIX対応)
-- **Hugging Face Integration**: データセット `[YOUR_USERNAME]/financial-lakehouse` で公開
-- **10-Year Automated Backfill**: 2014年まで遡って全書類を自動収集するオートパイロット機能
+- **Hugging Face Integration**: データセット `Yoshi-Dai/financial-lakehouse` で公開
+- **Automated Backfill (2018-Present)**: 2018年からの全書類を20並列で遡り取得するオートパイロット機能
 
 ## アーキテクチャ (Monorepo)
 
@@ -27,7 +27,7 @@
 ### 1. Data Engine (`data_engine/`)
 Pythonによる堅牢なデータ処理基盤。
 - **EDINET Data Pipeline (`main.py`)**: 開示書類の並列収集・解析 (Worker/Merger)。
-- **Backfill Manager (`backfill_manager.py`)**: 2014年からの過去データ取得を管理するカーソルロジック。
+- **Backfill Manager (`backfill_manager.py`)**: 2018年からの過去データ取得管理。
 - **Market Data Pipeline (`market_main.py`)**: 市場データと銘柄属性の同期。
 
 ### 2. Web Frontend (`web_frontend/`)
@@ -86,9 +86,10 @@ PYTHONPATH=data_engine python data_engine/main.py --mode worker --run-id <RUN_ID
 PYTHONPATH=data_engine python data_engine/main.py --mode merger --run-id <RUN_ID>
 ```
 
-### 2. 過去データの自動バックフィル (10年分)
+### 2. 過去データの自動バックフィル (2018年〜現在)
 
-`hourly_backfill.yml` により、毎時15分（JST 01:15-05:15, 07:15-23:15）に自動実行されます。※00:15と06:15は衝突回避のためスキップされます。2014年4月1日までの全データを、14日刻みで「過去から現在へ（Forward）」順に取得します。
+`hourly_backfill.yml` により、毎時15分（JST 01:15-05:15, 07:15-23:15）に自動実行されます。2018年1月1日以降の全データを、14日刻みで「過去から現在へ（Forward）」順に **20並列** で取得します。
+※2017年以前のデータについては、APIの制限により「手動アーカイブ・インポート」戦略で対応します。
 
 ### 3. 市場データ収集
 
