@@ -15,8 +15,8 @@ HF_REPO = os.getenv("HF_REPO")
 HF_TOKEN = os.getenv("HF_TOKEN")
 # 1回の遡り期間（14日＝2週間）
 BACKFILL_DAYS = 14
-# 限界日（これより前はAPIがない）
-LIMIT_DATE = date(2014, 4, 1)
+# 限界日（これより前はAPIリストからの取得が不可：実機調査済み）
+LIMIT_DATE = date(2018, 1, 4)
 
 
 def get_jst_today():
