@@ -18,3 +18,11 @@ data/20*/
 # 環境設定
 .env
 .DS_Store
+
+# Research Artifacts & Temporary Envs
+research_taxonomy.py
+research_venv/
+research_taxonomy_failure/
+tmp_debug/
+debug_work/
+

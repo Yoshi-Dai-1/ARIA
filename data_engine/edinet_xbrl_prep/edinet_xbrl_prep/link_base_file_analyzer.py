@@ -333,7 +333,13 @@ class get_presentation_account_list():
         """
         TODO: preferedLabelの取得を追加
         """
-        tree = ET.parse(str(list(self.xml_def_path.glob("*pre.xml"))[0]))
+        files = list(self.xml_def_path.glob("*pre.xml"))
+        if not files:
+            self.locators = []
+            self.arcs = []
+            return
+
+        tree = ET.parse(str(files[0]))
         root = tree.getroot()
         locators = []
         arcs = []
@@ -427,7 +433,13 @@ class get_calc_edge_list():
             self.log_dict['get_cal_error_message'] = str(e)
         
     def parse_cal_file(self):
-        tree = ET.parse(str(list(self.xml_def_path.glob("*cal.xml"))[0]))
+        files = list(self.xml_def_path.glob("*cal.xml"))
+        if not files:
+            self.locators = []
+            self.arcs = []
+            return
+
+        tree = ET.parse(str(files[0]))
         root = tree.getroot()
 
         locators=[]
@@ -522,7 +534,13 @@ class get_label():
             self.log_dict['get_lab_error_message'] = str(e)
 
     def parse_lab_file(self):
-        tree = ET.parse(str(list(self.xml_def_path.glob("*"+self.f_keyword))[0])) # TODO check iregular file name
+        files = list(self.xml_def_path.glob("*"+self.f_keyword))
+        if not files:
+            self.resources = []
+            self.arcs = []
+            return
+
+        tree = ET.parse(str(files[0])) # TODO check iregular file name
         root = tree.getroot()
 
         resources=[]

@@ -90,7 +90,8 @@ jobs:
           fi
 
           # 3. マージとマトリックス生成 & メタデータキャッシュの統合
-          python -c "
+          # 3. マージとマトリックス生成 & メタデータキャッシュの統合
+          cat << 'EOF' > generate_matrix.py
           import json, sys, os
           try:
               with open('data/meta/matrix1.json', 'r') as f1, open('data/meta/matrix2.json', 'r') as f2:
@@ -110,8 +111,31 @@ jobs:
                   with open('data/meta/discovery_metadata.json', 'w') as out:
                       json.dump(m1 + m2, out, ensure_ascii=False, indent=2)
 
-              def build_matrix(data):
-                  if not data: return '[]'
+              # 動的並列配分 (Dynamic Matrix Parallelism)
+              TOTAL_SLOTS = 20
+              p_count = len(data1)
+              r_count = len(data2)
+
+              if p_count == 0:
+                  n_primary = 0
+                  n_retry = TOTAL_SLOTS
+              elif r_count == 0:
+                  n_primary = TOTAL_SLOTS
+                  n_retry = 0
+              else:
+                  # 比率計算 (最低1スロット保証)
+                  ratio = p_count / (p_count + r_count)
+                  n_primary = int(round(TOTAL_SLOTS * ratio))
+                  n_primary = max(1, min(TOTAL_SLOTS - 1, n_primary))
+                  n_retry = TOTAL_SLOTS - n_primary
+              
+              sys.stderr.write(f'--- Job Allocation ---\n')
+              sys.stderr.write(f'  Primary Jobs: {n_primary}\n')
+              sys.stderr.write(f'  Retry Jobs  : {n_retry}\n')
+              sys.stderr.write(f'----------------------\n')
+
+              def build_matrix(data, n_jobs):
+                  if not data or n_jobs == 0: return '[]'
                   company_map = {}
                   for item in data:
                       code = item.get('code', '9999')
@@ -124,7 +148,7 @@ jobs:
                           weight += 50 if is_yuho else 2
                       company_tasks.append({'ids': [x['id'] for x in items], 'weight': weight})
                   company_tasks.sort(key=lambda x: x['weight'], reverse=True)
-                  n_jobs = 15
+                  
                   buckets = [[] for _ in range(n_jobs)]
                   bucket_weights = [0] * n_jobs
                   for task in company_tasks:
@@ -134,12 +158,14 @@ jobs:
                   res = [{'ids': ','.join(b), 'idx': i, 'weight': bucket_weights[i]} for i, b in enumerate(buckets) if b]
                   return json.dumps(res)
 
-              sys.stdout.write(f'matrix_primary={build_matrix(data1)}\n')
-              sys.stdout.write(f'matrix_retry={build_matrix(data2)}\n')
+              print(f'matrix_primary={build_matrix(data1, n_primary)}')
+              print(f'matrix_retry={build_matrix(data2, n_retry)}')
           except Exception as e:
               sys.stderr.write(f'Error during matrix generation: {e}\n')
-              print('matrix_primary=[]\nmatrix_retry=[]')
-          " >> $GITHUB_OUTPUT
+              print('matrix_primary=[]')
+              print('matrix_retry=[]')
+          EOF
+          python3 generate_matrix.py >> $GITHUB_OUTPUT
 
       - name: Upload Metadata Artifact
         uses: actions/upload-artifact@v4
