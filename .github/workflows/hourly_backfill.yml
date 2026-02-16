@@ -75,27 +75,26 @@ jobs:
           PYTHONPATH: data_engine
         run: |
           # 1. 通常取得期間のリストアップ (Artifact/Cache保存)
-          JSON1=$(python data_engine/main.py --list-only --start "${{ steps.set-dates.outputs.start_date }}" --end "${{ steps.set-dates.outputs.end_date }}" | grep "^JSON_MATRIX_DATA:" | cut -d':' -f2-)
-          DATA1=${JSON1:-"[]"}
+          python data_engine/main.py --list-only --start "${{ steps.set-dates.outputs.start_date }}" --end "${{ steps.set-dates.outputs.end_date }}" | grep "^JSON_MATRIX_DATA:" | cut -d':' -f2- > data/meta/matrix1.json
           mv data/meta/discovery_metadata.json data/meta/disc1.json
 
           # 2. 再試行期間 (過去2ヶ月) のリストアップ (Artifact/Cache保存)
           RETRY_START="${{ steps.set-dates.outputs.retry_start }}"
           if [[ -n "$RETRY_START" ]]; then
-            JSON2=$(python data_engine/main.py --list-only --start "$RETRY_START" --end "${{ steps.set-dates.outputs.retry_end }}" | grep "^JSON_MATRIX_DATA:" | cut -d':' -f2-)
-            DATA2=${JSON2:-"[]"}
+            python data_engine/main.py --list-only --start "$RETRY_START" --end "${{ steps.set-dates.outputs.retry_end }}" | grep "^JSON_MATRIX_DATA:" | cut -d':' -f2- > data/meta/matrix2.json
             mv data/meta/discovery_metadata.json data/meta/disc2.json
           else
-            DATA2="[]"
+            echo "[]" > data/meta/matrix2.json
             echo "[]" > data/meta/disc2.json
           fi
 
           # 3. マージとマトリックス生成 & メタデータキャッシュの統合
-          echo "$DATA1" "$DATA2" | python -c "
+          python -c "
           import json, sys, os
           try:
-              data1 = json.loads(sys.argv[1])
-              data2 = json.loads(sys.argv[2])
+              with open('data/meta/matrix1.json', 'r') as f1, open('data/meta/matrix2.json', 'r') as f2:
+                  data1 = json.load(f1)
+                  data2 = json.load(f2)
               data = data1 + data2
 
               # 処理対象件数の可視化 (ユーザー要望)
@@ -142,9 +141,10 @@ jobs:
 
               res = [{'ids': ','.join(b), 'idx': i, 'weight': bucket_weights[i]} for i, b in enumerate(buckets) if b]
               print(f'matrix={json.dumps(res)}')
-          except Exception:
+          except Exception as e:
+              sys.stderr.write(f'Error during matrix generation: {e}\n')
               print('matrix=[]')
-          " "$DATA1" "$DATA2" >> $GITHUB_OUTPUT
+          " >> $GITHUB_OUTPUT
 
       - name: Upload Metadata Artifact
         uses: actions/upload-artifact@v4

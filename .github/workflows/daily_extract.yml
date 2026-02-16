@@ -72,20 +72,18 @@ jobs:
           EXTRACT_END: ${{ steps.set-dates.outputs.end_date }}
           DISABLE_PANDERA_IMPORT_WARNING: True
         run: |
-          RAW_JSON=$(python data_engine/main.py --list-only --start "${{ steps.set-dates.outputs.start_date }}" --end "${{ steps.set-dates.outputs.end_date }}" | grep "^JSON_MATRIX_DATA:" | cut -d':' -f2-)
-          DATA=${RAW_JSON:-"[]"}
+          python data_engine/main.py --list-only --start "${{ steps.set-dates.outputs.start_date }}" --end "${{ steps.set-dates.outputs.end_date }}" | grep "^JSON_MATRIX_DATA:" | cut -d':' -f2- > data/meta/matrix.json
 
-          echo "$DATA" | python -c "
+          python -c "
           import json, math, sys
           try:
-              data_raw = sys.stdin.read()
-              data = json.loads(data_raw)
+              with open('data/meta/matrix.json', 'r') as f:
+                  data = json.load(f)
               if not data:
                   print('matrix=[]')
                   sys.exit(0)
 
               # 【修正】全書類（824件など）を対象にする。
-              # 以前は 'その他' を除外していたため56件の漏れが発生していた。
               filtered_data = data
 
               if not filtered_data:
@@ -94,7 +92,6 @@ jobs:
                   sys.exit(0)
 
               # 【高度化】銘柄単位(code)でグループ化し、XBRL解析の重みを加味して分配
-              # 1. 会社ごとの書類リストと重みを計算
               company_map = {}
               for item in filtered_data:
                   code = item.get('code', '9999')
@@ -102,8 +99,6 @@ jobs:
 
               company_tasks = []
               for code, items in company_map.items():
-                  # 【再最適化】有報(120)/一般(010)/標準(030000) のみを重い(50)と判定
-                  # その他は DLオーバーヘッド(10) + 従量(1)
                   company_weight = 10
                   for x in items:
                       is_parsed = x.get('type') == '120' and x.get('ord') == '010' and x.get('form') == '030000'
@@ -115,7 +110,6 @@ jobs:
                       'weight': company_weight
                   })
 
-              # 2. 重い順にソートして貪欲法(Greedy)で20バケットに分配
               company_tasks.sort(key=lambda x: x['weight'], reverse=True)
               
               n_jobs = 20
@@ -123,7 +117,6 @@ jobs:
               bucket_weights = [0] * n_jobs
 
               for task in company_tasks:
-                  # 現在最も軽いバケットを選択
                   idx = bucket_weights.index(min(bucket_weights))
                   buckets[idx].extend(task['ids'])
                   bucket_weights[idx] += task['weight']
