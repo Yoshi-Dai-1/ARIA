@@ -16,7 +16,8 @@ jobs:
   discovery:
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      matrix_primary: ${{ steps.set-matrix.outputs.matrix_primary }}
+      matrix_retry: ${{ steps.set-matrix.outputs.matrix_retry }}
       start_date: ${{ steps.set-dates.outputs.start_date }}
       end_date: ${{ steps.set-dates.outputs.end_date }}
       retry_start: ${{ steps.set-dates.outputs.retry_start }}
@@ -95,55 +96,49 @@ jobs:
               with open('data/meta/matrix1.json', 'r') as f1, open('data/meta/matrix2.json', 'r') as f2:
                   data1 = json.load(f1)
                   data2 = json.load(f2)
-              data = data1 + data2
-
-              # 処理対象件数の可視化 (ユーザー要望)
+              
+              # 処理対象件数の可視化
               sys.stderr.write(f'--- Document Count Summary ---\n')
-              sys.stderr.write(f'  Target Period: {len(data1)} docs\n')
-              sys.stderr.write(f'  Retry Period : {len(data2)} docs\n')
-              sys.stderr.write(f'  Total Merged : {len(data)} docs\n')
+              sys.stderr.write(f'  Primary Period: {len(data1)} docs\n')
+              sys.stderr.write(f'  Retry Period  : {len(data2)} docs\n')
               sys.stderr.write(f'------------------------------\n')
 
-              # 物理的なメタデータキャッシュの統合 (Drift防止の核心)
-              # disc1 と disc2 をマージして最終的な discovery_metadata.json を作成
+              # メタデータキャッシュの統合 (Drift防止)
               with open('data/meta/disc1.json', 'r') as f1, open('data/meta/disc2.json', 'r') as f2:
                   m1 = json.load(f1)
                   m2 = json.load(f2)
                   with open('data/meta/discovery_metadata.json', 'w') as out:
                       json.dump(m1 + m2, out, ensure_ascii=False, indent=2)
 
-              if not data:
-                  print('matrix=[]')
-                  sys.exit(0)
+              def build_matrix(data):
+                  if not data: return '[]'
+                  company_map = {}
+                  for item in data:
+                      code = item.get('code', '9999')
+                      company_map.setdefault(code, []).append(item)
+                  company_tasks = []
+                  for code, items in company_map.items():
+                      weight = 10
+                      for x in items:
+                          is_yuho = x.get('type') == '120' and x.get('ord') == '010' and x.get('form') == '030000'
+                          weight += 50 if is_yuho else 2
+                      company_tasks.append({'ids': [x['id'] for x in items], 'weight': weight})
+                  company_tasks.sort(key=lambda x: x['weight'], reverse=True)
+                  n_jobs = 15
+                  buckets = [[] for _ in range(n_jobs)]
+                  bucket_weights = [0] * n_jobs
+                  for task in company_tasks:
+                      idx = bucket_weights.index(min(bucket_weights))
+                      buckets[idx].extend(task['ids'])
+                      bucket_weights[idx] += task['weight']
+                  res = [{'ids': ','.join(b), 'idx': i, 'weight': bucket_weights[i]} for i, b in enumerate(buckets) if b]
+                  return json.dumps(res)
 
-              # 銘柄単位でグループ化して分配 (20並列)
-              company_map = {}
-              for item in data:
-                  code = item.get('code', '9999')
-                  company_map.setdefault(code, []).append(item)
-
-              company_tasks = []
-              for code, items in company_map.items():
-                  weight = 10
-                  for x in items:
-                      is_yuho = x.get('type') == '120' and x.get('ord') == '010' and x.get('form') == '030000'
-                      weight += 50 if is_yuho else 2
-                  company_tasks.append({'ids': [x['id'] for x in items], 'weight': weight})
-
-              company_tasks.sort(key=lambda x: x['weight'], reverse=True)
-              n_jobs = 20
-              buckets = [[] for _ in range(n_jobs)]
-              bucket_weights = [0] * n_jobs
-              for task in company_tasks:
-                  idx = bucket_weights.index(min(bucket_weights))
-                  buckets[idx].extend(task['ids'])
-                  bucket_weights[idx] += task['weight']
-
-              res = [{'ids': ','.join(b), 'idx': i, 'weight': bucket_weights[i]} for i, b in enumerate(buckets) if b]
-              print(f'matrix={json.dumps(res)}')
+              sys.stdout.write(f'matrix_primary={build_matrix(data1)}\n')
+              sys.stdout.write(f'matrix_retry={build_matrix(data2)}\n')
           except Exception as e:
               sys.stderr.write(f'Error during matrix generation: {e}\n')
-              print('matrix=[]')
+              print('matrix_primary=[]\nmatrix_retry=[]')
           " >> $GITHUB_OUTPUT
 
       - name: Upload Metadata Artifact
@@ -153,16 +148,16 @@ jobs:
           path: data/meta/discovery_metadata.json
           retention-days: 1
 
-  extract:
+  extract-primary:
     needs: discovery
-    if: needs.discovery.outputs.finished == 'false' && needs.discovery.outputs.matrix != '[]' && needs.discovery.outputs.matrix != ''
+    if: needs.discovery.outputs.matrix_primary != '[]' && needs.discovery.outputs.matrix_primary != ''
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        chunk: ${{ fromJson(needs.discovery.outputs.matrix) }}
+        include: ${{ fromJson(needs.discovery.outputs.matrix_primary) }}
     timeout-minutes: 60
-    name: backfill-extract (${{ matrix.chunk.idx }}, weight ${{ matrix.chunk.weight }})
+    name: backfill-P (${{ matrix.idx }})
     steps:
       - uses: actions/checkout@v4
         with:
@@ -180,7 +175,7 @@ jobs:
         with:
           name: discovery-metadata
           path: data/meta/
-      - name: Execute Backfill Worker
+      - name: Run Extraction Worker (Primary)
         env:
           EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -188,16 +183,48 @@ jobs:
           PYTHONPATH: data_engine
         run: |
           RUN_ID="backfill-${{ needs.discovery.outputs.start_date }}"
-          python data_engine/main.py \
-            --start "${{ needs.discovery.outputs.start_date }}" \
-            --end "${{ needs.discovery.outputs.end_date }}" \
-            --id_list "${{ matrix.chunk.ids }}" \
-            --mode worker \
-            --run-id "$RUN_ID" \
-            --chunk-id "${{ matrix.chunk.idx }}"
+          python data_engine/main.py --mode worker --run-id "$RUN_ID" --chunk-id "primary-${{ matrix.idx }}" --id_list "${{ matrix.ids }}"
+
+  extract-retry:
+    needs: discovery
+    if: needs.discovery.outputs.matrix_retry != '[]' && needs.discovery.outputs.matrix_retry != ''
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.discovery.outputs.matrix_retry) }}
+    timeout-minutes: 60
+    name: backfill-R (${{ matrix.idx }})
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Download Metadata Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: discovery-metadata
+          path: data/meta/
+      - name: Run Extraction Worker (Retry)
+        continue-on-error: true # 歴史的救済の失敗でワークフロー全体を赤くしない
+        env:
+          EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_REPO: ${{ vars.HF_REPO }}
+          PYTHONPATH: data_engine
+        run: |
+          RUN_ID="backfill-${{ needs.discovery.outputs.start_date }}"
+          python data_engine/main.py --mode worker --run-id "$RUN_ID" --chunk-id "retry-${{ matrix.idx }}" --id_list "${{ matrix.ids }}"
 
   finalize:
-    needs: [discovery, extract]
+    needs: [discovery, extract-primary, extract-retry]
     if: always() && needs.discovery.outputs.finished == 'false' && !cancelled()
     runs-on: ubuntu-latest
     steps:
@@ -212,7 +239,8 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-      - name: Finalize Backfill (Merger & Cursor Update)
+      - name: Run Merger
+        if: needs.discovery.result == 'success'
         env:
           EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -220,12 +248,18 @@ jobs:
           PYTHONPATH: data_engine
         run: |
           RUN_ID="backfill-${{ needs.discovery.outputs.start_date }}"
-          # 1. Merge all chunks for this 14-day window
           python data_engine/main.py --mode merger --run-id "$RUN_ID"
-          
-          # 2. Update Cursor if merger was successful (or at least ran)
-          # Note: If some chunks failed, merger might be incomplete, but forward progress depends on your risk tolerance.
-          # ARIA standard: Only update cursor if the job is not a 'Run valid check only'
-          if [[ "${{ github.event.inputs.debug_mode }}" != "true" ]]; then
-            python data_engine/backfill_manager.py --update-cursor "${{ needs.discovery.outputs.end_date }}"
-          fi
+
+      - name: Update Cursor
+        # [不退転の進行] 進行分（Primary）が成功または対象なしの場合のみカーソルを進める。
+        # Retryジョブの成否は進行を妨げない。
+        if: |
+          needs.discovery.result == 'success' && 
+          (needs.extract-primary.result == 'success' || needs.extract-primary.result == 'skipped') && 
+          github.event.inputs.debug_mode != 'true'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_REPO: ${{ vars.HF_REPO }}
+          PYTHONPATH: data_engine
+        run: |
+          python data_engine/backfill_manager.py --update-cursor "${{ needs.discovery.outputs.end_date }}"
