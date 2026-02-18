@@ -1,4 +1,3 @@
-import re
 from datetime import datetime
 
 
@@ -15,12 +14,9 @@ class MetadataTransformer:
     def normalize_code(code_str: str) -> str:
         """証券コードの5桁正規化 (末尾0付与)"""
         if not code_str:
-            return "99990"
-        code_str = str(code_str).strip()
-        # 4桁の場合は末尾に0を付加
-        if re.match(r"^\d{4}$", code_str):
-            return f"{code_str}0"
-        return code_str
+            return ""
+        c = str(code_str).strip()
+        return c + "0" if len(c) == 4 else c
 
     @staticmethod
     def transform(

@@ -1,0 +1,29 @@
+name: Integrity Audit (10-Year Verification)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 20 * * 0' # 毎週日曜 AM5:00 (JST)
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Extreme Integrity Audit
+        env:
+          EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_REPO: ${{ vars.HF_REPO }}
+          PYTHONPATH: data_engine
+        run: |
+          python data_engine/integrity_audit.py
