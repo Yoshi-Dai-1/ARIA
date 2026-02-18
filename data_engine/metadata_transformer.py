@@ -11,11 +11,11 @@ class MetadataTransformer:
     """
 
     @staticmethod
-    def normalize_code(code_str: str) -> str:
-        """証券コードの5桁正規化 (末尾0付与)"""
-        if not code_str:
+    def normalize_code(code: str) -> str:
+        """証券コードを 5 桁に正規化する (4桁なら末尾0付与、5桁なら維持)"""
+        if not code:
             return ""
-        c = str(code_str).strip()
+        c = str(code).strip()
         return c + "0" if len(c) == 4 else c
 
     @staticmethod
@@ -97,7 +97,7 @@ class MetadataTransformer:
                     rel_zip_path = f"{rel_dir}/{docid}.zip"
                 if pdf_ok:
                     rel_pdf_path = f"{rel_dir}/{docid}.pdf"
-            except:
+            except Exception:
                 pass
 
         # レコード生成
@@ -114,7 +114,7 @@ class MetadataTransformer:
             "period_start": period_start,
             "period_end": period_end,
             "num_months": num_months,
-            "accounting_standard": None,
+            "accounting_standard": None,  # 後ほど解析結果から注入
             "doc_type": dtc or "",
             "title": (title or "").strip() or None,
             "form_code": (form_c or "").strip() or None,
