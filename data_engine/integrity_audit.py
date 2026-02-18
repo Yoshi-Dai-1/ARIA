@@ -9,11 +9,11 @@ project_root = Path(__file__).parent.parent
 if str(project_root / "data_engine") not in sys.path:
     sys.path.insert(0, str(project_root / "data_engine"))
 
-from catalog_manager import CatalogManager
-from edinet_xbrl_prep.edinet_api import request_term
-from huggingface_hub import HfApi
-from loguru import logger
-from metadata_transformer import MetadataTransformer
+from catalog_manager import CatalogManager  # noqa: E402
+from edinet_xbrl_prep.edinet_api import request_term  # noqa: E402
+from huggingface_hub import HfApi  # noqa: E402
+from loguru import logger  # noqa: E402
+from metadata_transformer import MetadataTransformer  # noqa: E402
 
 
 class ExtremeIntegrityAuditor:
