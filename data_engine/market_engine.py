@@ -8,14 +8,9 @@ from typing import Dict
 import pandas as pd
 from loguru import logger
 from network_utils import get_robust_session
+from utils import normalize_code
 
-
-def normalize_code(code: str) -> str:
-    """証券コードを 5 桁に正規化する (4桁なら末尾0付与、5桁なら維持)"""
-    if not code:
-        return ""
-    c = str(code).strip()
-    return c + "0" if len(c) == 4 else c
+# normalize_code is now imported from utils
 
 
 class IndexStrategy(ABC):

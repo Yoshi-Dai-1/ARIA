@@ -11,6 +11,7 @@ from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi, hf
 from huggingface_hub.utils import EntryNotFoundError, HfHubHTTPError, RepositoryNotFoundError
 from loguru import logger
 from models import CatalogRecord, StockMasterRecord
+from utils import normalize_code
 
 
 class CatalogManager:
@@ -156,10 +157,10 @@ class CatalogManager:
             if "num_months" in df.columns:
                 df["num_months"] = pd.to_numeric(df["num_months"], errors="coerce").astype("Int64")
 
-        # 3. 証券コードの正規化 (5桁統一: 4桁なら末尾0付与)
+        # 3. 証券コードの正規化 (5桁統一)
         targets = ["master", "listing", "index", "name"]
         if key in targets and "code" in df.columns:
-            df["code"] = df["code"].astype(str).str.strip().apply(lambda x: x + "0" if len(x) == 4 else x)
+            df["code"] = df["code"].apply(normalize_code)
 
         # 4. Object型の安定化 (None を保持しつつ文字列化)
         for col in df.columns:

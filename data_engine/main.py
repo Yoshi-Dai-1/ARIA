@@ -24,6 +24,7 @@ from loguru import logger
 from master_merger import MasterMerger
 from network_utils import patch_all_networking
 from tqdm import tqdm
+from utils import normalize_code
 
 
 # tqdm を無効化
@@ -38,12 +39,7 @@ tqdm_mod.tqdm = no_op_tqdm
 patch_all_networking()
 
 
-def normalize_code(code: str) -> str:
-    """証券コードを 5 桁に正規化する (4桁なら末尾0付与、5桁なら維持)"""
-    if not code:
-        return ""
-    c = str(code).strip()
-    return c + "0" if len(c) == 4 else c
+# normalize_code is now imported from utils
 
 
 def parse_datetime(dt_str: str) -> datetime:
