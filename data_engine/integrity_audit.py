@@ -9,6 +9,7 @@ from catalog_manager import CatalogManager
 from edinet_xbrl_prep.edinet_xbrl_prep.edinet_api import request_term
 from huggingface_hub import HfApi
 from loguru import logger
+from utils import get_edinet_repo_path
 
 
 class ExtremeIntegrityAuditor:
@@ -119,9 +120,10 @@ class ExtremeIntegrityAuditor:
                     logger.error(f"❌ [METADATA-MISMATCH] {doc_id}: {', '.join(mismatches)}")
 
                 # 物理ファイルチェック
-                zip_path = f"raw/{doc_id}/{doc_id}.zip"
+                # Partitioned Path (year/month/day) を正確に生成
+                zip_path = get_edinet_repo_path(doc_id, truth.submitDateTime, suffix="zip")
                 if truth.xbrlFlag == "1" and zip_path not in repo_files:
-                    logger.error(f"❌ [FILE-MISSING] {doc_id}.zip is missing in repository!")
+                    logger.error(f"❌ [FILE-MISSING] {zip_path} is missing in repository!")
 
             current_date_dt += timedelta(days=1)
 

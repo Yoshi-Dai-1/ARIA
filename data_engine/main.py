@@ -290,32 +290,36 @@ def run_merger(catalog, merger, run_id):
 
                     # 2. RAWデータの存在検証 (サンプリング)
                     if not deltas["catalog"].empty:
-                        sample_doc = deltas["catalog"].iloc[0]["doc_id"]
+                        # 実際にアップロードされたレコードから検証パスを取得
+                        sample_rec = deltas["catalog"].iloc[0]
+                        sample_doc = sample_rec["doc_id"]
+                        # XBRL または PDF のどちらか存在する方を検証対象にする
+                        raw_repo_path = sample_rec["raw_zip_path"] or sample_rec["pdf_path"]
 
-                        # カタログ上の存在確認
+                        # カタログ上のレコード存在確認
                         if sample_doc not in vf_catalog["doc_id"].values:
                             raise ValueError(
                                 f"検知失敗: 追加されたはずの書類 {sample_doc} がリモートカタログに見当たりません。"
                             )
 
-                        # RAWファイルの存在確認 (エビデンス)
-                        raw_repo_path = f"raw/{sample_doc}/{sample_doc}.zip"
-                        try:
-                            # 存在確認のみなのでメタデータ取得を試みる
-                            catalog.api.get_paths_info(
+                        if raw_repo_path:
+                            # RAWファイルの存在確認 (エビデンス)
+                            # get_paths_info が空リストを返す場合は例外を投げるようにガードを強化
+                            info = catalog.api.get_paths_info(
                                 repo_id=catalog.hf_repo,
                                 paths=[raw_repo_path],
                                 repo_type="dataset",
                                 token=catalog.hf_token,
                             )
+                            if not info:
+                                # 固有のzip名でない可能性も考慮し、フォルダ存在を確認
+                                files = catalog.api.list_repo_files(repo_id=catalog.hf_repo, repo_type="dataset")
+                                if not any(
+                                    f.startswith("raw/edinet/year=") and f.endswith(f"{sample_doc}.zip") for f in files
+                                ):
+                                    raise ValueError(f"RAWファイル未検出: {raw_repo_path} がリモートで見つかりません。")
+
                             logger.info(f"✅ RAWファイル検証成功 (代表サンプリング): {raw_repo_path}")
-                        except Exception:
-                            # 固有のzip名でない可能性も考慮し、フォルダ存在を確認
-                            files = catalog.api.list_repo_files(repo_id=catalog.hf_repo, repo_type="dataset")
-                            if not any(f.startswith(f"raw/{sample_doc}/") for f in files):
-                                raise ValueError(
-                                    f"RAW検証失敗: 書類 {sample_doc} のRAWデータがリモートに存在しません。"
-                                ) from None
 
                     logger.success("✅ RaW-V 成功: 全データの書き込みと整合性がリモート上で確認されました。")
                     catalog.cleanup_deltas(run_id, cleanup_old=False)
