@@ -13,6 +13,7 @@ from catalog_manager import CatalogManager
 from edinet_xbrl_prep.edinet_api import request_term
 from huggingface_hub import HfApi
 from loguru import logger
+from metadata_transformer import MetadataTransformer
 
 
 class ExtremeIntegrityAuditor:
@@ -89,44 +90,64 @@ class ExtremeIntegrityAuditor:
                 mismatches = []
                 target = cat_row.iloc[0]
 
-                # 同期チェックすべき重要項目 (main.py の record 生成ロジックと100%一致させる)
-                # Derived Fields (main.py と同じロジックで算出)
-                period_end = (truth.periodEnd or "").strip() or None
-                fiscal_year = int(period_end[:4]) if period_end else None
+                # 同期チェックすべき重要項目 (MetadataTransformer経由で完全一致検証)
+                # 監査ロジック:
+                # 1. APIの生データ (truth) を MetadataTransformer に通して "あるべきレコード (expected)" を生成
+                # 2. カタログの実際のレコード (target) と比較
+                # ※ zip_ok, pdf_ok は監査では不明な場合があるが、メタデータ比較においては影響が少ない項目は除外または実ファイル確認結果を使用可能
+                # ここでは純粋なメタデータフィールドを比較する
 
-                dtc = truth.docTypeCode
-                parent_id = truth.parentDocID
-                is_amendment = parent_id is not None or str(dtc).endswith("1") or "訂正" in (truth.docDescription or "")
+                expected = MetadataTransformer.transform(
+                    row=truth.model_dump(),  # Pydantic model to dict
+                    docid=doc_id,
+                    title=truth.docDescription,
+                    zip_ok=False,  # メタデータ比較用ダミー (パス比較で除外)
+                    pdf_ok=False,  # メタデータ比較用ダミー
+                    raw_base_dir=None,
+                )
 
-                check_map = {
-                    "company_name": (truth.filerName or "").strip() or "Unknown",
-                    "submit_at": (truth.submitDateTime or "").strip() or "None",
-                    "edinet_code": (truth.edinetCode or "").strip() or "None",
-                    "jcn": (truth.JCN or "").strip() or "None",
-                    "form_code": (truth.formCode or "").strip() or "None",
-                    "doc_type": dtc or "",
-                    "issuer_edinet_code": (truth.issuerEdinetCode or "").strip() or "None",
-                    "fund_code": (truth.fundCode or "").strip() or "None",
-                    "ordinance_code": (truth.ordinanceCode or "").strip() or "None",
-                    "period_start": (truth.periodStart or "").strip() or "None",
-                    "period_end": period_end or "None",
-                    "title": (truth.docDescription or "").strip() or "None",
-                    "parent_doc_id": (truth.parentDocID or "").strip() or "None",
-                    "withdrawal_status": (truth.withdrawalStatus or "").strip() or "None",
-                    "disclosure_status": (truth.disclosureStatus or "").strip() or "None",
-                    "current_report_reason": (truth.currentReportReason or "").strip() or "None",
-                    "fiscal_year": str(fiscal_year) if fiscal_year else "None",
-                    "is_amendment": str(is_amendment),
-                }
+                # 比較対象カラム (パスやステータス以外)
+                compare_cols = [
+                    "company_name",
+                    "submit_at",
+                    "edinet_code",
+                    "jcn",
+                    "form_code",
+                    "doc_type",
+                    "issuer_edinet_code",
+                    "fund_code",
+                    "ordinance_code",
+                    "period_start",
+                    "period_end",
+                    "title",
+                    "parent_doc_id",
+                    "withdrawal_status",
+                    "disclosure_status",
+                    "current_report_reason",
+                    "fiscal_year",
+                    "num_months",
+                    "is_amendment",
+                    "code",
+                ]
+
+                check_map = {k: expected[k] for k in compare_cols}
 
                 for col, truth_val in check_map.items():
-                    cat_val = (str(target.get(col)) or "").strip() or "None"
-                    # normalize boolean str
-                    if col == "is_amendment":
-                        cat_val = str(bool(target.get(col)))
+                    cat_val = target.get(col)
 
-                    if str(cat_val) != str(truth_val):
-                        mismatches.append(f"{col}: {cat_val} != {truth_val}")
+                    # None と "None" 文字列のゆらぎ吸収 (CatalogはParquet経由でNoneがNaNやNoneになる)
+                    # 文字列化して比較
+                    tv_str = str(truth_val) if truth_val is not None else "None"
+                    cv_str = str(cat_val) if cat_val is not None and str(cat_val) != "nan" else "None"
+
+                    # 空文字とNoneの等価性
+                    if tv_str == "" and cv_str == "None":
+                        continue
+                    if tv_str == "None" and cv_str == "":
+                        continue
+
+                    if tv_str != cv_str:
+                        mismatches.append(f"{col}: {cv_str} != {tv_str}")
 
                 if mismatches:
                     logger.error(f"❌ [METADATA-MISMATCH] {doc_id}: {', '.join(mismatches)}")
