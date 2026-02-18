@@ -118,15 +118,12 @@ class AccountLabel(pa.DataFrameModel):
     role: Series[str]
     lang: Series[str]
 
-#def format_taxonomi(taxonomi_str:str)->str:
-#    """
-#    Convert
-#        From:
-#        jpcrp030000-asr_E37207-000_IncreaseDecreaseInIncomeTaxesPayableOpeCF
-#        To:
-#        jpcrp030000-asr_E37207-000:IncreaseDecreaseInIncomeTaxesPayableOpeCF
-#    """
-#    return "_".join(taxonomi_str.split('_')[:-1])+":"+taxonomi_str.split('_')[-1]
+# ... (既存のコード)
+
+def safe_attr_get(attr_sr, pattern, default=None):
+    """Pandas Series (attrib) からパターンにマッチする属性値を安全に取得する"""
+    matches = attr_sr[attr_sr.index.str.contains(pattern)]
+    return matches.values[0] if len(matches) > 0 else default
 
 
 
@@ -550,16 +547,20 @@ class get_label():
                 resource={'label_lab':None,'lang':None,'role':None,'text':None}
                 arc={'label_pre':None,'label_lab':None}
                 attr_sr=pd.Series(child_of_child.attrib)
-                attr_type=attr_sr[attr_sr.index.str.contains('type')].values[0] 
+                attr_type = safe_attr_get(attr_sr, 'type')
+                if not attr_type:
+                    continue
                 if attr_type=='resource':
-                    resource['label_lab']=attr_sr[attr_sr.index.str.contains('label')].values[0]
-                    resource['lang']=attr_sr[attr_sr.index.str.contains('lang')].values[0]
-                    resource['role']=attr_sr[attr_sr.index.str.contains('role')].values[0].split('/')[-1]
+                    resource['label_lab'] = safe_attr_get(attr_sr, 'label')
+                    resource['lang'] = safe_attr_get(attr_sr, 'lang')
+                    resource['role'] = safe_attr_get(attr_sr, 'role')
+                    if resource['role']:
+                        resource['role'] = resource['role'].split('/')[-1]
                     resource['text']=child_of_child.text
                     resources.append(Resource(**resource))
                 elif attr_type=='arc':
-                    arc['label_pre']=attr_sr[attr_sr.index.str.contains('from')].values[0]
-                    arc['label_lab']=attr_sr[attr_sr.index.str.contains('to')].values[0]
+                    arc['label_pre'] = safe_attr_get(attr_sr, 'from')
+                    arc['label_lab'] = safe_attr_get(attr_sr, 'to')
                     arcs.append(LabArc(**arc))
                 
         self.resources=resources
@@ -570,7 +571,14 @@ class get_label():
         
     def export_label_tbl(self,label_to_taxonomi_dict:dict)->pd.DataFrame:
         self._make_label_to_taxonomi_dict()
-        label_tbl = pd.DataFrame([resource.model_dump() for resource in self.resources]).dropna(subset='label_lab')
+        if not self.resources:
+            return pd.DataFrame(columns=get_columns_df(AccountLabel))
+        
+        label_df = pd.DataFrame([resource.model_dump() for resource in self.resources])
+        if 'label_lab' not in label_df.columns:
+            return pd.DataFrame(columns=get_columns_df(AccountLabel))
+
+        label_tbl = label_df.dropna(subset='label_lab')
         label_tbl = AccountLabel(
             label_tbl.assign(
                 label=label_tbl.label_lab.str.replace('label_',''),
@@ -628,24 +636,45 @@ class get_label_common():
                 resource={'label_lab':None,'lang':None,'role':None,'text':None}
                 arc={'label_pre':None,'label_lab':None}
                 attr_sr=pd.Series(child_of_child.attrib)
-                attr_type=attr_sr[attr_sr.index.str.contains('type')].values[0] 
+                attr_type = safe_attr_get(attr_sr, 'type')
+                if not attr_type:
+                    continue
                 if attr_type=='resource':
-                    resource['label_lab']=attr_sr[attr_sr.index.str.contains('label')].values[0]
-                    resource['lang']=attr_sr[attr_sr.index.str.contains('lang')].values[0]
-                    resource['role']=attr_sr[attr_sr.index.str.contains('role')].values[0].split('/')[-1]
+                    resource['label_lab'] = safe_attr_get(attr_sr, 'label')
+                    resource['lang'] = safe_attr_get(attr_sr, 'lang')
+                    resource['role'] = safe_attr_get(attr_sr, 'role')
+                    if resource['role']:
+                        resource['role'] = resource['role'].split('/')[-1]
                     resource['text']=child_of_child.text
                     resources.append(Resource(**resource))
                 elif attr_type=='arc':
-                    arc['label_pre']=attr_sr[attr_sr.index.str.contains('from')].values[0]
-                    arc['label_lab']=attr_sr[attr_sr.index.str.contains('to')].values[0]
+                    arc['label_pre'] = safe_attr_get(attr_sr, 'from')
+                    arc['label_lab'] = safe_attr_get(attr_sr, 'to')
                     arcs.append(LabArc(**arc))
                 
         self.resources=resources
         self.arcs=arcs
 
     def _make_label_to_taxonomi_dict(self):
-        self.label_to_prelabel_dict = pd.DataFrame([arc.model_dump() for arc in self.arcs]).dropna(subset='label_lab').set_index('label_lab')['label_pre'].to_dict()
-        label_tbl = pd.DataFrame([resource.model_dump() for resource in self.resources]).dropna(subset='label_lab')
+        if not self.arcs:
+            self.label_to_prelabel_dict = {}
+        else:
+            arc_df = pd.DataFrame([arc.model_dump() for arc in self.arcs])
+            if 'label_lab' not in arc_df.columns:
+                self.label_to_prelabel_dict = {}
+            else:
+                self.label_to_prelabel_dict = arc_df.dropna(subset='label_lab').set_index('label_lab')['label_pre'].to_dict()
+        
+        if not self.resources:
+            self.label_tbl = pd.DataFrame()
+            return
+            
+        label_df = pd.DataFrame([resource.model_dump() for resource in self.resources])
+        if 'label_lab' not in label_df.columns:
+            self.label_tbl = pd.DataFrame()
+            return
+            
+        label_tbl = label_df.dropna(subset='label_lab')
         self.label_tbl = label_tbl.assign(
             key_all=label_tbl.label_lab.replace(self.label_to_prelabel_dict)#.replace(label_to_taxonomi_dict)
             )

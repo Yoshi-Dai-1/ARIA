@@ -1,10 +1,14 @@
 name: Hourly Historical Backfill (2016-Present)
 
+concurrency:
+  group: aria-hourly-backfill
+  cancel-in-progress: false
+
 on:
   schedule:
-    # JST 01:15 - 05:15, 07:15 - 23:15
-    # JST 06:15 (UTC 21:15) は Daily Indices (JST 06:30) と重なるリスクがあるためスキップ
-    - cron: '15 0-14,16-20,22-23 * * *'
+    # JST 01:45 - 05:45, 07:45 - 23:45 
+    # 他のワークフロー(00, 30開始)との衝突を避けるため45分開始にシフト
+    - cron: '45 0-14,16-20,22-23 * * *'
   workflow_dispatch:
     inputs:
       debug_mode:
@@ -208,7 +212,7 @@ jobs:
           HF_REPO: ${{ vars.HF_REPO }}
           PYTHONPATH: data_engine
         run: |
-          RUN_ID="backfill-${{ needs.discovery.outputs.start_date }}"
+          RUN_ID="backfill-${{ needs.discovery.outputs.start_date }}-${{ github.run_id }}"
           python data_engine/main.py --mode worker --run-id "$RUN_ID" --chunk-id "primary-${{ matrix.idx }}" --id_list "${{ matrix.ids }}"
 
   extract-retry:
@@ -246,7 +250,7 @@ jobs:
           HF_REPO: ${{ vars.HF_REPO }}
           PYTHONPATH: data_engine
         run: |
-          RUN_ID="backfill-${{ needs.discovery.outputs.start_date }}"
+          RUN_ID="backfill-${{ needs.discovery.outputs.start_date }}-${{ github.run_id }}"
           python data_engine/main.py --mode worker --run-id "$RUN_ID" --chunk-id "retry-${{ matrix.idx }}" --id_list "${{ matrix.ids }}"
 
   finalize:

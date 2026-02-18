@@ -1,5 +1,9 @@
 name: Daily Indices Update
 
+concurrency:
+  group: aria-daily-indices
+  cancel-in-progress: false
+
 on:
   schedule:
     - cron: '30 21 * * *'  # 毎日日本時間 06:30 (UTC 21:30) - Market Masterの30分後

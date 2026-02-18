@@ -124,6 +124,8 @@ def get_fs_tbl(account_list_common_obj,docid:str,zip_file_str:str,temp_path_str:
 
         data = data.query("(not (non_consolidated_flg==1 and role.str.contains('_Consolidated'))) and (not (non_consolidated_flg==0 and (not role.str.contains('_Consolidated') and not (role.str.contains('_CabinetOfficeOrdinanceOnDisclosure')))))")
         data_list.append(data)
+    if not data_list:
+        return pd.DataFrame() # 空のDFを返して後続で適切に処理
     return FsDataDf(pd.concat(data_list)[get_columns_df(FsDataDf)])
 
 
