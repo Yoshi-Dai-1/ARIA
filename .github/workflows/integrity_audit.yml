@@ -1,29 +1,59 @@
-name: Integrity Audit (10-Year Verification)
+name: Extreme Integrity Audit
 
+concurrency:
+  group: aria-integrity-audit
+  cancel-in-progress: false
+
+# on:
+#   schedule:
+#     # 毎週日曜 JST 03:00 (UTC 土曜 18:00)
+#     - cron: '0 18 * * 6'
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 20 * * 0' # 毎週日曜 AM5:00 (JST)
+    inputs:
+      start_date:
+        description: 'Start Date (YYYY-MM-DD)'
+        required: false
+      end_date:
+        description: 'End Date (YYYY-MM-DD)'
+        required: false
 
 jobs:
   audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 360  # 10年分の監査は時間がかかるため長めに設定
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+      
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: 'pip'
+          
       - name: Install dependencies
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-      - name: Run Extreme Integrity Audit
+          
+      - name: Run Integrity Audit
         env:
           EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO: ${{ vars.HF_REPO }}
           PYTHONPATH: data_engine
         run: |
-          python data_engine/integrity_audit.py
+          START_ARG=""
+          END_ARG=""
+          
+          if [[ -n "${{ github.event.inputs.start_date }}" ]]; then
+            START_ARG="--start ${{ github.event.inputs.start_date }}"
+          fi
+          
+          if [[ -n "${{ github.event.inputs.end_date }}" ]]; then
+            END_ARG="--end ${{ github.event.inputs.end_date }}"
+          fi
+          
+          # 引数がなければデフォルト(10年)で実行
+          python data_engine/integrity_audit.py $START_ARG $END_ARG

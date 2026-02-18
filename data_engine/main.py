@@ -22,7 +22,6 @@ from edinet_engine import EdinetEngine
 from edinet_xbrl_prep.edinet_xbrl_prep.fs_tbl import get_fs_tbl
 from loguru import logger
 from master_merger import MasterMerger
-from metadata_transformer import MetadataTransformer
 from network_utils import patch_all_networking
 from tqdm import tqdm
 
@@ -39,8 +38,12 @@ tqdm_mod.tqdm = no_op_tqdm
 patch_all_networking()
 
 
-# removed normalize_code function definition
-normalize_code = MetadataTransformer.normalize_code
+def normalize_code(code: str) -> str:
+    """証券コードを 5 桁に正規化する (4桁なら末尾0付与、5桁なら維持)"""
+    if not code:
+        return ""
+    c = str(code).strip()
+    return c + "0" if len(c) == 4 else c
 
 
 def parse_datetime(dt_str: str) -> datetime:
@@ -594,21 +597,85 @@ def main():
         status_str = " + ".join(file_status) if file_status else "ファイルなし"
 
         # 解析タスク判定用のコードを先に取得
-        # 共通ロジックを使用してレコード生成 (Auditと完全同期)
-        # force_status=None で呼び出し、戻り値からステータス判定を行う
-        record = MetadataTransformer.transform(
-            row=row, docid=docid, title=title, zip_ok=zip_ok, pdf_ok=pdf_ok, raw_base_dir=RAW_BASE_DIR
-        )
+        dtc = row.get("docTypeCode")
+        ord_c = row.get("ordinanceCode")
+        form_c = row.get("formCode")
 
-        # 変数の復元 (後続のロジックで使用するため)
-        dtc = record["doc_type"]
-        ord_c = record["ordinance_code"]
-        form_c = record["form_code"]
-        final_status = record["processed_status"]
+        # 期末日・決算年度・決算期間（月数）の抽出 (NULL正規化)
+        period_start = (row.get("periodStart") or "").strip() or None
+        period_end = (row.get("periodEnd") or "").strip() or None
 
-        if final_status == "retracted":
+        fiscal_year = int(period_end[:4]) if period_end else None
+
+        # 決算期の月数を算出 (変則決算対応)
+        num_months = None  # デフォルトは NULL（期間不明）
+        if period_start and period_end:
+            try:
+                d1 = datetime.strptime(period_start, "%Y-%m-%d")
+                d2 = datetime.strptime(period_end, "%Y-%m-%d")
+                # 通常は 12, 9, 6, 3 などに収束。
+                # 異常値（0以下 または 24ヶ月超）は NULL として扱い、嘘の情報を記録しない
+                diff_days = (d2 - d1).days + 1
+                calc_months = round(diff_days / 30.4375)  # 365.25 / 12 (平均月日数)
+
+                if 1 <= calc_months <= 24:
+                    num_months = calc_months
+                else:
+                    num_months = None
+            except Exception:
+                num_months = None  # 計算失敗時も NULL
+
+        sec_code = normalize_code(row.get("secCode", ""))
+        # 訂正フラグの厳密判定
+        # 1. parentDocID が存在するか
+        # 2. 書類種別コード(docTypeCode) の末尾が '1' (例: 有報 120 に対する訂正 121)
+        # 3. タイトルに「訂正」が含まれる
+        parent_id = row.get("parentDocID")
+        is_amendment = parent_id is not None or str(dtc).endswith("1") or "訂正" in (title or "")
+
+        # 【重大】取下済（withdrawalStatus == '1'）の書類は解析しても無意味なため、
+        # ステータスを 'retracted' とし、正常系から除外する
+        w_status = row.get("withdrawalStatus")
+        final_status = "pending"
+        if w_status == "1":
+            final_status = "retracted"
             logger.warning(f"【取下済書類を検知】: {docid} は解析対象から除外します。")
 
+        # 【修正】インデックスに記録するパスを、実際の階層構造（year/month/day）に合わせる
+        # RAW_BASE_DIR からの相対パスとして記録
+        rel_zip_path = str(raw_zip.relative_to(RAW_BASE_DIR.parent)) if zip_ok else None
+        rel_pdf_path = str(raw_pdf.relative_to(RAW_BASE_DIR.parent)) if pdf_ok else None
+
+        # カタログ情報のベースを保持 (models.py の 26カラム構成に準拠)
+        # 全ての項目において (val or "").strip() or None を徹底し、空文字を NULL 正規化する
+        record = {
+            "doc_id": docid,
+            "jcn": (row.get("JCN") or "").strip() or None,
+            "code": sec_code,
+            "company_name": (row.get("filerName") or "").strip() or "Unknown",
+            "edinet_code": (row.get("edinetCode") or "").strip() or None,
+            "issuer_edinet_code": (row.get("issuerEdinetCode") or "").strip() or None,
+            "fund_code": (row.get("fundCode") or "").strip() or None,
+            "submit_at": (row.get("submitDateTime") or "").strip() or None,
+            "fiscal_year": fiscal_year,
+            "period_start": period_start,
+            "period_end": period_end,
+            "num_months": num_months,
+            "accounting_standard": None,  # 後ほど解析結果から注入
+            "doc_type": dtc or "",
+            "title": (title or "").strip() or None,
+            "form_code": (form_c or "").strip() or None,
+            "ordinance_code": (ord_c or "").strip() or None,
+            "is_amendment": is_amendment,
+            "parent_doc_id": (parent_id or "").strip() or None,
+            "withdrawal_status": (w_status or "").strip() or None,
+            "disclosure_status": (row.get("disclosureStatus") or "").strip() or None,
+            "current_report_reason": (row.get("currentReportReason") or "").strip() or None,
+            "raw_zip_path": rel_zip_path,
+            "pdf_path": rel_pdf_path,
+            "processed_status": final_status,
+            "source": "EDINET",
+        }
         potential_catalog_records[docid] = record
 
         # 解析対象の厳密判定: 有報(120) / 一般事業用(010) / 標準様式(030000)

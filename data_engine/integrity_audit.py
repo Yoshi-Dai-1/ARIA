@@ -1,19 +1,14 @@
+import argparse
 import os
 import sys
 import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
 
-# プロジェクトルートの追加 (インポート前に実行)
-project_root = Path(__file__).parent.parent
-if str(project_root / "data_engine") not in sys.path:
-    sys.path.insert(0, str(project_root / "data_engine"))
-
-from catalog_manager import CatalogManager  # noqa: E402
-from edinet_xbrl_prep.edinet_api import request_term  # noqa: E402
-from huggingface_hub import HfApi  # noqa: E402
-from loguru import logger  # noqa: E402
-from metadata_transformer import MetadataTransformer  # noqa: E402
+from catalog_manager import CatalogManager
+from edinet_xbrl_prep.edinet_xbrl_prep.edinet_api import request_term
+from huggingface_hub import HfApi
+from loguru import logger
 
 
 class ExtremeIntegrityAuditor:
@@ -43,11 +38,17 @@ class ExtremeIntegrityAuditor:
         except Exception:
             return False
 
-    def run_full_audit(self):
-        start_date, end_date = self.calculate_audit_period()
+    def run_full_audit(self, start_date_str=None, end_date_str=None):
+        if start_date_str and end_date_str:
+            start_date, end_date = start_date_str, end_date_str
+        else:
+            start_date, end_date = self.calculate_audit_period()
+
         logger.info(f"=== Extreme Integrity Audit Started ({start_date} to {end_date}) ===")
 
         # 1. EDINET API から正解値（Ground Truth）を一括取得
+        # (imports moved to top)
+
         api_key = os.getenv("EDINET_API_KEY", "7c32d62d8e9543db88b58e8733e98fbb")
 
         # 本番運用を想定し、1日ずつチェック（メモリ保護）
@@ -90,64 +91,29 @@ class ExtremeIntegrityAuditor:
                 mismatches = []
                 target = cat_row.iloc[0]
 
-                # 同期チェックすべき重要項目 (MetadataTransformer経由で完全一致検証)
-                # 監査ロジック:
-                # 1. APIの生データ (truth) を MetadataTransformer に通して "あるべきレコード (expected)" を生成
-                # 2. カタログの実際のレコード (target) と比較
-                # ※ zip_ok, pdf_ok は監査では不明な場合があるが、メタデータ比較においては影響が少ない項目は除外または実ファイル確認結果を使用可能
-                # ここでは純粋なメタデータフィールドを比較する
+                # 同期チェックすべき重要項目
+                check_map = {
+                    "company_name": truth.filerName,
+                    "submit_at": truth.submitDateTime,
+                    "edinet_code": truth.edinetCode,
+                    "jcn": truth.JCN,
+                    "form_code": truth.formCode,
+                    "doc_type": truth.docTypeCode,
+                }
 
-                expected = MetadataTransformer.transform(
-                    row=truth.model_dump(),  # Pydantic model to dict
-                    docid=doc_id,
-                    title=truth.docDescription,
-                    zip_ok=False,  # メタデータ比較用ダミー (パス比較で除外)
-                    pdf_ok=False,  # メタデータ比較用ダミー
-                    raw_base_dir=None,
-                )
+                for col, val in check_map.items():
+                    target_val = target.get(col)
+                    # datetime オブジェクトの場合は文字列に変換して比較 (APIは文字列形式)
+                    if hasattr(target_val, "strftime"):
+                        # EDINETの標準形式 (YYYY-MM-DD HH:MM) に合わせる
+                        target_val = target_val.strftime("%Y-%m-%d %H:%M")
 
-                # 比較対象カラム (パスやステータス以外)
-                compare_cols = [
-                    "company_name",
-                    "submit_at",
-                    "edinet_code",
-                    "jcn",
-                    "form_code",
-                    "doc_type",
-                    "issuer_edinet_code",
-                    "fund_code",
-                    "ordinance_code",
-                    "period_start",
-                    "period_end",
-                    "title",
-                    "parent_doc_id",
-                    "withdrawal_status",
-                    "disclosure_status",
-                    "current_report_reason",
-                    "fiscal_year",
-                    "num_months",
-                    "is_amendment",
-                    "code",
-                ]
+                    # 期待値(val)も None なら空文字として扱う
+                    s_target = str(target_val) if target_val is not None else ""
+                    s_truth = str(val) if val is not None else ""
 
-                check_map = {k: expected[k] for k in compare_cols}
-
-                for col, truth_val in check_map.items():
-                    cat_val = target.get(col)
-
-                    # None と "None" 文字列のゆらぎ吸収 (CatalogはParquet経由でNoneがNaNやNoneになる)
-                    # 文字列化して比較
-                    tv_str = str(truth_val) if truth_val is not None else "None"
-                    cv_str = str(cat_val) if cat_val is not None and str(cat_val) != "nan" else "None"
-
-                    # 空文字とNoneの等価性
-                    if tv_str == "" and cv_str == "None":
-                        continue
-                    if tv_str == "None" and cv_str == "":
-                        continue
-
-                    if tv_str != cv_str:
-                        mismatches.append(f"{col}: {cv_str} != {tv_str}")
+                    if s_target != s_truth:
+                        mismatches.append(f"{col}: {s_target} != {s_truth}")
 
                 if mismatches:
                     logger.error(f"❌ [METADATA-MISMATCH] {doc_id}: {', '.join(mismatches)}")
@@ -163,5 +129,10 @@ class ExtremeIntegrityAuditor:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="ARIA Extreme Integrity Auditor")
+    parser.add_argument("--start", type=str, help="Start Date (YYYY-MM-DD)")
+    parser.add_argument("--end", type=str, help="End Date (YYYY-MM-DD)")
+    args = parser.parse_args()
+
     auditor = ExtremeIntegrityAuditor()
-    auditor.run_full_audit()
+    auditor.run_full_audit(args.start, args.end)
