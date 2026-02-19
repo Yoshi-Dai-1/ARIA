@@ -16,7 +16,7 @@ def package_skill(skill_path, output_dir):
     output_path = Path(output_dir) / f"{skill_name}.skill"
 
     with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-        for root, dirs, files in os.walk(path):
+        for root, _, files in os.walk(path):
             for file in files:
                 file_path = Path(root) / file
                 arcname = file_path.relative_to(path.parent)
