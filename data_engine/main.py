@@ -927,7 +927,7 @@ def main():
             logger.info(f"Duplicate IDs removed: {initial_len} -> {final_len} (Reduced: {initial_len - final_len})")
 
         logger.info(f"全書類の Catalog Delta を保存します ({final_len} 件)")
-        catalog.save_delta("catalog", df_cat, run_id, chunk_id, defer=True)
+        catalog.save_delta("catalog", df_cat, run_id, chunk_id, defer=True, local_only=True)
 
     # 【修正】all_success が False の場合の処理を追加
     if not all_success:
@@ -946,19 +946,12 @@ def main():
 
     try:
         if all_success:
-            # RAWフォルダの一括アップロード (ここで 1 コミット)
-            logger.info("ファイルを一括アップロードしています...")
-            catalog.upload_raw_folder(RAW_BASE_DIR, path_in_repo="raw", defer=True)
-
-            # デルタと成功フラグを一括コミット (ここで 1 コミット)
-            catalog.mark_chunk_success(run_id, chunk_id, defer=True)
-            if catalog.push_commit(f"Worker Success: {run_id}/{chunk_id}"):
-                logger.info(f"=== Worker完了: 全データをアップロードしました ({run_id}/{chunk_id}) ===")
-            else:
-                logger.error("最終コミットに失敗しました")
-                sys.exit(1)
+            # 【ゼロ・コンフリクト】Worker は直接コミットせず、成果をローカルに残すのみ。
+            # 書き込みは GitHub Artifacts 経由で収集された後に Merger が一括実行する。
+            catalog.mark_chunk_success(run_id, chunk_id, defer=True, local_only=True)
+            logger.success(f"=== Worker完了: 成果をローカルに保存しました ({run_id}/{chunk_id}) ===")
         else:
-            logger.error("=== パイプライン停止 (Master保存エラー等) ===")
+            logger.error("=== パイプライン停止 (解析エラーが発生したため中断) ===")
             sys.exit(1)
     finally:
         # Cleanup Temporary Directories

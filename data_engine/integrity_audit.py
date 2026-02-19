@@ -9,11 +9,15 @@ from catalog_manager import CatalogManager
 from edinet_xbrl_prep.edinet_xbrl_prep.edinet_api import request_term
 from huggingface_hub import HfApi
 from loguru import logger
+from network_utils import patch_all_networking
 from utils import get_edinet_repo_path
 
 
 class ExtremeIntegrityAuditor:
     def __init__(self):
+        # 全体的な通信の堅牢化を適用
+        patch_all_networking()
+
         self.hf_token = os.getenv("HF_TOKEN")
         self.hf_repo = os.getenv("HF_REPO")
         self.data_path = Path("data").resolve()

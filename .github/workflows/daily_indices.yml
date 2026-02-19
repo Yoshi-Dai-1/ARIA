@@ -1,8 +1,8 @@
 name: Daily Indices Update
 
 concurrency:
-  group: aria-daily-indices
-  cancel-in-progress: false
+  group: aria-global-lock
+  cancel-in-progress: true
 
 on:
   schedule:

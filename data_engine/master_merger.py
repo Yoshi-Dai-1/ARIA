@@ -38,7 +38,13 @@ class MasterMerger:
             filename = f"{master_type}_bin{bin_val}.parquet"
 
             return catalog_manager.save_delta(
-                key="master", df=new_data, run_id=run_id, chunk_id=chunk_id, custom_filename=filename, defer=defer
+                key="master",
+                df=new_data,
+                run_id=run_id,
+                chunk_id=chunk_id,
+                custom_filename=filename,
+                defer=defer,
+                local_only=True,
             )
 
         # 物理パスの構成を bin=XX に変更

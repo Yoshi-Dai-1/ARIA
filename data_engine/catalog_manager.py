@@ -725,9 +725,19 @@ class CatalogManager:
         return None
 
     def save_delta(
-        self, key: str, df: pd.DataFrame, run_id: str, chunk_id: str, custom_filename: str = None, defer: bool = False
+        self,
+        key: str,
+        df: pd.DataFrame,
+        run_id: str,
+        chunk_id: str,
+        custom_filename: str = None,
+        defer: bool = False,
+        local_only: bool = False,
     ) -> bool:
-        """デルタファイルを保存してアップロード (Worker用)"""
+        """
+        デルタファイルを保存してアップロード。
+        local_only=True の場合、HFにはアップロードせずローカルディレクトリに保存のみ行う (GHA Artifact用)。
+        """
         if df.empty:
             return True
 
@@ -736,132 +746,168 @@ class CatalogManager:
         else:
             filename = f"{Path(self.paths[key]).stem}.parquet"
 
-        delta_path = f"temp/deltas/{run_id}/{chunk_id}/{filename}"
-        local_file = self.data_path / f"delta_{run_id}_{chunk_id}_{filename}"
+        # リポジトリ内パス
+        delta_repo_path = f"temp/deltas/{run_id}/{chunk_id}/{filename}"
+
+        # ローカル保存先 (Mergerが収集しやすいように構造化)
+        local_delta_dir = self.data_path / "deltas" / str(run_id) / str(chunk_id)
+        local_delta_dir.mkdir(parents=True, exist_ok=True)
+        local_file = local_delta_dir / filename
 
         # 【絶対ガード】保存直前に最終クレンジング
         df = self._clean_dataframe(key, df)
 
         df.to_parquet(local_file, index=False, compression="zstd")
 
-        return self.upload_raw(local_file, delta_path, defer=defer)
+        if local_only:
+            logger.debug(f"Delta saved locally (local_only): {local_file}")
+            return True
 
-    def mark_chunk_success(self, run_id: str, chunk_id: str, defer: bool = False) -> bool:
-        """チャンク処理成功フラグ (_SUCCESS) を作成 (Worker用)"""
-        success_path = f"temp/deltas/{run_id}/{chunk_id}/_SUCCESS"
-        local_file = self.data_path / f"SUCCESS_{run_id}_{chunk_id}"
+        return self.upload_raw(local_file, delta_repo_path, defer=defer)
+
+    def mark_chunk_success(self, run_id: str, chunk_id: str, defer: bool = False, local_only: bool = False) -> bool:
+        """チャンク処理成功フラグ (_SUCCESS) を作成"""
+        success_repo_path = f"temp/deltas/{run_id}/{chunk_id}/_SUCCESS"
+
+        local_delta_dir = self.data_path / "deltas" / str(run_id) / str(chunk_id)
+        local_delta_dir.mkdir(parents=True, exist_ok=True)
+        local_file = local_delta_dir / "_SUCCESS"
         local_file.touch()
 
-        return self.upload_raw(local_file, success_path, defer=defer)
+        if local_only:
+            logger.debug(f"Chunk success marked locally: {local_file}")
+            return True
+
+        return self.upload_raw(local_file, success_repo_path, defer=defer)
 
     def load_deltas(self, run_id: str) -> Dict[str, pd.DataFrame]:
-        """全デルタを収集してマージ (Merger用)"""
-        if not self.api:
-            logger.warning("API初期化されていないためデルタ収集不可")
-            return {}
-
+        """
+        全デルタを収集してマージ (Merger用)
+        ローカル (data/deltas/{run_id}) とリモート (HF) の両方をスキャンする。
+        """
         deltas = {}
+        processed_chunks = set()
 
-        try:
-            # 【整合性強化】HF Hub のリスト取得自体をリトライし、反映遅延に対処
-            folder = f"temp/deltas/{run_id}"
-            files = []
-            for attempt in range(3):
-                files = self.api.list_repo_files(repo_id=self.hf_repo, repo_type="dataset")
-                target_files = [f for f in files if f.startswith(folder)]
-                if target_files:
-                    break
-                logger.warning(f"デルタフォルダが見つかりません。再試行中... ({attempt + 1}/3)")
-                time.sleep(10)
-
-            # チャンクごとにグループ化
-            chunks = {}
-            for f in target_files:
-                parts = f.split("/")
-                if len(parts) < 4:
-                    continue
-                chunk_id = parts[3]
-                if chunk_id not in chunks:
-                    chunks[chunk_id] = []
-                chunks[chunk_id].append(f)
-
-            # _SUCCESS があるチャンクのみ処理
-            valid_chunks = 0
-            for chunk_id, file_list in chunks.items():
-                if not any(f.endswith("_SUCCESS") for f in file_list):
-                    # 【整合性強化】HF Hubの結果整合性を考慮し、1回見つからなくても
-                    # 別のファイルリスト取得を試みることが望ましいが、ここでは一旦警告に留める
-                    logger.warning(f"⚠️ 未完了のチャンクをスキップ: {chunk_id}")
+        # --- A. ローカルスキャン (GHA Artifacts 等でダウンロード済みの場合) ---
+        local_run_dir = self.data_path / "deltas" / str(run_id)
+        if local_run_dir.exists():
+            logger.info(f"Checking local deltas in {local_run_dir}")
+            for chunk_dir in local_run_dir.iterdir():
+                if not chunk_dir.is_dir():
                     continue
 
-                valid_chunks += 1
-                for remote_path in file_list:
-                    if remote_path.endswith("_SUCCESS"):
+                chunk_id = chunk_dir.name
+                if not (chunk_dir / "_SUCCESS").exists():
+                    logger.warning(f"⚠️ 未完了のローカルチャンクをスキップ: {chunk_id}")
+                    continue
+
+                processed_chunks.add(chunk_id)
+                for p_file in chunk_dir.glob("*.parquet"):
+                    key = self._get_key_from_filename(p_file.name)
+                    if key:
+                        try:
+                            df = pd.read_parquet(p_file)
+                            deltas.setdefault(key, []).append(df)
+                        except Exception as e:
+                            logger.error(f"❌ ローカルデルタ読み込み失敗 ({p_file.name}): {e}")
+
+        # --- B. リモートスキャン (Hugging Face Repository) ---
+        if self.api:
+            try:
+                folder = f"temp/deltas/{run_id}"
+                files = []
+                # 反映遅延に対処
+                for attempt in range(3):
+                    files = self.api.list_repo_files(repo_id=self.hf_repo, repo_type="dataset")
+                    target_files = [f for f in files if f.startswith(folder)]
+                    if target_files:
+                        break
+                    if attempt < 2:
+                        logger.warning(f"リモートデルタフォルダが見つかりません。再試行中... ({attempt + 1}/3)")
+                        time.sleep(10)
+
+                # チャンクごとにグループ化
+                remote_chunks = {}
+                for f in target_files:
+                    parts = f.split("/")
+                    if len(parts) < 4:
+                        continue
+                    chunk_id = parts[3]
+                    # すでにローカルで処理済みのチャンクはスキップ (重複防止)
+                    if chunk_id in processed_chunks:
+                        continue
+                    remote_chunks.setdefault(chunk_id, []).append(f)
+
+                valid_remote_count = 0
+                for chunk_id, file_list in remote_chunks.items():
+                    if not any(f.endswith("_SUCCESS") for f in file_list):
+                        logger.warning(f"⚠️ 未完了のリモートチャンクをスキップ: {chunk_id}")
                         continue
 
-                    # キー判別
-                    fname = Path(remote_path).name
-                    key = None
-                    if fname == "documents_index.parquet":
-                        key = "catalog"
-                    elif fname == "stocks_master.parquet":
-                        key = "master"
-                    elif fname == "listing_history.parquet":
-                        key = "listing"
-                    elif fname == "index_history.parquet":
-                        key = "index"
-                    elif fname == "name_history.parquet":
-                        key = "name"
-                    elif fname.startswith("financial_values_bin"):
-                        bin_id = fname.replace("financial_values_bin", "").replace(".parquet", "")
-                        key = f"financial_bin{bin_id}"
-                    elif fname.startswith("qualitative_text_bin"):
-                        bin_id = fname.replace("qualitative_text_bin", "").replace(".parquet", "")
-                        key = f"text_bin{bin_id}"
-                    elif fname.startswith("financial_values_"):
-                        sector = fname.replace("financial_values_", "").replace(".parquet", "")
-                        key = f"financial_{sector}"
-                    elif fname.startswith("qualitative_text_"):
-                        sector = fname.replace("qualitative_text_", "").replace(".parquet", "")
-                        key = f"text_{sector}"
+                    valid_remote_count += 1
+                    for remote_path in file_list:
+                        if remote_path.endswith("_SUCCESS"):
+                            continue
 
-                    if key:
-                        attempts = 2
-                        for att in range(attempts):
-                            try:
-                                local_path = hf_hub_download(
-                                    repo_id=self.hf_repo, filename=remote_path, repo_type="dataset", token=self.hf_token
-                                )
-                                df = pd.read_parquet(local_path)
-                                if key not in deltas:
-                                    deltas[key] = []
-                                deltas[key].append(df)
-                                break
-                            except Exception as e:
-                                if att == attempts - 1:
-                                    # 【重大】破損ファイルをスキップして統合を継続する (全損を防ぐ)
-                                    msg = f"❌ デルタ読み込み失敗 ({remote_path}): {e} - スキップして続行します。"
-                                    logger.error(msg)
-                                    # ここで raise せず、次のファイルへ進む
-                                    continue
-                                logger.warning(f"デルタ読み込み再試行中... ({att + 1}) {remote_path}")
-                                time.sleep(5)
+                        key = self._get_key_from_filename(Path(remote_path).name)
+                        if key:
+                            attempts = 2
+                            for att in range(attempts):
+                                try:
+                                    local_path = hf_hub_download(
+                                        repo_id=self.hf_repo,
+                                        filename=remote_path,
+                                        repo_type="dataset",
+                                        token=self.hf_token,
+                                    )
+                                    df = pd.read_parquet(local_path)
+                                    deltas.setdefault(key, []).append(df)
+                                    break
+                                except Exception as e:
+                                    if att == attempts - 1:
+                                        logger.error(f"❌ リモートデルタ読み込み失敗 ({remote_path}): {e}")
+                                    else:
+                                        time.sleep(5)
 
-            logger.info(f"有効なチャンク数: {valid_chunks} / {len(chunks)}")
+                logger.info(f"収集結果: Local Chunks={len(processed_chunks)}, Remote Chunks={valid_remote_count}")
 
-            # マージ結果を返す
-            merged = {}
-            for key, df_list in deltas.items():
-                if df_list:
-                    # 全てのDFのカラムを共通化（型不整合対策）
-                    merged[key] = pd.concat(df_list, ignore_index=True)
-                else:
-                    merged[key] = pd.DataFrame()
-            return merged
+            except Exception as e:
+                logger.error(f"リモートデルタ収集失敗: {e}")
 
-        except Exception as e:
-            logger.error(f"デルタ収集失敗: {e}")
-            return {}
+        # --- C. 最終マージ ---
+        merged = {}
+        for key, df_list in deltas.items():
+            if df_list:
+                merged[key] = pd.concat(df_list, ignore_index=True)
+            else:
+                merged[key] = pd.DataFrame()
+        return merged
+
+    def _get_key_from_filename(self, fname: str) -> Optional[str]:
+        """ファイル名から内部キーを判定する"""
+        if fname == "documents_index.parquet":
+            return "catalog"
+        if fname == "stocks_master.parquet":
+            return "master"
+        if fname == "listing_history.parquet":
+            return "listing"
+        if fname == "index_history.parquet":
+            return "index"
+        if fname == "name_history.parquet":
+            return "name"
+        if fname.startswith("financial_values_bin"):
+            bin_id = fname.replace("financial_values_bin", "").replace(".parquet", "")
+            return f"financial_bin{bin_id}"
+        if fname.startswith("qualitative_text_bin"):
+            bin_id = fname.replace("qualitative_text_bin", "").replace(".parquet", "")
+            return f"text_bin{bin_id}"
+        if fname.startswith("financial_values_"):
+            sector = fname.replace("financial_values_", "").replace(".parquet", "")
+            return f"financial_{sector}"
+        if fname.startswith("qualitative_text_"):
+            sector = fname.replace("qualitative_text_", "").replace(".parquet", "")
+            return f"text_{sector}"
+        return None
 
     def push_commit(self, message: str = "Batch update from ARIA") -> bool:
         """

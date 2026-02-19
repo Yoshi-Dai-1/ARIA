@@ -46,7 +46,8 @@ def get_robust_session(
 
         if "timeout" not in kwargs:
             # (connect_timeout, read_timeout)
-            kwargs["timeout"] = (30, 180)
+            # 【究極強化】HF Hubの大規模コミット(300操作超)はサーバー側処理が重いため、Read Timeoutを300秒へ大幅延長
+            kwargs["timeout"] = (30, 300)
         return original_request(method, url, **kwargs)
 
     session.request = robust_request

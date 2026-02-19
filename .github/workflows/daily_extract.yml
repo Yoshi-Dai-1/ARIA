@@ -1,7 +1,7 @@
 name: Daily EDINET Extract
 
 concurrency:
-  group: aria-daily-extract
+  group: aria-global-lock
   cancel-in-progress: false
 
 on:
@@ -211,6 +211,14 @@ jobs:
             --run-id "${{ github.run_id }}" \
             --chunk-id "${{ matrix.chunk.idx }}"
 
+      - name: Upload Job Artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: job-output-${{ matrix.chunk.idx }}
+          path: data/
+          retention-days: 1
+
   finalize:
     needs: extract
     if: always() && !cancelled()
@@ -229,17 +237,19 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-      - name: Download Metadata Artifact
+      - name: Download All Job Artifacts
         uses: actions/download-artifact@v4
         with:
-          name: discovery-metadata
-          path: data/meta/
+          path: data/
+          pattern: job-output-*
+          merge-multiple: true
+
       - name: Run Finalize (Merger)
         env:
           EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO: ${{ vars.HF_REPO }}
         run: |
-          mkdir -p data
           # Merger Mode: 全デルタを集約・マージしてGlobal更新
+          # merge-multiple: true により、data/deltas や data/raw がマージ済み
           python data_engine/main.py --mode merger --run-id "${{ github.run_id }}"

@@ -1,7 +1,7 @@
 name: Hourly Historical Backfill (2016-Present)
 
 concurrency:
-  group: aria-hourly-backfill
+  group: aria-global-lock
   cancel-in-progress: false
 
 on:
@@ -215,6 +215,14 @@ jobs:
           RUN_ID="backfill-${{ needs.discovery.outputs.start_date }}-${{ github.run_id }}"
           python data_engine/main.py --mode worker --run-id "$RUN_ID" --chunk-id "primary-${{ matrix.idx }}" --id_list "${{ matrix.ids }}"
 
+      - name: Upload Primary Artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: job-primary-${{ matrix.idx }}
+          path: data/
+          retention-days: 1
+
   extract-retry:
     needs: discovery
     if: needs.discovery.outputs.matrix_retry != '[]' && needs.discovery.outputs.matrix_retry != ''
@@ -253,6 +261,14 @@ jobs:
           RUN_ID="backfill-${{ needs.discovery.outputs.start_date }}-${{ github.run_id }}"
           python data_engine/main.py --mode worker --run-id "$RUN_ID" --chunk-id "retry-${{ matrix.idx }}" --id_list "${{ matrix.ids }}"
 
+      - name: Upload Retry Artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: job-retry-${{ matrix.idx }}
+          path: data/
+          retention-days: 1
+
   finalize:
     needs: [discovery, extract-primary, extract-retry]
     if: always() && needs.discovery.outputs.finished == 'false' && !cancelled()
@@ -269,6 +285,13 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
+      - name: Download All Job Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: data/
+          pattern: job-*
+          merge-multiple: true
+
       - name: Run Merger
         if: needs.discovery.result == 'success'
         env:
@@ -277,7 +300,8 @@ jobs:
           HF_REPO: ${{ vars.HF_REPO }}
           PYTHONPATH: data_engine
         run: |
-          RUN_ID="backfill-${{ needs.discovery.outputs.start_date }}"
+          RUN_ID="backfill-${{ needs.discovery.outputs.start_date }}-${{ github.run_id }}"
+          # merge-multiple: true により、data/deltas や data/raw がマージ済み
           python data_engine/main.py --mode merger --run-id "$RUN_ID"
 
       - name: Update Cursor
