@@ -567,7 +567,15 @@ class get_label():
         self.arcs=arcs
 
     def _make_label_to_taxonomi_dict(self):
-        self.label_to_prelabel_dict = pd.DataFrame([arc.model_dump() for arc in self.arcs]).dropna(subset='label_lab').set_index('label_lab')['label_pre'].to_dict()
+        if not self.arcs:
+            self.label_to_prelabel_dict = {}
+            return
+            
+        arc_df = pd.DataFrame([arc.model_dump() for arc in self.arcs])
+        if 'label_lab' not in arc_df.columns:
+            self.label_to_prelabel_dict = {}
+        else:
+            self.label_to_prelabel_dict = arc_df.dropna(subset=['label_lab']).set_index('label_lab')['label_pre'].to_dict()
         
     def export_label_tbl(self,label_to_taxonomi_dict:dict)->pd.DataFrame:
         self._make_label_to_taxonomi_dict()
@@ -578,7 +586,7 @@ class get_label():
         if 'label_lab' not in label_df.columns:
             return pd.DataFrame(columns=get_columns_df(AccountLabel))
 
-        label_tbl = label_df.dropna(subset='label_lab')
+        label_tbl = label_df.dropna(subset=['label_lab'])
         label_tbl = AccountLabel(
             label_tbl.assign(
                 label=label_tbl.label_lab.str.replace('label_',''),

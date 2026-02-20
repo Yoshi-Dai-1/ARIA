@@ -254,11 +254,23 @@ class linkbasefile():
             "2016-02-29": "2016",
             "2015-03-31": "2015",
             "2013-08-31": "2014",
+            # --- IFRS Namespaces ---
+            "ifrs.org/taxonomy/2024-03-21": "2024",
+            "ifrs.org/taxonomy/2023-03-23": "2023",
+            "ifrs.org/taxonomy/2022-03-24": "2022",
+            "ifrs.org/taxonomy/2021-03-24": "2021",
+            "ifrs.org/taxonomy/2020-03-16": "2020",
+            "ifrs.org/taxonomy/2019-03-27": "2019",
+            "ifrs.org/taxonomy/2018-03-16": "2018",
+            "ifrs.org/taxonomy/2017-03-09": "2017",
+            "ifrs.org/taxonomy/2016-03-31": "2016",
+            "ifrs.org/taxonomy/2015-03-11": "2015",
+            "ifrs.org/taxonomy/2014-03-05": "2014",
         }
 
-        # 優先順位: 開示府令用(jpcrp) > 財務諸表本表用(jppfs) > DEI(jpdei)
+        # 優先順位: 開示府令用(jpcrp) > 財務諸表本表用(jppfs) > DEI(jpdei) > 特定目的会社用(jpsps) > IFRS
         # 毎年更新される可能性が高い順から探し、年代特定が可能な名前空間を採用する。
-        targets = ["/taxonomy/jpcrp", "/taxonomy/jppfs", "/taxonomy/jpdei"]
+        targets = ["/taxonomy/jpcrp", "/taxonomy/jppfs", "/taxonomy/jpdei", "/taxonomy/jpsps", "ifrs.org", "/ifrs/"]
         
         for t in targets:
             # 優先度順に名前空間を走査
