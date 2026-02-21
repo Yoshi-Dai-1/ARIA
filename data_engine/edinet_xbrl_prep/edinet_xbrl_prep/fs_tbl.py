@@ -153,14 +153,16 @@ class linkbasefile():
         self.get_label_obj_jp = get_label(
             lang="Japanese",
             zip_file_str=self.zip_file_str,
-            temp_path_str=self.temp_path_str
+            temp_path_str=self.temp_path_str,
+            doc_type='public'
             )
         self.label_tbl_jp = self.get_label_obj_jp.export_label_tbl(label_to_taxonomi_dict=self.get_presentation_account_list_obj.export_label_to_taxonomi_dict())
         #self.log_dict={**self.log_dict,**self.get_label_obj_jp.export_log().model_dump()}
         self.get_label_obj_eng = get_label(
             lang="English",
             zip_file_str=self.zip_file_str,
-            temp_path_str=self.temp_path_str
+            temp_path_str=self.temp_path_str,
+            doc_type='public'
             )
         self.label_tbl_eng = self.get_label_obj_eng.export_label_tbl(label_to_taxonomi_dict=self.get_presentation_account_list_obj.export_label_to_taxonomi_dict())
 

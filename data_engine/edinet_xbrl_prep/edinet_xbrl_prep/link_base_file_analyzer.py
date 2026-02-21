@@ -330,7 +330,7 @@ class get_presentation_account_list():
         """
         TODO: preferedLabelの取得を追加
         """
-        files = list(self.xml_def_path.glob("*pre.xml"))
+        files = list(self.xml_def_path.glob(f"*{self.doc_type_str}*pre.xml"))
         if not files:
             self.locators = []
             self.arcs = []
@@ -430,7 +430,7 @@ class get_calc_edge_list():
             self.log_dict['get_cal_error_message'] = str(e)
         
     def parse_cal_file(self):
-        files = list(self.xml_def_path.glob("*cal.xml"))
+        files = list(self.xml_def_path.glob(f"*{self.doc_type_str}*cal.xml"))
         if not files:
             self.locators = []
             self.arcs = []
@@ -499,7 +499,7 @@ class get_calc_edge_list():
 
 
 class get_label():
-    def __init__(self,zip_file_str:str,temp_path_str:str,lang:str='English')->pd.DataFrame:
+    def __init__(self,zip_file_str:str,temp_path_str:str,lang:str='English',doc_type:str='public')->pd.DataFrame:
         self.log_dict = {
             'is_lab_file_flg':1,
             'get_lab_status':'success',
@@ -507,6 +507,13 @@ class get_label():
             }
         self.temp_path=Path(temp_path_str)
         self.lang = lang
+        if doc_type == 'audit':
+            self.doc_type_str = 'aai'
+        elif doc_type == 'public':
+            self.doc_type_str = 'asr'
+        else:
+            self.doc_type_str = ''
+
         if lang == 'Japanese':
             self.f_keyword = 'lab.xml'
         else:
@@ -521,7 +528,7 @@ class get_label():
         try:
             
             with ZipFile(str(zip_file_str)) as zf:
-                    fn=[item for item in zf.namelist() if self.f_keyword in item]
+                    fn=[item for item in zf.namelist() if (self.f_keyword in item) and (self.doc_type_str in item)]
                     if len(fn)>0:
                         zf.extract(fn[0], self.temp_path)
         except Exception as e:
@@ -531,7 +538,7 @@ class get_label():
             self.log_dict['get_lab_error_message'] = str(e)
 
     def parse_lab_file(self):
-        files = list(self.xml_def_path.glob("*"+self.f_keyword))
+        files = list(self.xml_def_path.glob(f"*{self.doc_type_str}*{self.f_keyword}"))
         if not files:
             self.resources = []
             self.arcs = []
