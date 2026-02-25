@@ -1,0 +1,292 @@
+name: Unified EDINET Harvester (Now + History)
+
+concurrency:
+  group: aria-global-lock
+  cancel-in-progress: false
+
+on:
+  schedule:
+    # 2時間おき (JST 00, 02, 04, 08, 10, 12, 14, 16, 18, 20, 22)
+    # 06:00 JST (UTC 21:00) を避けて Indices Update (06:30) に道を譲る
+    - cron: '0 15,17,19,23,1,3,5,7,9,11,13 * * *'
+  workflow_dispatch:
+    inputs:
+      debug_mode:
+        description: 'Run valid check only'
+        type: boolean
+        default: false
+
+env:
+  ARIA_SCOPE: All
+
+jobs:
+  discovery:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix_primary: ${{ steps.set-matrix.outputs.matrix_primary }}
+      matrix_retry: ${{ steps.set-matrix.outputs.matrix_retry }}
+      start_date: ${{ steps.set-dates.outputs.start_date }}
+      end_date: ${{ steps.set-dates.outputs.end_date }}
+      retry_start: ${{ steps.set-dates.outputs.retry_start }}
+      retry_end: ${{ steps.set-dates.outputs.retry_end }}
+      finished: ${{ steps.set-dates.outputs.finished }}
+      today: ${{ steps.set-dates.outputs.today }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+      
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          
+      - name: Calculate Hybrid Period
+        id: set-dates
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_REPO: ${{ vars.HF_REPO }}
+          PYTHONPATH: data_engine
+        run: |
+          # 1. バックフィル期間の取得
+          OUTPUT=$(python data_engine/backfill_manager.py)
+          
+          # 2. 本日の日付の取得 (JST)
+          TODAY_JST=$(python -c 'from zoneinfo import ZoneInfo; from datetime import datetime; print(datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d"))')
+          echo "today=$TODAY_JST" >> $GITHUB_OUTPUT
+          
+          if [[ "$OUTPUT" == *"FINISHED"* ]]; then
+            echo "Backfill finished. Only TODAY will be processed."
+            echo "finished=true" >> $GITHUB_OUTPUT
+            # 歴史が終わっていても「今日」は常に走らせる
+            echo "start_date=$TODAY_JST" >> $GITHUB_OUTPUT
+            echo "end_date=$TODAY_JST" >> $GITHUB_OUTPUT
+          else
+            START=$(echo "$OUTPUT" | grep "^START=" | cut -d'=' -f2)
+            END=$(echo "$OUTPUT" | grep "^END=" | cut -d'=' -f2)
+            RETRY_START=$(echo "$OUTPUT" | grep "^RETRY_START=" | cut -d'=' -f2 || echo "")
+            RETRY_END=$(echo "$OUTPUT" | grep "^RETRY_END=" | cut -d'=' -f2 || echo "")
+            
+            echo "Historical Period: $START ~ $END"
+            echo "start_date=$START" >> $GITHUB_OUTPUT
+            echo "end_date=$END" >> $GITHUB_OUTPUT
+            echo "retry_start=$RETRY_START" >> $GITHUB_OUTPUT
+            echo "retry_end=$RETRY_END" >> $GITHUB_OUTPUT
+            echo "finished=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate Unified Matrix
+        id: set-matrix
+        env:
+          EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
+          HF_REPO: ${{ vars.HF_REPO }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          PYTHONPATH: data_engine
+        run: |
+          mkdir -p data/meta
+          # 3段階のリストアップ
+          python data_engine/main.py --list-only --start "${{ steps.set-dates.outputs.start_date }}" --end "${{ steps.set-dates.outputs.end_date }}" | grep "^JSON_MATRIX_DATA:" | cut -d':' -f2- > data/meta/list_primary.json
+          mv data/meta/discovery_metadata.json data/meta/disc_primary.json || echo "[]" > data/meta/disc_primary.json
+
+          python data_engine/main.py --list-only --start "${{ steps.set-dates.outputs.today }}" --end "${{ steps.set-dates.outputs.today }}" | grep "^JSON_MATRIX_DATA:" | cut -d':' -f2- > data/meta/list_today.json
+          mv data/meta/discovery_metadata.json data/meta/disc_today.json || echo "[]" > data/meta/disc_today.json
+
+          RETRY_START="${{ steps.set-dates.outputs.retry_start }}"
+          if [[ -n "$RETRY_START" ]]; then
+            python data_engine/main.py --list-only --start "$RETRY_START" --end "${{ steps.set-dates.outputs.retry_end }}" | grep "^JSON_MATRIX_DATA:" | cut -d':' -f2- > data/meta/list_retry.json
+            mv data/meta/discovery_metadata.json data/meta/disc_retry.json || echo "[]" > data/meta/disc_retry.json
+          else
+            echo "[]" > data/meta/list_retry.json
+            echo "[]" > data/meta/disc_retry.json
+          fi
+
+          python -c "
+          import json, sys, os
+          def load_j(p): 
+              try:
+                  with open(p, 'r') as f: return json.load(f)
+              except: return []
+          
+          history = load_j('data/meta/list_primary.json')
+          today = load_j('data/meta/list_today.json')
+          retry = load_j('data/meta/list_retry.json')
+
+          d_p = load_j('data/meta/disc_primary.json')
+          d_t = load_j('data/meta/disc_today.json')
+          d_r = load_j('data/meta/disc_retry.json')
+          with open('data/meta/discovery_metadata.json', 'w') as out:
+              json.dump(d_p + d_t + d_r, out, ensure_ascii=False, indent=2)
+
+          full_primary = history + today
+          seen_ids = set()
+          unique_primary = []
+          for x in full_primary:
+              if x['id'] not in seen_ids:
+                  unique_primary.append(x)
+                  seen_ids.add(x['id'])
+          
+          def build_matrix(data, n_jobs, idx_offset=0):
+              if not data or n_jobs == 0: return '[]'
+              company_map = {}
+              for item in data:
+                  code = item.get('code', '9999')
+                  company_map.setdefault(code, []).append(item)
+              tasks = []
+              for code, items in company_map.items():
+                  w = 10
+                  for x in items:
+                      is_yuho = x.get('type') == '120' and x.get('ord') == '010' and x.get('form') == '030000'
+                      w += 50 if is_yuho else 2
+                  tasks.append({'ids': [x['id'] for x in items], 'weight': w})
+              tasks.sort(key=lambda x: x['weight'], reverse=True)
+              actual_jobs = min(n_jobs, len(tasks))
+              if actual_jobs == 0: return '[]'
+              buckets = [[] for _ in range(actual_jobs)]
+              ws = [0] * actual_jobs
+              for t in tasks:
+                  i = ws.index(min(ws))
+                  buckets[i].extend(t['ids'])
+                  ws[i] += t['weight']
+              return json.dumps([{'ids': ','.join(b), 'idx': i + idx_offset, 'weight': ws[i]} for i, b in enumerate(buckets) if b])
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'matrix_primary={build_matrix(unique_primary, 18)}\n')
+              f.write(f'matrix_retry={build_matrix(retry, 2, 18)}\n')
+          "
+
+      - name: Upload Metadata Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: discovery-metadata
+          path: data/meta/discovery_metadata.json
+          retention-days: 1
+
+  extract-primary:
+    needs: discovery
+    if: needs.discovery.outputs.matrix_primary != '[]' && needs.discovery.outputs.matrix_primary != ''
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.discovery.outputs.matrix_primary) }}
+    timeout-minutes: 120
+    name: harvester-P (${{ matrix.idx }})
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Download Metadata Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: discovery-metadata
+          path: data/meta/
+      - name: Run Extraction Worker (Primary)
+        env:
+          EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_REPO: ${{ vars.HF_REPO }}
+          PYTHONPATH: data_engine
+          ARIA_SCOPE: All
+        run: |
+          RUN_ID="harvest-${{ needs.discovery.outputs.today }}-${{ github.run_id }}"
+          python data_engine/main.py --mode worker --run-id "$RUN_ID" --chunk-id "primary-${{ matrix.idx }}" --id_list "${{ matrix.ids }}"
+      - name: Upload Job Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: job-primary-${{ matrix.idx }}
+          path: data/
+          retention-days: 1
+
+  extract-retry:
+    needs: discovery
+    if: needs.discovery.outputs.matrix_retry != '[]' && needs.discovery.outputs.matrix_retry != ''
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.discovery.outputs.matrix_retry) }}
+    timeout-minutes: 60
+    name: harvester-R (${{ matrix.idx }})
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Download Metadata Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: discovery-metadata
+          path: data/meta/
+      - name: Run Extraction Worker (Retry)
+        env:
+          EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_REPO: ${{ vars.HF_REPO }}
+          PYTHONPATH: data_engine
+          ARIA_SCOPE: All
+        run: |
+          RUN_ID="harvest-${{ needs.discovery.outputs.today }}-${{ github.run_id }}"
+          python data_engine/main.py --mode worker --run-id "$RUN_ID" --chunk-id "retry-${{ matrix.idx }}" --id_list "${{ matrix.ids }}"
+      - name: Upload Job Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: job-retry-${{ matrix.idx }}
+          path: data/
+          retention-days: 1
+
+  finalize:
+    needs: [discovery, extract-primary, extract-retry]
+    if: always() && needs.discovery.outputs.finished == 'false' && !cancelled()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Download All Job Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: data/
+          pattern: job-*
+          merge-multiple: true
+      - name: Run Merger
+        if: needs.discovery.result == 'success'
+        env:
+          EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_REPO: ${{ vars.HF_REPO }}
+          PYTHONPATH: data_engine
+          ARIA_SCOPE: All
+        run: |
+          RUN_ID="harvest-${{ needs.discovery.outputs.today }}-${{ github.run_id }}"
+          python data_engine/main.py --mode merger --run-id "$RUN_ID"
+      - name: Update History Cursor
+        if: |
+          needs.discovery.result == 'success' && 
+          (needs.extract-primary.result == 'success' || needs.extract-primary.result == 'skipped')
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_REPO: ${{ vars.HF_REPO }}
+          PYTHONPATH: data_engine
+        run: python data_engine/backfill_manager.py --update-cursor "${{ needs.discovery.outputs.end_date }}"

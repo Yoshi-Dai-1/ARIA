@@ -55,6 +55,10 @@ def get_robust_session(
     return session
 
 
+# グローバルな堅牢セッションインスタンス (requests.Session がモンキーパッチされる前に作成)
+GLOBAL_ROBUST_SESSION = get_robust_session()
+
+
 def patch_all_networking():
     """
     プロジェクトで使用されているすべての主要な通信ライブラリに対し、
@@ -63,7 +67,7 @@ def patch_all_networking():
     """
     from loguru import logger
 
-    robust_session = get_robust_session()
+    robust_session = GLOBAL_ROBUST_SESSION
 
     # 1. HuggingFace Hub の通信を堅牢化
     try:

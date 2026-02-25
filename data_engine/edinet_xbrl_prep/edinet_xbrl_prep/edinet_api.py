@@ -23,9 +23,7 @@ from pydantic import validate_call
 from datetime import datetime, timedelta, date
 from pydantic import BaseModel, Field,SecretStr
 from time import sleep
-from typing import Literal
-import json
-from typing import Annotated
+from typing import Literal, Annotated, Optional, List, Dict, Union
 from pydantic.functional_validators import BeforeValidator
 
 
@@ -147,8 +145,13 @@ class EdinetMetadataInputV2(BaseModel):
     date_api_param: date = Field(..., title="date", description="date(YYYY-MM-DD)")
     type_api_param: int = Field(isin=[1,2], title="type", description="1: Retrieves metadata only. 2: Retrieve the list of submitted documents and metadata.",default=2)
     api_key: str = Field(..., title="Subscription-Key", description="API Key")
+    ope_date_time_api_param: Optional[str] = Field(None, title="opeDateTime", description="HH:MM:SS")
+
     def export(self):
-        return {"date": self.date_api_param, "type": self.type_api_param, "Subscription-Key": self.api_key}
+        params = {"date": self.date_api_param, "type": self.type_api_param, "Subscription-Key": self.api_key}
+        if self.ope_date_time_api_param:
+            params["opeDateTime"] = self.ope_date_time_api_param
+        return params
 
 class RequestResponse(BaseModel):
     date_res: date = Field(..., title="date", description="date(YYYY-MM-DD)")
@@ -344,11 +347,12 @@ class edinet_response_metadata():
     #    df = self.get_metadata_pandas_df()
     #    return df.query("docTypeCode=='130' and ordinanceCode == '010' and formCode == '030001' and docInfoEditStatus !='2'")
 
-def request_term(api_key:str, start_date_str:str,end_date_str:str)->EdinetResponseList:
+def request_term(api_key:str, start_date_str:str,end_date_str:str, ope_date_time_str:str=None)->EdinetResponseList:
     """
     書類一覧APIを利用して開始日と終了日を含む期間の書類一覧を取得します。
         start_date_str: 開始日(YYYY-MM-DD)
         end_date_str: 終了日(YYYY-MM-DD)
+        ope_date_time_str: 前回取得した最後の操作日時(HH:MM:SS) 指定すると、それ以降に更新されたもののみ取得
     """
 
     start_date = DateNormalizer(date_norm=start_date_str).export_date()
@@ -361,7 +365,8 @@ def request_term(api_key:str, start_date_str:str,end_date_str:str)->EdinetRespon
         input_dict = {
             "date_api_param" : target_date.strftime("%Y-%m-%d"),
             "type_api_param" : 2,
-            "api_key":api_key
+            "api_key":api_key,
+            "ope_date_time_api_param": ope_date_time_str if itr == 0 else None
         }
         params = EdinetMetadataInputV2(**input_dict)
         res_results.append(get_edinet_metadata(params))

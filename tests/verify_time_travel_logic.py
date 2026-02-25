@@ -182,8 +182,10 @@ def test_scenario_no_change_clearing():
     print("\nResult History:")
     print(result)
 
-    assert result.empty, "Expected empty history (cleared bad record), but got rows."
-    print("✅ Logic Correct: Bad history cleared when no changes detected.")
+    assert len(result) == 1, "Expected history to be preserved and shifted, not deleted."
+    assert result.iloc[0]["old_name"] == "Company B"
+    assert str(result.iloc[0]["change_date"]).startswith("2022-01-01")
+    print("✅ Logic Correct: History seed injection successfully preserved past name and shifted change date.")
 
 
 if __name__ == "__main__":

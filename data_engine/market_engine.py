@@ -1,7 +1,6 @@
 import io
 import re
 from abc import ABC, abstractmethod
-from datetime import datetime
 from pathlib import Path
 from typing import Dict
 
@@ -186,45 +185,6 @@ class MarketDataEngine:
         )
         df["code"] = df["code"].apply(normalize_code)
         return df[["code", "company_name", "sector", "market"]]
-
-    def update_listing_history(
-        self, old_master: pd.DataFrame, new_master: pd.DataFrame, old_history: pd.DataFrame = None
-    ) -> pd.DataFrame:
-        """上場・廃止イベントの生成 (Listing History)"""
-        # ロジックは従来のHistoryEngineと同じだが、今回は分離実装
-        old_codes = set(old_master["code"]) if not old_master.empty else set()
-        new_codes = set(new_master["code"])
-        events = []
-        today = datetime.now().strftime("%Y-%m-%d")
-
-        # Historyが存在しない場合（初期化）
-        if old_history is None or old_history.empty:
-            logger.info("既存のListing Historyが存在しません。現在の全銘柄をLISTINGとして初期化します。")
-            for code in new_codes:
-                events.append({"code": code, "type": "LISTING", "event_date": today})
-            return pd.DataFrame(events)
-
-        # 過去の廃止銘柄
-        delisted_codes = set()
-        if old_history is not None and not old_history.empty:
-            delisted = old_history[old_history["type"] == "DELISTING"]
-            delisted_codes = set(delisted["code"])
-
-        # 【重要】前回 Active だったもののみを廃止判定の母数とする (Unknown無視)
-        active_in_old = (
-            set(old_master[old_master["is_active"].fillna(False)]["code"]) if not old_master.empty else set()
-        )
-
-        # 新規・再上場
-        for code in new_codes - old_codes:
-            event_type = "RE_LISTING" if code in delisted_codes else "LISTING"
-            events.append({"code": code, "type": event_type, "event_date": today})
-
-        # 廃止: 前回上場していたが、今回いなくなったもの
-        for code in active_in_old - new_codes:
-            events.append({"code": code, "type": "DELISTING", "event_date": today})
-
-        return pd.DataFrame(events)
 
     def fetch_index_data(self, index_name: str) -> pd.DataFrame:
         """指数データの取得 (Retry付き)"""

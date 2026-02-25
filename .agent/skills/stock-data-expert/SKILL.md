@@ -25,3 +25,4 @@ ARIA における「証券データの真実」を管理するためのドメイ
 ## 詳細リファレンス
 - [正規化ロジック詳細](references/RECONCILIATION_LOGIC.md)
 - [ARIA データスキーマ定義](references/SCHEMA_DEFINITION.md): bin sharding 構造の定義
+- [EDINET API V2 物理検証済み事実集](references/EDINET_API_FACTS.md): エンコーディング、レスポンスフィールド、opeDateTime等の実測値

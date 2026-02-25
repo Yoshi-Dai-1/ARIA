@@ -53,52 +53,18 @@ def run_market_pipeline(target_date: str, mode: str = "all"):
     import shutil
 
     try:
-        # 1. Stock Master Update (Active/Inactive Logic)
+        # 1. Stock Master Update (Attributes only, NO Active/Inactive Logic)
         if mode in ["all", "master"]:
             try:
                 new_master = engine.fetch_jpx_master()
-                current_master = catalog.master_df.copy()
-
-                # 三値論理（Active/Inactive/Unknown）の適用判定
-                active_codes = set(new_master["code"])
-                # 過去にJPXに存在した証拠（日付が NULL）があるコードを特定
-                jpx_history_codes = set(current_master[current_master["last_submitted_at"].isna()]["code"])
-
-                # 更新用データの構築
-                # A. 現役 (True)
-                active_updates = new_master.copy()
-                active_updates["is_active"] = True
-                active_updates["last_submitted_at"] = None
-
-                # B. 廃止 (False) : 過去にいたが今はいない
-                delisted_codes = jpx_history_codes - active_codes
-                delisted_updates = current_master[current_master["code"].isin(delisted_codes)].copy()
-                delisted_updates["is_active"] = False
-                delisted_updates["last_submitted_at"] = None
-
-                incoming_updates = pd.concat([active_updates, delisted_updates], ignore_index=True)
 
                 # 【究極の統合】カタログマネージャの属性承継ロジックに委ねる
-                # これにより、最新の社名(EDINET)に対し、JPXの属性が正しく引き継がれる。
-                if catalog.update_stocks_master(incoming_updates):
-                    logger.success("Market Master synchronized and attributes reconciled.")
+                # これにより、最新の社名(EDINET)に対し、JPXの業種(sector)・市場(market)属性が引き継がれる。
+                # 生殺与奪権(is_active)は完全にEDINET(catalog_manager側)に移譲済みのため、ここでは関与しない。
+                if catalog.update_stocks_master(new_master):
+                    logger.success("Market Master attributes (sector/market) reconciled successfully.")
                 else:
-                    raise ValueError("Failed to reconcile market master updates.")
-
-                # Listing Events生成
-                old_listing = catalog.get_listing_history()
-                listing_events = engine.update_listing_history(catalog.master_df, new_master, old_listing)
-
-                # Save History (Deferred)
-                if not listing_events.empty:
-                    merged_hist = pd.concat([old_listing, listing_events], ignore_index=True).drop_duplicates()
-                    catalog._save_and_upload("listing", merged_hist, defer=True)
-                    logger.info("Listing History updated in buffer.")
-                elif old_listing.empty:
-                    # 初回初期化: 空のDFをアップロード
-                    catalog._save_and_upload("listing", old_listing, defer=True)
-                    logger.info("Listing History initialized in buffer.")
-
+                    raise ValueError("Failed to reconcile market master attributes.")
             except Exception as e:
                 logger.critical(f"Stock Master更新失敗 (Fatal): {e}")
                 raise  # 即座に停止し、部分的なコミットを防止する

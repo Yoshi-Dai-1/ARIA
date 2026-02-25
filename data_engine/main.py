@@ -69,6 +69,10 @@ TEMP_DIR = DATA_PATH / "temp"
 PARALLEL_WORKERS = int(os.getenv("PARALLEL_WORKERS", os.cpu_count() or 4))
 BATCH_PARALLEL_SIZE = 8
 
+# 【極限刷新】環境変数による実行スコープの強制 (Listed or Unlisted)
+ARIA_SCOPE = os.getenv("ARIA_SCOPE", "Listed").capitalize()  # Default to Listed
+logger.info(f"ARIA Execution Scope: {ARIA_SCOPE}")
+
 is_shutting_down = False
 
 
@@ -428,38 +432,74 @@ def main():
 
     # Workerモード（以下、既存ロジックだがDelta保存に変更）
 
-    # 1. メタデータ取得
-    all_meta = edinet.fetch_metadata(args.start, args.end)
+    # 1. 増分同期のためのチェックポイント取得 (カタログから最新の ope_date_time を抽出)
+    last_ope_time = None
+    if not catalog.catalog_df.empty and "ope_date_time" in catalog.catalog_df.columns:
+        # 文字列として最大のものを取得 (ISO形式 HH:MM:SS なので比較可能)
+        last_ope_time = catalog.catalog_df["ope_date_time"].max()
+        if pd.isna(last_ope_time) or str(last_ope_time).strip() == "":
+            last_ope_time = None
+
+    # 1. メタデータ取得 (ope_date_time を渡して真の増分同期を実行)
+    all_meta = edinet.fetch_metadata(args.start, args.end, ope_date_time=last_ope_time)
     if not all_meta:
         if args.list_only:
             print("JSON_MATRIX_DATA: []")
         return
 
-    # 【投資特化】証券コードがない（非上場企業）を即座に除外
+    # 【修正】ARIA_SCOPE による完全排他的フィルタリング
+    # Listed の場合: 証券コードがあり（長さ4以上）の書類のみを処理対象とする
+    # Unlisted の場合: 証券コードがない、または長さ4未満の書類のみを処理対象とする
     initial_count = len(all_meta)
 
-    # フィルタリング理由の追跡ログ
     filtered_meta = []
-    skipped_reasons = {"no_sec_code": 0, "invalid_length": 0}
+    skipped_reasons = {"no_sec_code": 0, "invalid_length": 0, "has_sec_code": 0}
 
     for row in all_meta:
-        sec_code = str(row.get("secCode", "")).strip()
-        if not sec_code:
-            skipped_reasons["no_sec_code"] += 1
+        # 【修正】str(None)が"None"(長さ4)になってしまうバグを防ぐためのセキュアな文字列化
+        raw_code = row.get("secCode")
+        if raw_code is None:
+            sec_code = ""
+        else:
+            sec_code = str(raw_code).strip()
+            if sec_code.lower() in ["none", "nan", "null"]:
+                sec_code = ""
+
+        if ARIA_SCOPE == "Listed":
+            # 上場企業モード: 証券コードが無い/不正な書類を除外
+            if not sec_code:
+                skipped_reasons["no_sec_code"] += 1
+                continue
+            if len(sec_code) < 4:
+                skipped_reasons["invalid_length"] += 1
+                logger.debug(f"書類スキップ (コード短縮): {row.get('docID')} - {sec_code}")
+                continue
+            filtered_meta.append(row)
+
+        elif ARIA_SCOPE == "Unlisted":
+            # 非上場企業モード: 証券コードが適正（長さ4以上）な書類を除外（Listed側で処理するため）
+            if sec_code and len(sec_code) >= 4:
+                skipped_reasons["has_sec_code"] += 1
+                continue
+            filtered_meta.append(row)
+
+        elif ARIA_SCOPE == "All":
+            # 全量モード: フィルタリングせずすべて採用
+            filtered_meta.append(row)
+
+        else:
+            logger.warning(f"Unknown ARIA_SCOPE: {ARIA_SCOPE}. Falling back to skip.")
             continue
-        if len(sec_code) < 4:
-            skipped_reasons["invalid_length"] += 1
-            # 56件の書類漏れなどの追跡用
-            logger.debug(f"書類スキップ (コード短縮): {row.get('docID')} - {sec_code}")
-            continue
-        filtered_meta.append(row)
+
+    # ... (後続処理) ...
 
     all_meta = filtered_meta
     if not args.id_list:
         logger.info(
             f"最終処理対象書類数: {len(all_meta)} 件 "
-            f"(全 {initial_count} 件中 | 証券コードなし: {skipped_reasons['no_sec_code']} 件, "
-            f"コード不正: {skipped_reasons['invalid_length']} 件)"
+            f"(全 {initial_count} 件中 | 証券コードなし: {skipped_reasons.get('no_sec_code', 0)} 件, "
+            f"コード不正: {skipped_reasons.get('invalid_length', 0)} 件, "
+            f"上場企業コードあり: {skipped_reasons.get('has_sec_code', 0)} 件)"
         )
 
     # 【重要】不整合(Drift)対策：メタデータをファイルに保存/読み込み
@@ -513,7 +553,6 @@ def main():
 
     # 4. 処理対象の選定
     tasks = []
-    new_catalog_records = []  # バッチ保存用（解析対象外のみ）
     # 【カタログ整合性】ダウンロード直後ではなく、解析結果に基づき登録するよう設計変更
     potential_catalog_records = {}  # docid -> record_base (全レコード保持)
     parsing_target_ids = set()  # 解析対象のdocidセット
@@ -542,7 +581,22 @@ def main():
 
     for row in all_meta:
         docid = row["docID"]
+        edinet_code = row.get("edinetCode")
         title = row.get("docDescription", "名称不明")
+
+        # 【ルーティング】マスタの上場判定に基づくフィルタリング
+        # edinet_code が無い場合は非上場(Unlisted)とみなす
+        is_listed_meta = False
+        if edinet_code:
+            m_rec = catalog.master_df[catalog.master_df["edinet_code"] == edinet_code]
+            if not m_rec.empty:
+                is_listed_meta = bool(m_rec.iloc[0].get("is_listed_edinet", False))
+
+        # 現在のスコープと一致しない場合はスキップ
+        current_scope_is_listed = ARIA_SCOPE == "Listed"
+        if is_listed_meta != current_scope_is_listed:
+            # logger.debug(f"Scope Mismatch: Skipping {docid} ({'Listed' if is_listed_meta else 'Unlisted'})")
+            continue
 
         if target_ids and docid not in target_ids:
             continue
@@ -565,9 +619,12 @@ def main():
             / f"month={submit_date.month:02d}"
             / f"day={submit_date.day:02d}"
         )
-        save_dir.mkdir(parents=True, exist_ok=True)
-        raw_zip = save_dir / f"{docid}.zip"
-        raw_pdf = save_dir / f"{docid}.pdf"
+        zip_dir = save_dir / "zip"
+        pdf_dir = save_dir / "pdf"
+        zip_dir.mkdir(parents=True, exist_ok=True)
+        pdf_dir.mkdir(parents=True, exist_ok=True)
+        raw_zip = zip_dir / f"{docid}.zip"
+        raw_pdf = pdf_dir / f"{docid}.pdf"
 
         # ダウンロード実行 (フラグに基づき正確に試行)
         has_xbrl = row.get("xbrlFlag") == "1"
@@ -646,7 +703,7 @@ def main():
         rel_zip_path = str(raw_zip.relative_to(RAW_BASE_DIR.parent)) if zip_ok else None
         rel_pdf_path = str(raw_pdf.relative_to(RAW_BASE_DIR.parent)) if pdf_ok else None
 
-        # カタログ情報のベースを保持 (models.py の 26カラム構成に準拠)
+        # カタログ情報のベースを保持 (models.py の 29カラム構成に準拠)
         # 全ての項目において (val or "").strip() or None を徹底し、空文字を NULL 正規化する
         record = {
             "doc_id": docid,
@@ -655,6 +712,8 @@ def main():
             "company_name": (row.get("filerName") or "").strip() or "Unknown",
             "edinet_code": (row.get("edinetCode") or "").strip() or None,
             "issuer_edinet_code": (row.get("issuerEdinetCode") or "").strip() or None,
+            "subject_edinet_code": (row.get("subjectEdinetCode") or "").strip() or None,
+            "subsidiary_edinet_code": (row.get("subsidiaryEdinetCode") or "").strip() or None,
             "fund_code": (row.get("fundCode") or "").strip() or None,
             "submit_at": (row.get("submitDateTime") or "").strip() or None,
             "fiscal_year": fiscal_year,
@@ -669,12 +728,14 @@ def main():
             "is_amendment": is_amendment,
             "parent_doc_id": (parent_id or "").strip() or None,
             "withdrawal_status": (w_status or "").strip() or None,
+            "doc_info_edit_status": (row.get("docInfoEditStatus") or "").strip() or None,
             "disclosure_status": (row.get("disclosureStatus") or "").strip() or None,
             "current_report_reason": (row.get("currentReportReason") or "").strip() or None,
             "raw_zip_path": rel_zip_path,
             "pdf_path": rel_pdf_path,
             "processed_status": final_status,
             "source": "EDINET",
+            "ope_date_time": (row.get("opeDateTime") or "").strip() or None,
         }
         potential_catalog_records[docid] = record
 
@@ -715,7 +776,6 @@ def main():
             except Exception as e:
                 logger.error(f"【解析中止】タクソノミ判定失敗 ({docid}): {e}")
                 record["processed_status"] = "failure"  # 明示的に失敗を記録
-                new_catalog_records.append(record)
                 continue
             finally:
                 if detect_dir.exists():
@@ -737,7 +797,6 @@ def main():
 
             logger.info(f"【スキップ済として記録】: {docid} | {title} | {status_str} | 理由: {reason}")
             skipped_types[dtc] = skipped_types.get(dtc, 0) + 1
-            new_catalog_records.append(record)
 
         # バッチ管理用にIDを追加
         current_batch_docids.append(docid)
@@ -748,6 +807,32 @@ def main():
             logger.info(f"ダウンロード進捗: {processed_count} / {len(all_meta)} 件完了")
             pass
 
+    # 【追加】Hugging Face フォルダファイル数の安全マージン警告
+    # HF は1フォルダあたり10,000ファイルが上限。7,000超で早期警告を発出。
+    import json as _json
+
+    _config_path = Path(__file__).parent / "aria_config.json"
+    _hf_warn_threshold = 7000
+    try:
+        with open(_config_path, "r") as _cf:
+            _hf_warn_threshold = _json.load(_cf).get("hf_folder_file_warning_threshold", 7000)
+    except Exception:
+        pass
+
+    checked_dirs = set()
+    for row in all_meta:
+        sd = parse_datetime(row.get("submitDateTime", ""))
+        if sd:
+            day_dir = RAW_BASE_DIR / "edinet" / f"year={sd.year}" / f"month={sd.month:02d}" / f"day={sd.day:02d}"
+            if day_dir not in checked_dirs and day_dir.exists():
+                checked_dirs.add(day_dir)
+                file_count = sum(1 for _ in day_dir.iterdir())
+                if file_count > _hf_warn_threshold:
+                    logger.warning(
+                        f"⚠️ HFフォルダファイル数警告: {day_dir.name} に {file_count} ファイル "
+                        f"(閾値: {_hf_warn_threshold}, HF上限: 10,000)"
+                    )
+
     # 【重要】メタデータ不整合の検知 (Worker Mode 専用ガード)
     if target_ids:
         missing_ids = set(target_ids) - found_target_ids
@@ -757,10 +842,8 @@ def main():
                 f"Worker実行時のメタデータ取得では見つかりませんでした: {list(missing_ids)}"
             )
             logger.info("これは EDINET API の一時的な応答遅延、または不整合の可能性があります。")
-    # 【修正】カタログレコードの収集を一本化し、上書きロストを防止
-    # 以前は「解析対象外」と「解析対象」で別々に save_delta を呼んでおり、後者が前者を上書きしていた
-    final_catalog_records = []
-    final_catalog_records.extend(new_catalog_records)
+    # 【修正】カタログレコードの収集は L947 の potential_catalog_records.values() に一本化済み
+    # (旧: new_catalog_records を extend していたが、L947 で完全上書きされるため不要)
 
     # 5. 並列解析
     all_quant_dfs = []
@@ -848,7 +931,7 @@ def main():
                     f"解析進捗: {min(done_count, len(tasks))} / {len(tasks)} tasks 完了 "
                     f"(Quant: {len(all_quant_dfs)}, Text: {len(all_text_dfs)})"
                 )
-    new_catalog_records = []
+    # (new_catalog_records の再初期化は不要 — L947 で potential_catalog_records から一括構築される)
 
     # 6. マスターマージ & カタログ確定
     all_success = True

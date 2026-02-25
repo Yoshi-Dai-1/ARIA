@@ -14,8 +14,8 @@ META_DIR = DATA_PATH / "meta"
 CURSOR_FILE = "backfill_cursor.json"
 HF_REPO = os.getenv("HF_REPO")
 HF_TOKEN = os.getenv("HF_TOKEN")
-# 1回の遡り期間（14日＝2週間）
-BACKFILL_DAYS = 14
+# 1回の遡り期間（7日＝1週間）
+BACKFILL_DAYS = 7
 # 限界日（これより前はAPIリストからの取得が不可：2016-02-15が最古の取得可能日として検証済み）
 LIMIT_DATE = date(2016, 2, 15)
 

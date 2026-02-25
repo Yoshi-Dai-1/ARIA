@@ -90,20 +90,35 @@ class EdinetEngine:
 
         account_list_common._download_taxonomy = patched_download_taxonomy
 
-    def fetch_metadata(self, start_date: str, end_date: str) -> List[Dict]:
-        """指定期間の全書類メタデータを取得し、Pydanticでバリデーション"""
+    def fetch_metadata(self, start_date: str, end_date: str, ope_date_time: str = None) -> List[Dict]:
+        """
+        指定期間の全書類メタデータを取得し、Pydanticでバリデーション
+        ope_date_timeを指定すると、API V2 の増分同期機能を使用して差分のみを取得。
+        """
         # 入力値の前後空白を除去 (Pydanticバリデーションエラー対策)
         start_date = start_date.strip() if isinstance(start_date, str) else start_date
         end_date = end_date.strip() if isinstance(end_date, str) else end_date
 
-        logger.info(f"EDINETメタデータ取得開始: {start_date} ~ {end_date}")
-        res_results = request_term(api_key=self.api_key, start_date_str=start_date, end_date_str=end_date)
+        logger.info(f"EDINETメタデータ取得開始: {start_date} ~ {end_date} (増分基準: {ope_date_time or 'なし'})")
+        res_results = request_term(
+            api_key=self.api_key, start_date_str=start_date, end_date_str=end_date, ope_date_time_str=ope_date_time
+        )
 
-        tse_url = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
+        # 【修正】TSE URL を設定ファイルから読み込み (Issue-6: ハードコード排除)
+        import json
+
+        config_path = Path(__file__).parent / "aria_config.json"
+        try:
+            with open(config_path, "r") as cf:
+                config = json.load(cf)
+            tse_url = config.get(
+                "tse_url",
+                "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls",
+            )
+        except Exception:
+            tse_url = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
         meta = edinet_response_metadata(tse_sector_url=tse_url, tmp_path_str=str(self.data_path))
         meta.set_data(res_results)
-
-        df = meta.get_metadata_pandas_df()
 
         df = meta.get_metadata_pandas_df()
 
@@ -130,7 +145,11 @@ class EdinetEngine:
         params = {"type": doc_type, "Subscription-Key": self.api_key}
 
         try:
-            r = requests.get(url, params=params, timeout=(20, 90), stream=True)
+            # 【修正】堅牢セッションを使用してリトライ戦略を適用（MonkeyPatch回避のためGLOBALを使用）
+            from network_utils import GLOBAL_ROBUST_SESSION
+
+            session = GLOBAL_ROBUST_SESSION
+            r = session.get(url, params=params, timeout=(20, 90), stream=True)
             if r.status_code == 200:
                 save_path.parent.mkdir(parents=True, exist_ok=True)
                 with open(save_path, "wb") as f:

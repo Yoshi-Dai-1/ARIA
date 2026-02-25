@@ -1,16 +1,18 @@
+import io
 import random
 import re
 import time
 import unicodedata
+import zipfile
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import requests
 from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi, hf_hub_download
 from huggingface_hub.utils import EntryNotFoundError, HfHubHTTPError, RepositoryNotFoundError
 from loguru import logger
-from models import CatalogRecord, StockMasterRecord
+from models import CatalogRecord, EdinetCodeRecord, StockMasterRecord
 from utils import normalize_code
 
 
@@ -51,6 +53,210 @@ class CatalogManager:
 
         # 全ファイルの整合性チェックと最新スキーマへのアップグレード
         self._retrospective_cleanse()
+
+        # 【追加】起動時にEDINETコードリストを同期 (和英協同 + 集約一覧)
+        # ネットワークエラーで停止しないよう、内部で例外処理
+        self.edinet_codes, self.aggregation_map = self.sync_edinet_code_lists()
+
+        # 【追加】同期したコードリストをマスタに反映
+        if self.edinet_codes:
+            self._update_master_from_edinet_codes()
+
+    def _update_master_from_edinet_codes(self):
+        """同期した edinet_codes および aggregation_map を master_df に反映させ、属性を最新化する"""
+        from datetime import datetime
+
+        logger.info("EDINETコードリストをマスタに反映中 (集約ブリッジ + JCN変更検知 + 上場生死判定)...")
+        updated_count = 0
+        listing_events = []
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        # 既存マスタを edinet_code をキーにした辞書に変換 (高速化用)
+        master_dict = {
+            str(row["edinet_code"]): row.to_dict()
+            for _, row in self.master_df.iterrows()
+            if pd.notna(row.get("edinet_code"))
+        }
+
+        # 【集約ブリッジ】旧コード→新コードの付け替えを適用
+        for old_code, new_code in self.aggregation_map.items():
+            if new_code in master_dict:
+                existing_former = master_dict[new_code].get("former_edinet_codes") or ""
+                former_set = set(existing_former.split(",")) if existing_former else set()
+                former_set.discard("")
+                former_set.add(old_code)
+                master_dict[new_code]["former_edinet_codes"] = ",".join(sorted(former_set))
+                logger.debug(f"集約ブリッジ適用: {old_code} → {new_code} (旧コードをリンク)")
+
+        for e_code, ed_rec in self.edinet_codes.items():
+            # 【最適化】上場判定: 金融庁リストの「上場区分」が完全に "上場" である場合のみ
+            is_listed_official = str(ed_rec.is_listed or "").strip() == "上場"
+
+            if e_code in master_dict:
+                # 既存レコードの更新
+                m_rec = master_dict[e_code]
+
+                # 【JCN変更検知】
+                old_jcn = m_rec.get("jcn")
+                new_jcn = ed_rec.jcn
+                if old_jcn and new_jcn and str(old_jcn) != str(new_jcn):
+                    logger.warning(
+                        f"⚠️ JCN変更検知: {e_code} ({ed_rec.submitter_name}) 旧JCN={old_jcn} → 新JCN={new_jcn}"
+                    )
+
+                # 【リスティングイベント生成 (生死判定)】
+                old_is_active = bool(m_rec.get("is_active", False))
+                sec_code = ed_rec.sec_code or m_rec.get("code")
+                if sec_code:
+                    if old_is_active is False and is_listed_official is True:
+                        listing_events.append({"code": sec_code, "type": "LISTING", "event_date": today})
+                        logger.info(f"🟢 新規上場/再上場検知: {sec_code} ({ed_rec.submitter_name})")
+                    elif old_is_active is True and is_listed_official is False:
+                        listing_events.append({"code": sec_code, "type": "DELISTING", "event_date": today})
+                        logger.info(f"🔴 上場廃止検知: {sec_code} ({ed_rec.submitter_name})")
+
+                # 変更がある場合のみ更新 (誠実な同期)
+                updates = {
+                    "jcn": ed_rec.jcn or m_rec.get("jcn"),
+                    "code": sec_code,
+                    "company_name": ed_rec.submitter_name,
+                    "company_name_en": ed_rec.submitter_name_en or m_rec.get("company_name_en"),
+                    "industry_edinet": ed_rec.industry_edinet,
+                    "industry_edinet_en": ed_rec.industry_edinet_en or m_rec.get("industry_edinet_en"),
+                    "is_listed_edinet": is_listed_official,
+                    "is_active": is_listed_official,  # EDINETの完全移譲
+                }
+
+                changed = False
+                for k, v in updates.items():
+                    if m_rec.get(k) != v:
+                        m_rec[k] = v
+                        changed = True
+
+                if changed:
+                    master_dict[e_code] = m_rec
+                    updated_count += 1
+            else:
+                # 新規レコードの追加
+                sec_code = ed_rec.sec_code
+                if sec_code and is_listed_official:
+                    listing_events.append({"code": sec_code, "type": "LISTING", "event_date": today})
+
+                new_master_rec = StockMasterRecord(
+                    edinet_code=e_code,
+                    code=sec_code,
+                    jcn=ed_rec.jcn,
+                    company_name=ed_rec.submitter_name,
+                    company_name_en=ed_rec.submitter_name_en,
+                    industry_edinet=ed_rec.industry_edinet,
+                    industry_edinet_en=ed_rec.industry_edinet_en,
+                    is_listed_edinet=is_listed_official,
+                    is_active=is_listed_official,  # EDINETの完全移譲
+                )
+                master_dict[e_code] = new_master_rec.model_dump()
+                updated_count += 1
+
+        if updated_count > 0:
+            self.master_df = pd.DataFrame(list(master_dict.values()))
+            self.master_df = self._clean_dataframe("master", self.master_df)
+            logger.success(f"マスタ同期完了: {updated_count} 件のレコードを更新/追加しました。")
+            self._save_and_upload("master", self.master_df, defer=True)
+
+        if listing_events:
+            events_df = pd.DataFrame(listing_events)
+            self.update_listing_history(events_df)
+            logger.success(f"上場履歴同期完了: {len(events_df)} 件のイベントを追加予約しました。")
+
+    def sync_edinet_code_lists(self) -> Tuple[Dict[str, EdinetCodeRecord], Dict[str, str]]:
+        """金融庁から和英両方のコードリストおよび集約一覧を取得し、協同してマスタベースを構築する"""
+        urls = {
+            "jp": "https://disclosure2dl.edinet-fsa.go.jp/searchdocument/codelist/Edinetcode.zip",
+            "en": "https://disclosure2dl.edinet-fsa.go.jp/searchdocument/codelisteng/Edinetcode.zip",
+            "agg": "https://disclosure2dl.edinet-fsa.go.jp/guide/static/disclosure/download/ESE140190.csv",
+        }
+
+        results = {}
+        agg_map = {}  # 旧コード -> 新コード
+        try:
+            logger.info("EDINETコードリスト (和英) の同期を開始...")
+
+            # 日本語版の取得と解析
+            res_jp = requests.get(urls["jp"], timeout=30)
+            res_jp.raise_for_status()
+            with zipfile.ZipFile(io.BytesIO(res_jp.content)) as z:
+                csv_file = [f for f in z.namelist() if f.endswith(".csv")][0]
+                df_jp = pd.read_csv(z.open(csv_file), encoding="cp932", skiprows=1)
+
+            # 英語版の取得と解析 (業種翻訳の抽出用)
+            res_en = requests.get(urls["en"], timeout=30)
+            res_en.raise_for_status()
+            with zipfile.ZipFile(io.BytesIO(res_en.content)) as z:
+                csv_file = [f for f in z.namelist() if f.endswith(".csv")][0]
+                df_en = pd.read_csv(z.open(csv_file), encoding="cp932", skiprows=1)
+
+            # 【重要】集約一覧 (ESE140190.csv) の取得と解析 (コード付け替え対応)
+            # 物理検証結果: エンコーディングは CP932、1行目はタイトル行
+            try:
+                res_agg = requests.get(urls["agg"], timeout=30)
+                res_agg.raise_for_status()
+                # CSV 読み込み: [集約処理日, 廃止EDINETコード, 継続EDINETコード] 形式を想定
+                # 1行目が「EDINETコード集約一覧,,」のため skiprows=1
+                df_agg = pd.read_csv(io.BytesIO(res_agg.content), encoding="cp932", skiprows=1)
+                for _, agg_row in df_agg.iterrows():
+                    # 0:処理日, 1:廃止コード, 2:継続コード
+                    old_c = str(agg_row.iloc[1]).strip()
+                    new_c = str(agg_row.iloc[2]).strip()
+                    if old_c and new_c and old_c != new_c:
+                        agg_map[old_c] = new_c
+                logger.info(f"EDINETコード集約一覧をロード: {len(agg_map)} 件の付け替えを特定")
+            except Exception as ae:
+                logger.warning(f"集約一覧の取得・解析に失敗しました (継続可能): {ae}")
+
+            # 名寄せ: EDINETコードをキーにする
+            # 日本語版をベースにし、英語版から業種名を補完
+            for _, row in df_jp.iterrows():
+                e_code = str(row["ＥＤＩＮＥＴコード"])
+
+                # 英語版から対応するレコードを検索
+                en_row = df_en[df_en.iloc[:, 0] == e_code]
+                ind_en = en_row.iloc[0]["Submitter's industry"] if not en_row.empty else None
+
+                # 数値型の可能性があるカラムを安全に文字列化 (2024.0 回避)
+                def safe_int_str(val):
+                    if pd.isna(val):
+                        return None
+                    try:
+                        return str(int(float(val)))
+                    except Exception:
+                        return str(val)
+
+                res_dict = {
+                    "edinet_code": e_code,
+                    "submitter_type": row.get("提出者種別"),
+                    "is_listed": row.get("上場区分"),
+                    "is_consolidated": row.get("連結の有無"),
+                    "capital": float(row["資本金"]) if pd.notna(row.get("資本金")) else None,
+                    "settlement_date": str(row.get("決算日")),
+                    "submitter_name": str(row.get("提出者名")),
+                    "submitter_name_en": str(row.get("提出者名（英字）")),
+                    "submitter_name_kana": str(row.get("提出者名（ヨミ）")),
+                    "address": str(row.get("所在地")),
+                    "industry_edinet": str(row.get("提出者業種")),
+                    "industry_edinet_en": ind_en,
+                    "sec_code": normalize_code(str(row["証券コード"]))
+                    if pd.notna(row.get("証券コード")) and str(row["証券コード"]).strip()
+                    else None,
+                    "jcn": safe_int_str(row.get("提出者法人番号")),
+                }
+                results[e_code] = EdinetCodeRecord(**res_dict)
+
+            logger.success(f"EDINETコードリスト同期完了: {len(results)} 件")
+
+        except Exception as e:
+            logger.error(f"EDINETコードリストの同期に失敗しました: {e}")
+            # 失敗した場合は既存の master_df から最小限の情報を復元することを検討
+
+        return results, agg_map
 
     def _retrospective_cleanse(self):
         """データディレクトリ内の全Parquetファイルを走査し、不備があれば自動修正してアップロード"""
@@ -125,7 +331,7 @@ class CatalogManager:
             logger.debug(f"{key}: Removed unnecessary columns: {cols_to_drop}")
             df = df.drop(columns=cols_to_drop)
 
-        # 2. カタログの場合、モデル定義のカラム構成を強制 (現在は26カラム)
+        # 2. カタログの場合、モデル定義のカラム構成を強制 (現在は27カラムに拡張)
         if key == "catalog":
             # NaN を None に置換
             df = df.replace({pd.NA: None, float("nan"): None})
@@ -570,7 +776,7 @@ class CatalogManager:
         # 以前は subset=["code", "company_name", "last_submitted_at"] のみだったため、
         # NULL属性の古いレコードが最新のJPX属性をブロックしていた。
         all_states.drop_duplicates(
-            subset=["code", "company_name", "last_submitted_at", "is_active", "sector", "market"], inplace=True
+            subset=["code", "company_name", "last_submitted_at", "is_active", "sector_jpx_33", "market"], inplace=True
         )
 
         # 3. 社名変更の歴史的変遷を解析
@@ -600,7 +806,19 @@ class CatalogManager:
             # 2. 既存履歴(name_history)からのイベント抽出
             # これまでの記録も「過去の証言」として採用する
             if not name_history.empty:
-                code_hist = name_history[name_history["code"] == code]
+                code_hist = name_history[name_history["code"] == code].sort_values("change_date")
+                if not code_hist.empty:
+                    # 【重要: 自己修復シードの注入】
+                    # 一番最初の社名変更イベントの「old_name」を歴史の夜明けとして植え付ける
+                    first_hist = code_hist.iloc[0]
+                    timeline_events.append(
+                        {
+                            "date": "0000-00-00",
+                            "name": first_hist["old_name"],
+                            "source": "history_seed",
+                        }
+                    )
+
                 for _, h_row in code_hist.iterrows():
                     timeline_events.append(
                         {"date": h_row["change_date"], "name": h_row["new_name"], "source": "history"}
@@ -675,6 +893,8 @@ class CatalogManager:
         def resolve_attr(group, col):
             # 提出日に関わらず、そのコードにおける NULL 以外の最も確かな値を探す
             # (JPXは1970年だがセクター情報は「正」であるため、全体から検索して良い)
+            if col not in group.columns:
+                return None
             valid = group[col][~group[col].isin(["その他", None, "nan", ""])]
             return valid.iloc[0] if not valid.empty else None
 
@@ -690,17 +910,14 @@ class CatalogManager:
             if not jpx_entries.empty:
                 # JPXが存在する場合、主要属性をJPXから強制取得（EDINET属性を拒絶）
                 jpx_rec = jpx_entries.iloc[0]
-                latest_rec["sector"] = jpx_rec["sector"]
-                latest_rec["market"] = jpx_rec["market"]
-                latest_rec["is_active"] = jpx_rec["is_active"]
+                latest_rec["sector_jpx_33"] = jpx_rec.get("sector_jpx_33")
+                latest_rec["market"] = jpx_rec.get("market")
                 # 万が一 JPX のセクターが不全な場合は、過去の有効な属性から拾う（ただし優先度はJPX）
-                if latest_rec["sector"] in ["その他", None, "nan", ""]:
-                    latest_rec["sector"] = resolve_attr(group, "sector")
+                if latest_rec.get("sector_jpx_33") in ["その他", None, "nan", ""]:
+                    latest_rec["sector_jpx_33"] = resolve_attr(group, "sector_jpx_33")
             else:
                 # JPXに一度も登録されたことがない(完全新規上場等)の場合
-                # JPXによる承認(同期)があるまでは、Unknown (None) 状態で隔離する
-                latest_rec["is_active"] = None
-                latest_rec["sector"] = None
+                latest_rec["sector_jpx_33"] = None
                 latest_rec["market"] = None
 
             best_records.append(latest_rec)
@@ -720,7 +937,8 @@ class CatalogManager:
             return None
         row = self.master_df[self.master_df["code"] == code]
         if not row.empty:
-            val = row.iloc[0]["sector"]
+            col_name = "sector_jpx_33" if "sector_jpx_33" in self.master_df.columns else "sector"
+            val = row.iloc[0].get(col_name)
             return str(val) if val is not None else None
         return None
 
@@ -1017,7 +1235,9 @@ class CatalogManager:
 
             if cleanup_old:
                 # 24時間以上経過したものを対象とする
-                now = time.time()
+                from datetime import datetime, timezone
+
+                now = datetime.now(timezone.utc)
                 expired_runs = set()
 
                 for f in files:
@@ -1028,12 +1248,27 @@ class CatalogManager:
                         continue
                     r_id = parts[2]
 
+                    # 【修正】run_id は 'backfill-YYYY-MM-DD-NNNNNN' 等の形式
+                    # 日付部分を正規表現で抽出し、24時間以上経過しているかを判定
                     try:
-                        timestamp = int(r_id)
-                        if (now - timestamp) > 86400:  # 24時間以上
-                            delete_files.append(f)
-                            expired_runs.add(r_id)
-                    except ValueError:
+                        date_match = re.search(r"(\d{4}-\d{2}-\d{2})", r_id)
+                        if date_match:
+                            run_date = datetime.strptime(date_match.group(1), "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                            if (now - run_date).total_seconds() > 86400:
+                                delete_files.append(f)
+                                expired_runs.add(r_id)
+                        else:
+                            # 日付を含まないrun_id（純粋な数値タイムスタンプ等）も処理
+                            try:
+                                timestamp = int(r_id)
+                                if (now.timestamp() - timestamp) > 86400:
+                                    delete_files.append(f)
+                                    expired_runs.add(r_id)
+                            except ValueError:
+                                # パース不能なrun_idは7日以上経過とみなしてクリーンアップ
+                                delete_files.append(f)
+                                expired_runs.add(r_id)
+                    except Exception:
                         pass
 
                 if delete_files:

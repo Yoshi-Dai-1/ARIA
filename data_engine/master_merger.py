@@ -31,10 +31,17 @@ class MasterMerger:
             return True
 
         if worker_mode:
-            # 【重要】不変シャッディング: 証券コードの上2桁(bin)で物理分割
-            # これにより業種が変わっても物理的な保存場所(パス)が不変に保たれます。
-            # 例: 7203 -> bin=72
-            bin_val = str(new_data.iloc[0]["code"])[:2]
+            # 【統一】JCN 主導の不変ビン分割 (通常モードと同一ロジック)
+            row0 = new_data.iloc[0]
+            jcn_val = str(row0.get("jcn", ""))
+            if jcn_val and len(jcn_val) >= 2 and jcn_val != "None":
+                bin_val = f"J{jcn_val[-2:]}"
+            else:
+                e_code = str(row0.get("edinet_code", ""))
+                if e_code and len(e_code) >= 2 and e_code != "None":
+                    bin_val = f"E{e_code[-2:]}"
+                else:
+                    bin_val = "No"
             filename = f"{master_type}_bin{bin_val}.parquet"
 
             return catalog_manager.save_delta(
@@ -48,7 +55,20 @@ class MasterMerger:
             )
 
         # 物理パスの構成を bin=XX に変更
-        bin_val = str(new_data.iloc[0]["code"])[:2]
+        # 【極限刷新】JCN（法人番号）を主軸とした完全統一ビン分割 (Unified Binning)
+        # 証券コードは変動・欠落の可能性があるため、国家IDである JCN の末尾を分散キーに使用。
+        # JCNがない場合のみ、不変の EDINETコード末尾を使用。
+        row0 = new_data.iloc[0]
+        jcn_val = str(row0.get("jcn", ""))
+        if jcn_val and len(jcn_val) >= 2 and jcn_val != "None":
+            bin_val = f"J{jcn_val[-2:]}"  # JCN末尾2桁 (e.g., J01)
+        else:
+            e_code = str(row0.get("edinet_code", ""))
+            if e_code and len(e_code) >= 2 and e_code != "None":
+                bin_val = f"E{e_code[-2:]}"  # EDINETコード末尾2桁 (e.g., E01)
+            else:
+                bin_val = "No"
+
         repo_path = f"master/{master_type}/bin={bin_val}/data.parquet"
 
         # 1. 既存データのロード
