@@ -742,6 +742,20 @@ class CatalogManager:
         if incoming_data.empty:
             return True
 
+        # 0. 【戦略的補完】EDINETコードの逆引き (incoming_data が証券コードのみの場合)
+        # JPXマスタ等、edinet_code を持たないソースからの入力に対応。
+        if "edinet_code" not in incoming_data.columns and "code" in incoming_data.columns:
+            if not self.master_df.empty:
+                # 証券コードと EDINET コードの対応表を作成
+                lookup = (
+                    self.master_df[["code", "edinet_code"]]
+                    .dropna(subset=["code", "edinet_code"])
+                    .drop_duplicates("code")
+                )
+                if not lookup.empty:
+                    incoming_data = incoming_data.merge(lookup, on="code", how="left")
+                    logger.debug("JPXデータに既存のEDINETコードを紐付けました。")
+
         # 1. バリデーションと型正規化
         records = incoming_data.to_dict("records")
         validated = []
@@ -752,7 +766,6 @@ class CatalogManager:
                 if isinstance(rec.get("is_active"), str):
                     rec["is_active"] = rec["is_active"].lower() in ["true", "1", "yes"]
                 # 【最適解】情報の損失を伴う切り捨てを廃止し、ソースの精度を維持する
-                # (Datetime型への変換は後続の保存レイヤーまたはPydanticモデルに委ねる)
                 validated.append(StockMasterRecord(**rec).model_dump())
             except Exception as e:
                 logger.error(f"銘柄情報のバリデーション失敗 (code: {rec.get('code')}): {e}")

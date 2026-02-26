@@ -126,8 +126,8 @@ class CatalogRecord(BaseModel):
 class StockMasterRecord(BaseModel):
     """銘柄マスタ (stocks_master.parquet) のレコードモデル (ARIA統合マスタ)"""
 
-    edinet_code: str  # Primary Key (EDINETシステム上の座席番号)
-    code: Optional[str] = None  # 証券コード (5桁、非上場の場合は None)
+    edinet_code: Optional[str] = None  # Primary Key (EDINETシステム上の座席番号、未上場/ETF等は None)
+    code: Optional[str] = None  # 証券コード (5桁)
     jcn: Optional[str] = None  # 法人番号 (物理パスの分散キー)
     company_name: str
     company_name_en: Optional[str] = None
@@ -140,6 +140,26 @@ class StockMasterRecord(BaseModel):
     is_listed_edinet: bool = False  # EDINETコードリストに基づく上場判定
     last_submitted_at: Optional[str] = None
     former_edinet_codes: Optional[str] = None  # 集約ブリッジ: 旧コード (カンマ区切り)
+
+    @field_validator(
+        "edinet_code",
+        "code",
+        "jcn",
+        "company_name_en",
+        "sector_jpx_33",
+        "sector_jpx_17",
+        "industry_edinet",
+        "industry_edinet_en",
+        "market",
+        "last_submitted_at",
+        "former_edinet_codes",
+        mode="before",
+    )
+    @classmethod
+    def nan_to_none(cls, v: Any) -> Any:
+        if isinstance(v, float) and math.isnan(v):
+            return None
+        return v
 
 
 class ListingEvent(BaseModel):
