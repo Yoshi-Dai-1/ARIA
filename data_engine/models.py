@@ -1,6 +1,7 @@
-from typing import Optional
+import math
+from typing import Any, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class EdinetDocument(BaseModel):
@@ -54,6 +55,26 @@ class EdinetCodeRecord(BaseModel):
     industry_edinet_en: Optional[str] = None  # 提出者業種 (英文/英語版リストより取得)
     sec_code: Optional[str] = None  # 証券コード (5桁)
     jcn: Optional[str] = None  # 提出者法人番号 (JCN)
+
+    @field_validator(
+        "submitter_type",
+        "is_listed",
+        "is_consolidated",
+        "settlement_date",
+        "submitter_name_en",
+        "submitter_name_kana",
+        "address",
+        "industry_edinet",
+        "industry_edinet_en",
+        "sec_code",
+        "jcn",
+        mode="before",
+    )
+    @classmethod
+    def nan_to_none(cls, v: Any) -> Any:
+        if isinstance(v, float) and math.isnan(v):
+            return None
+        return v
 
 
 class CatalogRecord(BaseModel):
