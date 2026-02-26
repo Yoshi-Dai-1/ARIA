@@ -11,11 +11,14 @@ ARIA における「証券データの真実」を管理するためのドメイ
 - **修正ロジック**: [normalize_code.py](scripts/normalize_code.py) を参照。
 - **対応範囲**: Excel 由来の `.0` サフィックス、`None/NaN`、4桁コードの 0 埋めに対応。
 
-## 2. 属性解決とリコンシリエーション
+## 2. 属性解決とリコンシリエーション (Hierarchy of Truth)
 [CatalogManager.update_stocks_master](file:///Users/yoshi_dai/repos/ARIA/data_engine/catalog_manager.py#L674) の実装に基づき、以下の優先順位を遵守します。
-1. **JPX Master (Primary)**: 市場属性の絶対的な正解。
-2. **EDINET / Catalog (Secondary)**: 会社名の最新ソース。
+1. **EDINET / Catalog (Primary)**: 会社名および商用利用可能な公的属性の正解。
+2. **JPX Master (Secondary)**: 業種・市場属性の補完。ただし商用再配布時は「Pure EDINET Mode」により排除を検討する。
 3. **Existing Master (Fallback)**: 過去の有効な値を継承。
+
+## 3. 履歴の自己修復 (History Self-Healing)
+- **0000-00-00 Seed**: 社名変更履歴の断絶を防ぐため、全銘柄の履歴冒頭に `0000-00-00` のシードレコードを注入し、バックフィル時も履歴の整合性を維持する。
 
 ## 3. 異常検知の閾値 (Anomaly Thresholds)
 以下の状態を検知した場合、直ちに処理を停止し整合性を疑います：

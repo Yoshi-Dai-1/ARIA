@@ -13,10 +13,14 @@ description: ARIA プロジェクトにおける技術的真実、データ整�
 
 ## 2. 物理的な掟 (Physical Facts)
 - **RaW-V (Read-after-Write Verification)**: 破壊的更新前には必ず [CatalogManager.take_snapshot](file:///Users/yoshi_dai/repos/ARIA/data_engine/catalog_manager.py#L220) を実行。
-- **Nullable Boolean**: 論理値に `astype(str)` や `fillna("")` を適用してはならない。
+- **NaN / Null Integrity**: pandas 由来の NaN が Pydantic モデルの文字列フィールドを破壊するのを防ぐため、`field_validator` による強制変換を必須とする。
 - **Network Stability**: 外部通信を伴う処理では [network_utils.patch_all_networking](file:///Users/yoshi_dai/repos/ARIA/data_engine/network_utils.py) の適用を必須とする。
 
-## 3. 環境制御
+## 3. 監査手法 (Audit Methodology)
+- **Mass-Scale Stress Test**: 1,000件規模の擬似レコードを用い、Parquet の物理的統合と bin への均等分散を検証する。
+- **Self-Healing Logic**: 履歴再構築時に `0000-00-00` シードを注入し、バックフィルによる情報の断絶を防止する。
+
+## 4. 環境制御
 - **CI 最適化**: ログの肥大化を防ぐため `HF_HUB_DISABLE_PROGRESS_BARS=1` および `TQDM_DISABLE=1` を強制する。
 
 ## 参照リソース
