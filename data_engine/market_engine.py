@@ -179,12 +179,18 @@ class MarketDataEngine:
                 f.write(chunk)
 
         df = pd.read_excel(xls_path, dtype={"コード": str})
-        # カラムマッピング
+        # カラムマッピング (ARIAモデルの定義に合わせる)
         df = df.rename(
-            columns={"コード": "code", "銘柄名": "company_name", "33業種区分": "sector", "市場・商品区分": "market"}
+            columns={
+                "コード": "code",
+                "銘柄名": "company_name",
+                "33業種区分": "sector_jpx_33",
+                "17業種区分": "sector_jpx_17",
+                "市場・商品区分": "market",
+            }
         )
         df["code"] = df["code"].apply(normalize_code)
-        return df[["code", "company_name", "sector", "market"]]
+        return df[["code", "company_name", "sector_jpx_33", "sector_jpx_17", "market"]]
 
     def fetch_index_data(self, index_name: str) -> pd.DataFrame:
         """指数データの取得 (Retry付き)"""

@@ -126,18 +126,31 @@ class CatalogRecord(BaseModel):
 class StockMasterRecord(BaseModel):
     """銘柄マスタ (stocks_master.parquet) のレコードモデル (ARIA統合マスタ)"""
 
-    edinet_code: Optional[str] = None  # Primary Key (EDINETシステム上の座席番号、未上場/ETF等は None)
+    # 1. Identifiers (識別子)
+    edinet_code: Optional[str] = None  # Primary Key
     code: Optional[str] = None  # 証券コード (5桁)
-    jcn: Optional[str] = None  # 法人番号 (物理パスの分散キー)
+    jcn: Optional[str] = None  # 法人番号
+
+    # 2. Basic Attributes (基本属性 - EDINET由来)
     company_name: str
     company_name_en: Optional[str] = None
+    submitter_name_kana: Optional[str] = None  # 提出者名（ヨミ）
+    submitter_type: Optional[str] = None  # 提出者種別
+    is_consolidated: Optional[str] = None  # 連結の有無
+    capital: Optional[float] = None  # 資本金
+    settlement_date: Optional[str] = None  # 決算日
+    address: Optional[str] = None  # 所在地
+
+    # 3. Industry & Market Attributes (業種・市場属性 - JPX/EDINET複合)
     sector_jpx_33: Optional[str] = None
     sector_jpx_17: Optional[str] = None
     industry_edinet: Optional[str] = None
     industry_edinet_en: Optional[str] = None
     market: Optional[str] = None
-    is_active: bool = True
-    is_listed_edinet: bool = False  # EDINETコードリストに基づく上場判定
+
+    # 4. Status & Lifecycle (状態・ライフサイクル)
+    is_active: bool = True  # ARIAシステム内での稼働フラグ (パイプラインの蛇口)
+    is_listed_edinet: bool = False  # 金融庁コードリスト上の公式上場ステータス
     last_submitted_at: Optional[str] = None
     former_edinet_codes: Optional[str] = None  # 集約ブリッジ: 旧コード (カンマ区切り)
 
@@ -146,6 +159,11 @@ class StockMasterRecord(BaseModel):
         "code",
         "jcn",
         "company_name_en",
+        "submitter_name_kana",
+        "submitter_type",
+        "is_consolidated",
+        "settlement_date",
+        "address",
         "sector_jpx_33",
         "sector_jpx_17",
         "industry_edinet",
@@ -157,7 +175,12 @@ class StockMasterRecord(BaseModel):
     )
     @classmethod
     def nan_to_none(cls, v: Any) -> Any:
+        # 文字列の "nan" または物理的な NaN を None にリセット
+        if v is None:
+            return None
         if isinstance(v, float) and math.isnan(v):
+            return None
+        if isinstance(v, str) and v.lower() in ["nan", "none", ""]:
             return None
         return v
 

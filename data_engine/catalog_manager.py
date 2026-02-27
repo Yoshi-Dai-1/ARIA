@@ -120,11 +120,17 @@ class CatalogManager:
                     "jcn": ed_rec.jcn or m_rec.get("jcn"),
                     "code": sec_code,
                     "company_name": ed_rec.submitter_name,
-                    "company_name_en": ed_rec.submitter_name_en or m_rec.get("company_name_en"),
+                    "company_name_en": ed_rec.submitter_name_en,
+                    "submitter_name_kana": ed_rec.submitter_name_kana,
+                    "submitter_type": ed_rec.submitter_type,
+                    "is_consolidated": ed_rec.is_consolidated,
+                    "capital": ed_rec.capital,
+                    "settlement_date": ed_rec.settlement_date,
+                    "address": ed_rec.address,
                     "industry_edinet": ed_rec.industry_edinet,
-                    "industry_edinet_en": ed_rec.industry_edinet_en or m_rec.get("industry_edinet_en"),
+                    "industry_edinet_en": ed_rec.industry_edinet_en,
                     "is_listed_edinet": is_listed_official,
-                    "is_active": is_listed_official,  # EDINETの完全移譲
+                    "is_active": is_listed_official if m_rec.get("is_active") is None else m_rec.get("is_active"),
                 }
 
                 changed = False
@@ -148,10 +154,16 @@ class CatalogManager:
                     jcn=ed_rec.jcn,
                     company_name=ed_rec.submitter_name,
                     company_name_en=ed_rec.submitter_name_en,
+                    submitter_name_kana=ed_rec.submitter_name_kana,
+                    submitter_type=ed_rec.submitter_type,
+                    is_consolidated=ed_rec.is_consolidated,
+                    capital=ed_rec.capital,
+                    settlement_date=ed_rec.settlement_date,
+                    address=ed_rec.address,
                     industry_edinet=ed_rec.industry_edinet,
                     industry_edinet_en=ed_rec.industry_edinet_en,
                     is_listed_edinet=is_listed_official,
-                    is_active=is_listed_official,  # EDINETの完全移譲
+                    is_active=is_listed_official,  # 初期値は公式に追従
                 )
                 master_dict[e_code] = new_master_rec.model_dump()
                 updated_count += 1
@@ -223,12 +235,12 @@ class CatalogManager:
 
                 # 数値型の可能性があるカラムを安全に文字列化 (2024.0 回避)
                 def safe_int_str(val):
-                    if pd.isna(val):
+                    if pd.isna(val) or str(val).lower() in ["nan", "none", ""]:
                         return None
                     try:
                         return str(int(float(val)))
                     except Exception:
-                        return str(val)
+                        return str(val).strip()
 
                 res_dict = {
                     "edinet_code": e_code,
@@ -236,11 +248,15 @@ class CatalogManager:
                     "is_listed": row.get("上場区分"),
                     "is_consolidated": row.get("連結の有無"),
                     "capital": float(row["資本金"]) if pd.notna(row.get("資本金")) else None,
-                    "settlement_date": str(row.get("決算日")),
+                    "settlement_date": str(row.get("決算日")) if pd.notna(row.get("決算日")) else None,
                     "submitter_name": str(row.get("提出者名")),
-                    "submitter_name_en": str(row.get("提出者名（英字）")),
-                    "submitter_name_kana": str(row.get("提出者名（ヨミ）")),
-                    "address": str(row.get("所在地")),
+                    "submitter_name_en": str(row.get("提出者名（英字）"))
+                    if pd.notna(row.get("提出者名（英字）"))
+                    else None,
+                    "submitter_name_kana": str(row.get("提出者名（ヨミ）"))
+                    if pd.notna(row.get("提出者名（ヨミ）"))
+                    else None,
+                    "address": str(row.get("所在地")) if pd.notna(row.get("所在地")) else None,
                     "industry_edinet": str(row.get("提出者業種")),
                     "industry_edinet_en": ind_en,
                     "sec_code": normalize_code(str(row["証券コード"]))
@@ -917,21 +933,15 @@ class CatalogManager:
             # 1. 物理的な最新レコードを取得 (社名と提出日時の決定用)
             latest_rec = group.iloc[0].copy()
 
-            # 2. JPXレコード(日付なし)を特定 (属性の正解データ)
-            jpx_entries = group[group["last_submitted_at"].isna()]
+            # 2. 属性の補完: JPX属性 (sector_jpx_33, market) は非NULLのものを全体から探す
+            # (モデル定義が正しければ、一度取得されたJPX属性は全タイムラインで共有されるべき)
+            jpx_sector = resolve_attr(group, "sector_jpx_33")
+            jpx_market = resolve_attr(group, "market")
 
-            if not jpx_entries.empty:
-                # JPXが存在する場合、主要属性をJPXから強制取得（EDINET属性を拒絶）
-                jpx_rec = jpx_entries.iloc[0]
-                latest_rec["sector_jpx_33"] = jpx_rec.get("sector_jpx_33")
-                latest_rec["market"] = jpx_rec.get("market")
-                # 万が一 JPX のセクターが不全な場合は、過去の有効な属性から拾う（ただし優先度はJPX）
-                if latest_rec.get("sector_jpx_33") in ["その他", None, "nan", ""]:
-                    latest_rec["sector_jpx_33"] = resolve_attr(group, "sector_jpx_33")
-            else:
-                # JPXに一度も登録されたことがない(完全新規上場等)の場合
-                latest_rec["sector_jpx_33"] = None
-                latest_rec["market"] = None
+            if jpx_sector:
+                latest_rec["sector_jpx_33"] = jpx_sector
+            if jpx_market:
+                latest_rec["market"] = jpx_market
 
             best_records.append(latest_rec)
 
