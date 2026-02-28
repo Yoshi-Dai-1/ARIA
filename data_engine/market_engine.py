@@ -189,7 +189,8 @@ class MarketDataEngine:
                 "市場・商品区分": "market",
             }
         )
-        df["code"] = df["code"].apply(normalize_code)
+        df["code"] = df["code"].astype(str).str.strip().apply(lambda x: x + "0" if len(x) == 4 else x)
+
         return df[["code", "company_name", "sector_jpx_33", "sector_jpx_17", "market"]]
 
     def fetch_index_data(self, index_name: str) -> pd.DataFrame:

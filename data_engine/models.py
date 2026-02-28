@@ -1,7 +1,7 @@
 import math
 from typing import Any, Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class EdinetDocument(BaseModel):
@@ -124,39 +124,46 @@ class CatalogRecord(BaseModel):
 
 
 class StockMasterRecord(BaseModel):
-    """銘柄マスタ (stocks_master.parquet) のレコードモデル (ARIA統合マスタ)"""
+    """
+    ARIA 銘柄マスタレコード (Perfect Integrity)
+    識別子、属性、業界、状態の論理的順序で構成。
+    """
 
-    # 1. Identifiers (識別子)
-    edinet_code: Optional[str] = None  # Primary Key
-    code: Optional[str] = None  # 証券コード (5桁)
-    jcn: Optional[str] = None  # 法人番号
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
-    # 2. Basic Attributes (基本属性 - EDINET由来)
-    company_name: str
-    company_name_en: Optional[str] = None
-    submitter_name_kana: Optional[str] = None  # 提出者名（ヨミ）
-    submitter_type: Optional[str] = None  # 提出者種別
-    is_consolidated: Optional[str] = None  # 連結の有無
-    capital: Optional[float] = None  # 資本金
-    settlement_date: Optional[str] = None  # 決算日
-    address: Optional[str] = None  # 所在地
+    # --- 1. 識別子 (Identifiers) ---
+    edinet_code: Optional[str] = Field(None, description="EDINETコード")
+    code: Optional[str] = Field(None, description="証券コード (5桁正規化)")
+    parent_code: Optional[str] = Field(None, description="親銘柄コード (優先株などの場合)")
+    jcn: Optional[str] = Field(None, description="法人番号 (13桁)")
 
-    # 3. Industry & Market Attributes (業種・市場属性 - JPX/EDINET複合)
-    sector_jpx_33: Optional[str] = None
-    sector_jpx_17: Optional[str] = None
-    industry_edinet: Optional[str] = None
-    industry_edinet_en: Optional[str] = None
-    market: Optional[str] = None
+    # --- 2. 基本属性 (Basic Attributes / EDINET系) ---
+    company_name: str = Field(..., description="提出者名 (和文)")
+    company_name_en: Optional[str] = Field(None, description="提出者名 (英文)")
+    submitter_name_kana: Optional[str] = Field(None, description="提出者名 (ヨミ)")
+    submitter_type: Optional[str] = Field(None, description="提出者種別")
+    is_consolidated: Optional[str] = Field(None, description="連結の有無")
+    capital: Optional[float] = Field(None, description="資本金")
+    settlement_date: Optional[str] = Field(None, description="決算日")
+    address: Optional[str] = Field(None, description="所在地")
 
-    # 4. Status & Lifecycle (状態・ライフサイクル)
-    is_active: bool = True  # ARIAシステム内での稼働フラグ (パイプラインの蛇口)
-    is_listed_edinet: bool = False  # 金融庁コードリスト上の公式上場ステータス
-    last_submitted_at: Optional[str] = None
-    former_edinet_codes: Optional[str] = None  # 集約ブリッジ: 旧コード (カンマ区切り)
+    # --- 3. 業界・市場属性 (Industry & Market / JPX系) ---
+    sector_jpx_33: Optional[str] = Field(None, description="JPX 33業種区分")
+    sector_jpx_17: Optional[str] = Field(None, description="JPX 17業種区分")
+    industry_edinet: Optional[str] = Field(None, description="EDINET業種区分 (和文)")
+    industry_edinet_en: Optional[str] = Field(None, description="EDINET業種区分 (英文)")
+    market: Optional[str] = Field(None, description="上場市場名")
+
+    # --- 4. 状態とライフサイクル (Status & Lifecycle) ---
+    is_active: bool = Field(True, description="ARIA 収集・追跡対象フラグ (運用の真実)")
+    is_listed_edinet: bool = Field(True, description="EDINET公式名簿 上場フラグ (法令の真実)")
+    last_submitted_at: Optional[str] = Field(None, description="最終書類提出日時")
+    former_edinet_codes: Optional[str] = Field(None, description="旧EDINETコード (集約ブリッジ用)")
 
     @field_validator(
         "edinet_code",
         "code",
+        "parent_code",
         "jcn",
         "company_name_en",
         "submitter_name_kana",
@@ -175,14 +182,25 @@ class StockMasterRecord(BaseModel):
     )
     @classmethod
     def nan_to_none(cls, v: Any) -> Any:
-        # 文字列の "nan" または物理的な NaN を None にリセット
+        """pandas の NaN や文字列 'nan' を物理的に排除し、工学的主権を保つ"""
         if v is None:
             return None
         if isinstance(v, float) and math.isnan(v):
             return None
         if isinstance(v, str) and v.lower() in ["nan", "none", ""]:
             return None
-        return v
+        return str(v).strip()
+
+    @field_validator("code", "parent_code", mode="after")
+    @classmethod
+    def normalize_sec_code(cls, v: Optional[str]) -> Optional[str]:
+        """証券コードを5桁に正規化 (SICC準拠)"""
+        if v is None:
+            return None
+        code_str = str(v).strip()
+        if len(code_str) == 4:
+            return code_str + "0"
+        return code_str
 
 
 class ListingEvent(BaseModel):

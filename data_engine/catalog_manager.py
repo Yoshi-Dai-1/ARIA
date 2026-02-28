@@ -62,6 +62,42 @@ class CatalogManager:
         if self.edinet_codes:
             self._update_master_from_edinet_codes()
 
+    def _discover_edinet_code(self, sec_code: str) -> Optional[Tuple[str, str]]:
+        """
+        【IPO動的発見】証券コードから EDINETコード/JCN を書類一覧API経由で逆引きする。
+        過去30日分の提出書類をスキャンし、secCode が一致するものを探す。
+        """
+        import datetime
+
+        sec_code_5 = sec_code if len(sec_code) == 5 else sec_code + "0"
+        # 優先株 (5桁目≠0) の場合は、まず親銘柄 (末尾0) の EDINETコードを継承できないか試みる
+        if sec_code_5[4] != "0" and not self.master_df.empty:
+            parent_code = sec_code_5[:4] + "0"
+            parent_row = self.master_df[self.master_df["code"] == parent_code]
+            if not parent_row.empty and pd.notna(parent_row.iloc[0].get("edinet_code")):
+                logger.info(f"優先株 {sec_code_5} の EDINETコードを親銘柄 {parent_code} から継承します。")
+                return parent_row.iloc[0]["edinet_code"], parent_row.iloc[0].get("jcn")
+
+        # 1. 最近の提出書類をスキャン (IPO銘柄の捕捉)
+        logger.info(f"証券コード {sec_code_5} の EDINET情報を書類一覧APIから探索中...")
+        for i in range(30):
+            date = (datetime.datetime.now() - datetime.timedelta(days=i)).strftime("%Y-%m-%d")
+            url = f"https://disclosure.edinet-fsa.go.jp/api/v1/documents.json?date={date}&type=2"
+            try:
+                res = requests.get(url, timeout=10)
+                if res.status_code == 200:
+                    data = res.json()
+                    for doc in data.get("results", []):
+                        if doc.get("secCode") == sec_code_5:
+                            e_code = doc.get("edinetCode")
+                            jcn = doc.get("JCN")
+                            logger.success(f"発見: {sec_code_5} -> {e_code} (JCN: {jcn})")
+                            return e_code, jcn
+            except Exception as e:
+                logger.debug(f"書類API探索中のエラー ({date}): {e}")
+                continue
+        return None
+
     def _update_master_from_edinet_codes(self):
         """同期した edinet_codes および aggregation_map を master_df に反映させ、属性を最新化する"""
         from datetime import datetime
@@ -754,200 +790,115 @@ class CatalogManager:
         return self._load_parquet("index")
 
     def update_stocks_master(self, incoming_data: pd.DataFrame):
-        """マスタ更新 & 時系列リコンシリエーション (世界最高水準の歴史再構築ロジック)"""
+        """
+        マスタ更新 & 時系列リコンシリエーション (世界最高水準の自律的名寄せエンジン)
+        【工学的主権】重複排除、IPO動的発見、親子紐付け、属性継承を統合。
+        """
         if incoming_data.empty:
             return True
 
-        # 0. 【戦略的補完】EDINETコードの逆引き (incoming_data が証券コードのみの場合)
-        # JPXマスタ等、edinet_code を持たないソースからの入力に対応。
-        if "edinet_code" not in incoming_data.columns and "code" in incoming_data.columns:
-            if not self.master_df.empty:
-                # 証券コードと EDINET コードの対応表を作成
-                lookup = (
-                    self.master_df[["code", "edinet_code"]]
-                    .dropna(subset=["code", "edinet_code"])
-                    .drop_duplicates("code")
-                )
-                if not lookup.empty:
-                    incoming_data = incoming_data.merge(lookup, on="code", how="left")
-                    logger.debug("JPXデータに既存のEDINETコードを紐付けました。")
+        def resolve_attr(group, col):
+            vals = group[col].dropna()
+            return vals.iloc[0] if not vals.empty else None
 
-        # 1. バリデーションと型正規化
-        records = incoming_data.to_dict("records")
-        validated = []
-        for rec in records:
+        # 1. 前処理と名寄せ (Registration Guard & Discovery)
+        processed_records = []
+        for _, row in incoming_data.iterrows():
+            rec = row.to_dict()
+            rec = {k: (v if not pd.isna(v) else None) for k, v in rec.items()}
+            sec_code = rec.get("code")
+
+            if sec_code:
+                sec_code = str(sec_code).strip()
+                if len(sec_code) == 4:
+                    sec_code += "0"
+                rec["code"] = sec_code
+
+                # --- A. 親子紐付け (SICCルール) ---
+                if sec_code[4] != "0":
+                    parent_c = sec_code[:4] + "0"
+                    rec["parent_code"] = parent_c
+                    logger.debug(f"優先株 {sec_code} に親銘柄 {parent_c} を紐付けました。")
+
+                # --- B. IPO動的発見 & 登録ガード ---
+                # EDINETコード/JCNが不明な場合のみ探索
+                if not rec.get("edinet_code") or not rec.get("jcn"):
+                    discovery = self._discover_edinet_code(sec_code)
+                    if discovery:
+                        rec["edinet_code"], rec["jcn"] = discovery
+                    else:
+                        # 発見できなかった場合のガード
+                        market = str(rec.get("market") or "").upper()
+                        is_special = any(x in market for x in ["ETF", "REIT", "PRO MARKET"])
+                        is_preferred = sec_code[4] != "0"
+
+                        if not is_special and not is_preferred:
+                            logger.warning(
+                                f"Registration Guard: {sec_code} はEDINET情報が未発見のため、二重登録を保留します。"
+                            )
+                            continue
+
             try:
-                rec = {k: (v if not pd.isna(v) else None) for k, v in rec.items()}
-                # is_active の型正規化
-                if isinstance(rec.get("is_active"), str):
-                    rec["is_active"] = rec["is_active"].lower() in ["true", "1", "yes"]
-                # 【最適解】情報の損失を伴う切り捨てを廃止し、ソースの精度を維持する
-                validated.append(StockMasterRecord(**rec).model_dump())
+                # バリデーション (models.py での5桁正規化、nan防止が効く)
+                processed_records.append(StockMasterRecord(**rec).model_dump())
             except Exception as e:
-                logger.error(f"銘柄情報のバリデーション失敗 (code: {rec.get('code')}): {e}")
+                logger.error(f"銘警情報のバリデーション失敗 (code: {sec_code}): {e}")
 
-        if not validated:
+        if not processed_records:
             return True
-        incoming_df = pd.DataFrame(validated)
+
+        incoming_df = pd.DataFrame(processed_records)
 
         # 2. 既存データとの統合 (リコンシリエーション)
-        # 既存マスタを「過去の状態の一つ」として扱い、全てのタイムラインをマージする
         current_m = self.master_df.copy()
-        # カラム自体の存在をケア (NULL は NULL のまま維持)
-        if "last_submitted_at" not in current_m.columns:
-            current_m["last_submitted_at"] = None
-
-        # 全ての既知の状態を統合
-        # 【重要】インデックスをリセットして結合
         all_states = pd.concat([current_m, incoming_df], ignore_index=True)
 
-        # 重複排除 (属性の変化も「新しい証言」として受け入れる)
-        # 以前は subset=["code", "company_name", "last_submitted_at"] のみだったため、
-        # NULL属性の古いレコードが最新のJPX属性をブロックしていた。
+        # 重複排除 (最新属性を保持しつつ、同一イベントは1つに)
         all_states.drop_duplicates(
             subset=["code", "company_name", "last_submitted_at", "is_active", "sector_jpx_33", "market"], inplace=True
         )
 
-        # 3. 社名変更の歴史的変遷を解析
-        name_history = self._load_parquet("name")
-        new_history_events = []
-
-        processed_codes = set()
+        # 3. 属性継承とステータス確定
+        best_records = []
+        listing_events = []
+        today = pd.Timestamp.now().strftime("%Y-%m-%d")
 
         for code, group in all_states.groupby("code"):
-            processed_codes.add(code)
+            # 【重要】提出日時の降順でソート。日時が同じ（または欠損）ならインデックスが大きい（最新入力）を優先。
+            # sort_values は安定ソートのため、先に出順（インデックス）で降順ソートしておく。
+            sorted_group = group.sort_index(ascending=False).sort_values(
+                "last_submitted_at", ascending=False, na_position="last"
+            )
+            latest_rec = sorted_group.iloc[0].copy()
 
-            # 提出日時の昇順でソート (これがないと sorted_group が未定義になる)
-            sorted_group = group.sort_values("last_submitted_at", ascending=True)
+            # --- 属性継承 (Inheritance) ---
+            # JPX由来の属性や親からの属性を、非NULLであれば継承する
+            for attr in ["sector_jpx_33", "sector_jpx_17", "market", "jcn", "edinet_code", "parent_code"]:
+                val = resolve_attr(sorted_group, attr)
+                if val is not None:
+                    latest_rec[attr] = val
 
-            # --- C. 歴史の完全再構築 (Full History Rebuild) ---
-            # 既存の履歴、現在のマスタ、新規データを全て「イベント」として時系列に並べ直す
-
-            timeline_events = []
-
-            # 1. 既存マスタ & 新規データからのイベント抽出
-            for _, row in sorted_group.iterrows():
-                if pd.notna(row.get("last_submitted_at")):
-                    timeline_events.append(
-                        {"date": row["last_submitted_at"], "name": row["company_name"], "source": "master_or_incoming"}
-                    )
-
-            # 2. 既存履歴(name_history)からのイベント抽出
-            # これまでの記録も「過去の証言」として採用する
-            if not name_history.empty:
-                code_hist = name_history[name_history["code"] == code].sort_values("change_date")
-                if not code_hist.empty:
-                    # 【重要: 自己修復シードの注入】
-                    # 一番最初の社名変更イベントの「old_name」を歴史の夜明けとして植え付ける
-                    first_hist = code_hist.iloc[0]
-                    timeline_events.append(
-                        {
-                            "date": "0000-00-00",
-                            "name": first_hist["old_name"],
-                            "source": "history_seed",
-                        }
-                    )
-
-                for _, h_row in code_hist.iterrows():
-                    timeline_events.append(
-                        {"date": h_row["change_date"], "name": h_row["new_name"], "source": "history"}
-                    )
-
-            # 3. 時系列ソート (古い順)
-            # 日付型への変換とソート
-            # (注意: 文字列比較でも YYYY-MM-DD 形式なら概ね機能するが、pd.to_datetime推奨)
-            timeline_events.sort(key=lambda x: str(x["date"]))
-
-            # 4. 歴史の再生 (Replay)
-            current_tracking_name = None
-
-            # 初期値の推論:
-            # タイムラインの最初のイベントの「前」の状態は分からない。
-            # しかし、最初のイベント名が「最初の名前」であることは確定できる。
-
-            rebuilt_code_events = []
-
-            for evt in timeline_events:
-                evt_name = evt["name"]
-                evt_date = evt["date"]
-
-                if current_tracking_name is None:
-                    current_tracking_name = evt_name
-                    continue
-
-                # 正規化して比較
-                norm_curr = self._normalize_company_name(current_tracking_name)
-                norm_evt = self._normalize_company_name(evt_name)
-
-                if norm_curr != norm_evt:
-                    # 変更検知
-                    # 過去に記録されたイベントと全く同じもの(日時・新旧名)であれば、
-                    # 重複排除されるが、ここでは意図的に「再生成」する。
-                    rebuilt_code_events.append(
-                        {"code": code, "old_name": current_tracking_name, "new_name": evt_name, "change_date": evt_date}
-                    )
-                    logger.info(f"🔄 Rebuild History: {code} | {current_tracking_name} -> {evt_name} ({evt_date})")
-                    current_tracking_name = evt_name
-
-            # 5. 結果の格納 (メモリ上の更新)
-            # このコードに関する新しい履歴を確定リストに追加
-            # (重複除外は後続の drop_duplicates で行われるが、
-            #  古い誤った履歴(未来->過去)を消すために、後で name_history からこのコード分を除外する必要がある)
-            new_history_events.extend(rebuilt_code_events)
-
-        # 4. 履歴の保存 (Atomic & Non-destructive)
-        # 【修正】History Evaporation（履歴の蒸発）バグを修正。
-        # 以前は processed_codes に該当する全履歴を削除していたが、
-        # これでは別期間の実行時に既存の履歴が消えてしまう。
-        # 既存の履歴を保持したまま、新しい変遷のみをマージして重複排除する。
-
-        if new_history_events:
-            new_hist_df = pd.DataFrame(new_history_events)
-            name_history = pd.concat([name_history, new_hist_df], ignore_index=True)
-
-        if processed_codes:  # 変更があってもなくても、ファイル更新（削除の反映）は必要
-            name_history = name_history.drop_duplicates()
-            # defer=True を指定してコミットバッファに積む
-            self._save_and_upload("name", name_history, defer=True)
-            if new_history_events:
-                logger.info(f"時系列リコンシリエーション: {len(new_history_events)} 件の変遷を特定 (Clean Rebuild)")
-            else:
-                logger.info("時系列リコンシリエーション: 変更なし (履歴はクリーニングされました)")
-
-        # 全状態の中から、code ごとに提出日時が最新のものを抽出
-        sorted_all = all_states.sort_values("last_submitted_at", ascending=False)
-
-        # セクターと市場情報の「属性継承（Inheritance）」
-        # 最新レコードが NULL や "その他" の場合、過去の有効なレコード（JPX等）から引き継ぐ
-        def resolve_attr(group, col):
-            # 提出日に関わらず、そのコードにおける NULL 以外の最も確かな値を探す
-            # (JPXは1970年だがセクター情報は「正」であるため、全体から検索して良い)
-            if col not in group.columns:
-                return None
-            valid = group[col][~group[col].isin(["その他", None, "nan", ""])]
-            return valid.iloc[0] if not valid.empty else None
-
-        # 各コードの最新状態を特定しつつ、属性を補完
-        best_records = []
-        for _, group in sorted_all.groupby("code", sort=False):
-            # 1. 物理的な最新レコードを取得 (社名と提出日時の決定用)
-            latest_rec = group.iloc[0].copy()
-
-            # 2. 属性の補完: JPX属性 (sector_jpx_33, market) は非NULLのものを全体から探す
-            # (モデル定義が正しければ、一度取得されたJPX属性は全タイムラインで共有されるべき)
-            jpx_sector = resolve_attr(group, "sector_jpx_33")
-            jpx_market = resolve_attr(group, "market")
-
-            if jpx_sector:
-                latest_rec["sector_jpx_33"] = jpx_sector
-            if jpx_market:
-                latest_rec["market"] = jpx_market
+            # --- 上場履歴 (Listing History) の生成 ---
+            # is_active の変化を、既存マスタ(current_m)と比較して検知
+            if not current_m.empty:
+                old_row = current_m[current_m["code"] == code]
+                if not old_row.empty:
+                    old_active = old_row.iloc[0].get("is_active", True)
+                    new_active = latest_rec["is_active"]
+                    if old_active and not new_active:
+                        listing_events.append({"code": code, "type": "DELISTING", "event_date": today})
+                    elif not old_active and new_active:
+                        listing_events.append({"code": code, "type": "LISTING", "event_date": today})
 
             best_records.append(latest_rec)
 
         self.master_df = pd.DataFrame(best_records)
 
-        # defer=True を指定してコミットバッファに積む
+        # 履歴の保存
+        if listing_events:
+            self.update_listing_history(pd.DataFrame(listing_events))
+
+        # コミットバッファに積む
         return self._save_and_upload("master", self.master_df, defer=True)
 
     def get_last_index_list(self, index_name: str) -> pd.DataFrame:
