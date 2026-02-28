@@ -75,7 +75,8 @@ class CatalogManager:
             parent_code = sec_code_5[:4] + "0"
             parent_row = self.master_df[self.master_df["code"] == parent_code]
             if not parent_row.empty and pd.notna(parent_row.iloc[0].get("edinet_code")):
-                logger.info(f"優先株 {sec_code_5} の EDINETコードを親銘柄 {parent_code} から継承します。")
+                # 継承成功は DEBUG レベルとする（ノイズ抑制）
+                logger.debug(f"優先株 {sec_code_5} の EDINETコードを親銘柄 {parent_code} から継承します。")
                 return parent_row.iloc[0]["edinet_code"], parent_row.iloc[0].get("jcn")
 
         # 1. 最近の提出書類をスキャン (IPO銘柄の捕捉)
@@ -818,7 +819,7 @@ class CatalogManager:
                 if sec_code[4] != "0":
                     parent_c = sec_code[:4] + "0"
                     rec["parent_code"] = parent_c
-                    logger.debug(f"優先株 {sec_code} に親銘柄 {parent_c} を紐付けました。")
+                    # logger.debug 削除（ノイズ抑制）
 
                 # --- B. IPO動的発見 & 登録ガード ---
                 # EDINETコード/JCNが不明な場合のみ探索
@@ -838,7 +839,6 @@ class CatalogManager:
                             for k, v in m_rec.items():
                                 if k not in rec or rec[k] is None:
                                     rec[k] = v
-                            logger.debug(f"既存マスタから属性を継承・復元しました: {sec_code}")
 
                     # 2. それでも不明、かつ「一般事業会社の新規IPO」の可能性がある場合のみ動的発見を実行
                     # 特殊銘柄や優先株は Discovery Service (書類APIスキャン) の対象外とする。
@@ -851,7 +851,8 @@ class CatalogManager:
                             if not self.master_df.empty and sec_code in self.master_df["code"].values:
                                 pass  # 既存銘柄の場合はログを出さずに更新を許可
                             else:
-                                logger.warning(
+                                # 未知銘柄の保留は DEBUG レベルへ（ノイズ抑制。必要なら再調査可能）
+                                logger.debug(
                                     f"Registration Guard: {sec_code} はEDINET情報が未発見のため、新規登録を保留します。"
                                 )
                                 continue
