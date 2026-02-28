@@ -833,10 +833,14 @@ class CatalogManager:
                         is_preferred = sec_code[4] != "0"
 
                         if not is_special and not is_preferred:
-                            logger.warning(
-                                f"Registration Guard: {sec_code} はEDINET情報が未発見のため、二重登録を保留します。"
-                            )
-                            continue
+                            # 【修正】既存マスタに存在する銘柄であれば、更新（上場廃止等）を許可する
+                            if not self.master_df.empty and sec_code in self.master_df["code"].values:
+                                logger.debug(f"Discovery失敗ですが、既存銘柄 {sec_code} のため更新を許可します。")
+                            else:
+                                logger.warning(
+                                    f"Registration Guard: {sec_code} はEDINET情報が未発見のため、新規登録を保留します。"
+                                )
+                                continue
 
             try:
                 # バリデーション (models.py での5桁正規化、nan防止が効く)
