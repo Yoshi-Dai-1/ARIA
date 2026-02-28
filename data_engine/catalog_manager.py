@@ -80,7 +80,6 @@ class CatalogManager:
                 return parent_row.iloc[0]["edinet_code"], parent_row.iloc[0].get("jcn")
 
         # 1. 最近の提出書類をスキャン (IPO銘柄の捕捉)
-        logger.debug(f"証券コード {sec_code_5} の EDINET情報を書類一覧APIから探索中...")
         for i in range(30):
             date = (datetime.datetime.now() - datetime.timedelta(days=i)).strftime("%Y-%m-%d")
             url = f"https://disclosure.edinet-fsa.go.jp/api/v1/documents.json?date={date}&type=2"
