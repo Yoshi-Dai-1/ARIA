@@ -823,7 +823,12 @@ class CatalogManager:
                 # --- B. IPO動的発見 & 登録ガード ---
                 # EDINETコード/JCNが不明な場合のみ探索
                 if not rec.get("edinet_code") or not rec.get("jcn"):
-                    # まず既存マスタにあるかチェック (API叩く前に)
+                    # 判定: 特殊銘柄（ETF/REIT/PRO Market）または優先株か？
+                    market = str(rec.get("market") or "").upper()
+                    is_special = any(x in market for x in ["ETF", "REIT", "PRO MARKET"])
+                    is_preferred = sec_code[4] != "0"
+
+                    # 1. まず既存マスタにあるかチェック (APIを叩く前に100%復元)
                     if not self.master_df.empty:
                         m_row = self.master_df[self.master_df["code"] == sec_code]
                         if not m_row.empty:
@@ -831,26 +836,21 @@ class CatalogManager:
                             rec["jcn"] = m_row.iloc[0].get("jcn")
                             logger.debug(f"既存マスタから識別子を復元しました: {sec_code}")
 
-                    # それでも不明な場合のみ動的発見を実行
-                    if not rec.get("edinet_code") or not rec.get("jcn"):
+                    # 2. それでも不明、かつ「一般事業会社の新規IPO」の可能性がある場合のみ動的発見を実行
+                    # 特殊銘柄や優先株は Discovery Service (書類APIスキャン) の対象外とする。
+                    if (not rec.get("edinet_code") or not rec.get("jcn")) and not is_special and not is_preferred:
                         discovery = self._discover_edinet_code(sec_code)
                         if discovery:
                             rec["edinet_code"], rec["jcn"] = discovery
                         else:
-                            # 発見できなかった場合のガード
-                            market = str(rec.get("market") or "").upper()
-                            is_special = any(x in market for x in ["ETF", "REIT", "PRO MARKET"])
-                            is_preferred = sec_code[4] != "0"
-
-                            if not is_special and not is_preferred:
-                                # 【修正】既存マスタに存在する銘柄であれば、更新（上場廃止等）を許可する
-                                if not self.master_df.empty and sec_code in self.master_df["code"].values:
-                                    logger.debug(f"Discovery失敗ですが、既存銘柄 {sec_code} のため更新を許可します。")
-                                else:
-                                    logger.warning(
-                                        f"Registration Guard: {sec_code} はEDINET情報が未発見のため、新規登録を保留します。"
-                                    )
-                                    continue
+                            # 探索で見つからなかった場合のガード
+                            if not self.master_df.empty and sec_code in self.master_df["code"].values:
+                                logger.debug(f"Discovery失敗ですが、既存銘柄 {sec_code} のため更新を許可します。")
+                            else:
+                                logger.warning(
+                                    f"Registration Guard: {sec_code} はEDINET情報が未発見のため、新規登録を保留します。"
+                                )
+                                continue
 
             try:
                 # バリデーション (models.py での5桁正規化、nan防止が効く)
