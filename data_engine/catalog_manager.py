@@ -63,10 +63,10 @@ class CatalogManager:
             self._update_master_from_edinet_codes()
 
     def _discover_edinet_code(self, sec_code: str) -> Optional[Tuple[str, str]]:
-        """
-        【IPO動的発見】証券コードから EDINETコード/JCN を書類一覧API経由で逆引きする。
+        """EDINET書類一覧APIをスキャニングし、証券コードからEDINETコード/JCNを特定する
         過去30日分の提出書類をスキャンし、secCode が一致するものを探す。
         """
+        logger.debug(f"証券コード {sec_code} の EDINET情報を書類一覧APIから探索中...")
         import datetime
 
         sec_code_5 = sec_code if len(sec_code) == 5 else sec_code + "0"
@@ -79,7 +79,7 @@ class CatalogManager:
                 return parent_row.iloc[0]["edinet_code"], parent_row.iloc[0].get("jcn")
 
         # 1. 最近の提出書類をスキャン (IPO銘柄の捕捉)
-        logger.info(f"証券コード {sec_code_5} の EDINET情報を書類一覧APIから探索中...")
+        logger.debug(f"証券コード {sec_code_5} の EDINET情報を書類一覧APIから探索中...")
         for i in range(30):
             date = (datetime.datetime.now() - datetime.timedelta(days=i)).strftime("%Y-%m-%d")
             url = f"https://disclosure.edinet-fsa.go.jp/api/v1/documents.json?date={date}&type=2"
@@ -830,11 +830,15 @@ class CatalogManager:
 
                     # 1. まず既存マスタにあるかチェック (APIを叩く前に100%復元)
                     if not self.master_df.empty:
-                        m_row = self.master_df[self.master_df["code"] == sec_code]
+                        # 型不一致を防ぐため、明示的に文字列として比較
+                        m_row = self.master_df[self.master_df["code"].astype(str) == str(sec_code)]
                         if not m_row.empty:
-                            rec["edinet_code"] = m_row.iloc[0].get("edinet_code")
-                            rec["jcn"] = m_row.iloc[0].get("jcn")
-                            logger.debug(f"既存マスタから識別子を復元しました: {sec_code}")
+                            m_rec = m_row.iloc[0].to_dict()
+                            # 入力にない属性を既存マスタから補完 (Inheritance)
+                            for k, v in m_rec.items():
+                                if k not in rec or rec[k] is None:
+                                    rec[k] = v
+                            logger.debug(f"既存マスタから属性を継承・復元しました: {sec_code}")
 
                     # 2. それでも不明、かつ「一般事業会社の新規IPO」の可能性がある場合のみ動的発見を実行
                     # 特殊銘柄や優先株は Discovery Service (書類APIスキャン) の対象外とする。
@@ -845,7 +849,7 @@ class CatalogManager:
                         else:
                             # 探索で見つからなかった場合のガード
                             if not self.master_df.empty and sec_code in self.master_df["code"].values:
-                                logger.debug(f"Discovery失敗ですが、既存銘柄 {sec_code} のため更新を許可します。")
+                                pass  # 既存銘柄の場合はログを出さずに更新を許可
                             else:
                                 logger.warning(
                                     f"Registration Guard: {sec_code} はEDINET情報が未発見のため、新規登録を保留します。"
