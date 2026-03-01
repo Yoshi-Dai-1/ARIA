@@ -98,8 +98,7 @@ class MasterMerger:
                 # s.apply(...) よりも s.isin([True, False]) の方が堅牢
                 has_bool = combined_df[col].isin([True, False]).any()
                 if not has_bool:
-                    # 【根治】None を保持したまま文字列化するため、map(str) ではなく、非NULLのみに適用
-                    combined_df[col] = combined_df[col].apply(lambda x: str(x).strip() if pd.notna(x) else None)
+                    combined_df[col] = combined_df[col].astype(str)
                 else:
                     # 【世界標準】論理値型（Boolean）を維持
                     # 表示ツールによっては true/false となるが、データ解析上の「整合性」「速度」を最優先する。

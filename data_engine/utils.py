@@ -1,12 +1,10 @@
-from typing import Optional
-
 import pandas as pd
 
 
-def normalize_code(code) -> Optional[str]:
+def normalize_code(code) -> str:
     """
     証券コードを ARIA 規格 (5桁) に正規化した文字列として返す。
-    - None / NaN は None を返す。
+    - None / NaN は空文字列 "" に変換。
     - 数値 (float/int) は文字列に変換。
     - "1301.0" のような Excel 由来の .0 サフィックスを除去。
     - 4桁の場合は末尾に "0" を付与して 5 桁化する。
