@@ -234,19 +234,36 @@ class CatalogManager:
                     aggregation_applied_count += 1
                     logger.debug(f"集約ブリッジ適用: {old_code} → {new_code} (旧コードをリンク)")
 
-        if updated_count > 0:
+        # マスタ反映 & スコープ強制
+        if updated_count > 0 or aggregation_applied_count > 0 or not self.master_df.empty:
             new_df = pd.DataFrame(list(master_dict.values()))
+
             # 【重要】スコープ強制: マスタ全体に対してもフィルタを適用し、不適合なデータを除去する
             if self.scope == "Listed":
-                # 上場スコープ: 証券コードがないものは排除
-                new_df = new_df[~(~new_df["is_listed_edinet"] & new_df["code"].isna())]
+                # 上場スコープ: 「証券コードを一度も持ったことがなく（NaN）、かつ非上場」のエンティティを物理的に排除
+                # すでにコードが刻まれている（歴史的コードあり）場合は、is_listed_edinet が False でも保持する。
+                new_df = new_df[~((new_df["code"].isna() | (new_df["code"] == "")) & ~new_df["is_listed_edinet"])]
             elif self.scope == "Unlisted":
-                # 非上場スコープ: 上場銘柄を排除
-                new_df = new_df[~new_df["is_listed_edinet"]]
+                # 非上場スコープ: 証券コードを持つ（上場実績のある）銘柄を排除
+                new_df = new_df[new_df["code"].isna() | (new_df["code"] == "")]
 
+            # 最終的なマスタデータの更新
             self.master_df = self._clean_dataframe("master", new_df)
-            logger.success(f"マスタ同期完了: {updated_count} 件のレコードを更新/追加し、スコープ強制を適用しました。")
-            self._save_and_upload("master", self.master_df, defer=True)
+
+            # 何らかの「論理的変化（更新・追加・集約・削除）」があった場合のみ保存
+            # 単なるロード後の再同期でデータが同一なら保存をスキップしてIOを節約
+            if (
+                updated_count > 0
+                or aggregation_applied_count > 0
+                or len(self.master_df) != len(pd.DataFrame(list(master_dict.values())))
+            ):
+                logger.success(
+                    f"マスタ同期完了: {updated_count} 件のレコードを更新/追加し、スコープ強制を適用しました。"
+                )
+                self._save_and_upload("master", self.master_df, defer=True)
+            elif updated_count == 0 and aggregation_applied_count == 0:
+                # ログを出さずに静かに終了
+                pass
 
         if listing_events:
             # 証券コード単位での重複を除外（4546 vs 4543 の差分を工学的に許容・制御）
