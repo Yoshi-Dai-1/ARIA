@@ -231,10 +231,21 @@ class CatalogManager:
         # これにより、新規登録されたエンティティに対しても旧コードのリンクが成立する
         aggregation_applied_count = 0
         for old_code, new_code in self.aggregation_map.items():
-            # 旧コードの情報 (EdinetCodeRecord)
+            # 旧コードの情報 (EdinetCodeRecord または 既存マスタ)
             old_info = self.edinet_codes.get(old_code)
-            old_name = old_info.submitter_name if old_info else "不明"
-            old_sec = old_info.sec_code if old_info else "なし"
+            if old_info:
+                old_name = old_info.submitter_name
+                old_sec = old_info.sec_code
+            elif old_code in master_dict:
+                # EDINET最新リストにはないが、自社マスタには存在する場合（歴史的保持）
+                m_old = master_dict[old_code]
+                old_name = m_old.get("company_name", "不明")
+                old_sec = m_old.get("code")
+            else:
+                old_name = "不明"
+                old_sec = None
+
+            old_sec_disp = f"証券コード:{old_sec}" if old_sec else "コードなし"
 
             if new_code in master_dict:
                 m_rec = master_dict[new_code]
@@ -250,13 +261,13 @@ class CatalogManager:
                     m_rec["former_edinet_codes"] = ",".join(sorted(former_set))
                     aggregation_applied_count += 1
                     logger.debug(
-                        f"集約ブリッジ適用: {old_code}({old_name} / 証券コード:{old_sec}) → "
+                        f"集約ブリッジ適用: {old_code}({old_name} / {old_sec_disp}) → "
                         f"{new_code}({new_name} / {new_sec_disp}) [旧コードをリンク]"
                     )
             else:
                 # 継続先コードが現在の EDINET リストに存在しない場合
                 logger.debug(
-                    f"集約ブリッジ・スキップ: {old_code}({old_name} / 証券コード:{old_sec}) → {new_code} "
+                    f"集約ブリッジ・スキップ: {old_code}({old_name} / {old_sec_disp}) → {new_code} "
                     f"(継続先 {new_code} が現在の EDINET リストに存在しません)"
                 )
 
