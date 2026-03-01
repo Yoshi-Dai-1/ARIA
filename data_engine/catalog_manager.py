@@ -1007,13 +1007,20 @@ class CatalogManager:
         today = pd.Timestamp.now().strftime("%Y-%m-%d")
 
         for code, group in all_states.groupby("code"):
-            # 【追加】スコープフィルタリング (JPX/属性更新段階)
+            # 【重要】スコープフィルタリング (JPX/属性更新段階)
             # 物理的なコードの有無で判定
             has_code = code is not None and len(str(code)) >= 4
-            if self.scope == "Listed" and not has_code:
-                continue
-            if self.scope == "Unlisted" and has_code:
-                continue
+
+            # 【工学的主権】集約ターゲット（旧社名など）は、たとえ証券コードがなくても
+            # 履歴保持と名寄せのために Listed スコープでも残すべき。
+            is_agg_target = group["former_edinet_codes"].notna().any()
+
+            if self.scope == "Listed":
+                if not has_code and not is_agg_target:
+                    continue
+            elif self.scope == "Unlisted":
+                if has_code:
+                    continue
 
             # 【重要】提出日時の降順でソート。日時が同じ（または欠損）ならインデックスが大きい（最新入力）を優先。
             # sort_values は安定ソートのため、先に出順（インデックス）で降順ソートしておく。
@@ -1024,7 +1031,16 @@ class CatalogManager:
 
             # --- 属性継承 (Inheritance) ---
             # JPX由来の属性や親からの属性を、非NULLであれば継承する
-            for attr in ["sector_jpx_33", "sector_jpx_17", "market", "jcn", "edinet_code", "parent_code"]:
+            # 【根治】former_edinet_codes を継承リストに追加。これにより集約情報が永続化される。
+            for attr in [
+                "sector_jpx_33",
+                "sector_jpx_17",
+                "market",
+                "jcn",
+                "edinet_code",
+                "parent_code",
+                "former_edinet_codes",
+            ]:
                 val = resolve_attr(sorted_group, attr)
                 if val is not None:
                     latest_rec[attr] = val
