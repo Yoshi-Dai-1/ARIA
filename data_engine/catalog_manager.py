@@ -1006,7 +1006,16 @@ class CatalogManager:
         listing_events = []
         today = pd.Timestamp.now().strftime("%Y-%m-%d")
 
-        for code, group in all_states.groupby("code"):
+        # 【最重要】グループ化キーの適正化 (Identity Architecture)
+        # 証券コード単体では NULL 同士が衝突（統合・消失）し、
+        # EDINETコード単体では「同一提出者の異なる銘柄（優先株など）」が衝突する。
+        # 工学的主権に基づき、(edinet_code, code) のペアをユニークな識別子とする。
+        # dropna=False により、証券コードが NULL の非上場銘柄も EDINETコードごとに独立して管理される。
+        group_cols = ["edinet_code", "code"]
+        for _, group in all_states.groupby(group_cols, dropna=False):
+            # 代表コードを取得
+            code_vals = group["code"].dropna().unique()
+            code = code_vals[0] if len(code_vals) > 0 else None
             # 【重要】スコープフィルタリング (JPX/属性更新段階)
             # 物理的なコードの有無で判定
             has_code = code is not None and len(str(code)) >= 4
