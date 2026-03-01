@@ -645,9 +645,9 @@ class CatalogManager:
         filename = self.paths[key]
 
         # 【重要: Lost Update 防止】保留中のコミット（メモリ上）があれば、リモートより優先する (Read-Your-Writes)
-        if key in self._commit_operations:
-            data = self._commit_operations[key]
-            logger.debug(f"メモリ上の保留中データをロードに使用します: {key}")
+        if filename in self._commit_operations:
+            data = self._commit_operations[filename]
+            logger.debug(f"メモリ上の保留中データをロードに使用します: {filename}")
             return data[0] if isinstance(data, tuple) else data
 
         try:
