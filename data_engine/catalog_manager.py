@@ -146,6 +146,13 @@ class CatalogManager:
                     # スコープ外（かつ歴史的コードも集約先指定もなし）ならマスタから削除 (同期)
                     master_dict.pop(e_code, None)
                     continue
+
+                # 【追加】非上場だが保護された場合の理由をロギング (透明性向上)
+                if self.scope == "Listed" and not is_listed_official:
+                    if has_code_now:
+                        logger.info(f"💡 非上場銘柄を保護 (証券コード保有): {sec_code} ({ed_rec.submitter_name})")
+                    elif is_agg_target:
+                        logger.info(f"💡 非上場銘柄を保護 (集約の継続先): {e_code} ({ed_rec.submitter_name})")
                 if self.scope == "Unlisted" and has_code_now:
                     master_dict.pop(e_code, None)
                     continue
@@ -275,15 +282,28 @@ class CatalogManager:
             logger.success(f"上場履歴同期完了: {len(events_df)} 件のイベントを追加予約しました。")
 
         # 最終サマリーログの出力 (工学的主権による透明性の確保)
-        active_master = self.master_df[self.master_df["is_active"]]
-        unique_sec_codes = active_master["code"].nunique()
+        # 3889 と 3884 の乖離を完全に説明するために内訳を計算
+        master_df = self.master_df
+        listed_mask = master_df["is_listed_edinet"].fillna(False).astype(bool)
+        has_code_mask = (master_df["code"].notna()) & (master_df["code"] != "")
+        is_agg_target_mask = master_df["edinet_code"].isin(self.aggregation_map.values())
 
-        # 総集約保持数の計算
-        total_aggregated = self.master_df["former_edinet_codes"].dropna().str.split(",").str.len().sum()
+        # 1. 純粋な上場銘柄
+        pure_listed = master_df[listed_mask & has_code_mask]
+        # 2. 非上場だが証券コードを保持
+        unlisted_with_code = master_df[~listed_mask & has_code_mask]
+        # 3. 集約の継続先として保持
+        agg_targets_only = master_df[~listed_mask & ~has_code_mask & is_agg_target_mask]
+
+        unique_sec_codes = pure_listed["code"].nunique()
+        total_aggregated = master_df["former_edinet_codes"].dropna().str.split(",").str.len().sum()
 
         logger.success(
-            f"同期完了: 総エンティティ数 {len(self.master_df)} / 有効証券コード数 {unique_sec_codes} "
-            f"(集約適用: 今回+{aggregation_applied_count}件 / 総保持 {int(total_aggregated)}件)"
+            f"同期完了: 総エンティティ数 {len(master_df)} (上場:{len(pure_listed)} / "
+            f"コード保持非上場:{len(unlisted_with_code)} / 集約先保護:{len(agg_targets_only)})"
+        )
+        logger.success(
+            f"有効証券コード数 {unique_sec_codes} (集約適用: 今回+{aggregation_applied_count}件 / 総保持 {int(total_aggregated)}件)"
         )
 
     def sync_edinet_code_lists(self) -> Tuple[Dict[str, EdinetCodeRecord], Dict[str, str]]:
