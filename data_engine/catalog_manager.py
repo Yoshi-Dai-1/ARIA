@@ -63,11 +63,10 @@ class CatalogManager:
         if self.edinet_codes:
             self._update_master_from_edinet_codes()
 
-    def _discover_edinet_code(self, sec_code: str) -> Optional[Tuple[str, str]]:
-        """EDINET書類一覧APIをスキャニングし、証券コードからEDINETコード/JCNを特定する
-        過去30日分の提出書類をスキャンし、secCode が一致するものを探す。
-        """
-        logger.debug(f"証券コード {sec_code} の EDINET情報を書類一覧APIから探索中...")
+    def _discover_edinet_code(self, sec_code: str, name: Optional[str] = None) -> Optional[Tuple[str, str]]:
+        """EDINET書類一覧APIをスキャニングし、証券コードからEDINETコード/JCNを特定する"""
+        display_name = f" ({name})" if name else ""
+        logger.debug(f"証券コード {sec_code}{display_name} の EDINET情報を書類一覧APIから探索中...")
         import datetime
 
         sec_code_5 = sec_code if len(sec_code) == 5 else sec_code + "0"
@@ -274,9 +273,13 @@ class CatalogManager:
         # 最終サマリーログの出力 (工学的主権による透明性の確保)
         active_master = self.master_df[self.master_df["is_active"]]
         unique_sec_codes = active_master["code"].nunique()
+
+        # 総集約保持数の計算
+        total_aggregated = self.master_df["former_edinet_codes"].dropna().str.split(",").str.len().sum()
+
         logger.success(
             f"同期完了: 総エンティティ数 {len(self.master_df)} / 有効証券コード数 {unique_sec_codes} "
-            f"(集約適用: {aggregation_applied_count}件)"
+            f"(集約適用: 今回+{aggregation_applied_count}件 / 総保持 {int(total_aggregated)}件)"
         )
 
     def sync_edinet_code_lists(self) -> Tuple[Dict[str, EdinetCodeRecord], Dict[str, str]]:
@@ -907,7 +910,7 @@ class CatalogManager:
                     # 2. それでも不明、かつ「一般事業会社の新規IPO」の可能性がある場合のみ動的発見を実行
                     # 特殊銘柄や優先株は Discovery Service (書類APIスキャン) の対象外とする。
                     if (not rec.get("edinet_code") or not rec.get("jcn")) and not is_special and not is_preferred:
-                        discovery = self._discover_edinet_code(sec_code)
+                        discovery = self._discover_edinet_code(sec_code, name=rec.get("company_name"))
                         if discovery:
                             rec["edinet_code"], rec["jcn"] = discovery
                         else:
@@ -915,9 +918,10 @@ class CatalogManager:
                             if not self.master_df.empty and sec_code in self.master_df["code"].values:
                                 pass  # 既存銘柄の場合はログを出さずに更新を許可
                             else:
-                                # 未知銘柄の保留は DEBUG レベルへ（ノイズ抑制。必要なら再調査可能）
+                                # 未知銘柄の保留は DEBUG レベルへ
                                 logger.debug(
-                                    f"Registration Guard: {sec_code} はEDINET情報が未発見のため、新規登録を保留します。"
+                                    f"Registration Guard: {sec_code} ({rec.get('company_name')}) は"
+                                    "EDINET情報が未発見のため、新規登録を保留します。"
                                 )
                                 continue
 

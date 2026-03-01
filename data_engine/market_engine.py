@@ -32,6 +32,7 @@ class NikkeiStrategy(IndexStrategy):
         # ユーザー指定のアーカイブ版URL (403を回避しやすい)
         default_url = "https://indexes.nikkei.co.jp/nkave/archives/file/nikkei_stock_average_weight_jp.csv"
         self.url = url if url else default_url
+        self.index_name = "日経225"  # デフォルト
         self.headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -42,18 +43,18 @@ class NikkeiStrategy(IndexStrategy):
         }
 
     def fetch_data(self) -> pd.DataFrame:
-        logger.info("日経225構成銘柄を取得中 (Archive CSV)...")
+        logger.info(f"{self.index_name}構成銘柄を取得中 (Archive CSV)...")
         session = get_robust_session()
         try:
             r = session.get(self.url, headers=self.headers)
             if r.status_code != 200:
-                logger.error(f"日経225取得エラー: HTTP {r.status_code}")
+                logger.error(f"{self.index_name}取得エラー: HTTP {r.status_code}")
                 # HTTP 403 の場合は詳細なメッセージを出す
                 if r.status_code == 403:
                     logger.error("日経新聞社サイトからアクセスが拒絶されました (403)。")
                 r.raise_for_status()
         except Exception as e:
-            logger.error(f"日経225リクエスト失敗: {e}")
+            logger.error(f"{self.index_name}リクエスト失敗: {e}")
             raise
 
         # Shift-JISでデコード
@@ -91,11 +92,11 @@ class NikkeiStrategy(IndexStrategy):
 
             df["weight"] = df[weight_col].apply(parse_weight)
 
-            logger.success(f"日経225データ取得成功: {len(df)} 件")
+            logger.success(f"{self.index_name}データ取得成功: {len(df)} 件")
             return df[["code", "weight"]]
 
         except Exception as e:
-            logger.error(f"日経225パース失敗: {e}")
+            logger.error(f"{self.index_name}パース失敗: {e}")
             raise e
 
 
@@ -162,6 +163,11 @@ class MarketDataEngine:
             ),
             "TOPIX": TopixStrategy(),
         }
+        # 各戦略に表示用の指数名を設定
+        self.strategies["NikkeiHighDiv50"].index_name = "日経高配当50"
+        self.strategies["JPXNikkei400"].index_name = "JPX日経400"
+        self.strategies["JPXNikkeiMidSmall"].index_name = "JPX日経中小型"
+
         self.jpx_url = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
 
     def fetch_jpx_master(self) -> pd.DataFrame:
