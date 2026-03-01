@@ -115,15 +115,7 @@ class CatalogManager:
             if pd.notna(row.get("edinet_code"))
         }
 
-        # 【集約ブリッジ】旧コード→新コードの付け替えを適用
-        for old_code, new_code in self.aggregation_map.items():
-            if new_code in master_dict:
-                existing_former = master_dict[new_code].get("former_edinet_codes") or ""
-                former_set = set(existing_former.split(",")) if existing_former else set()
-                former_set.discard("")
-                former_set.add(old_code)
-                master_dict[new_code]["former_edinet_codes"] = ",".join(sorted(former_set))
-                logger.debug(f"集約ブリッジ適用: {old_code} → {new_code} (旧コードをリンク)")
+        # 集約ブリッジは全ループ終了後に適用するため、ここでは実施しない
 
         for e_code, ed_rec in self.edinet_codes.items():
             # 【最適化】上場判定: 金融庁リストの「上場区分」が完全に "上場" である場合のみ
@@ -146,13 +138,16 @@ class CatalogManager:
                 sec_code = ed_rec.sec_code or m_rec.get("code")
 
                 # 【追加】スコープフィルタリング (同期段階)
-                # 物理的なコードの有無で判定
-                has_code = sec_code is not None and len(str(sec_code)) >= 4
-                if self.scope == "Listed" and not has_code:
-                    # スコープ外ならマスタから削除 (同期)
+                # 物理的なコードの有無で判定。ただし「過去にコードを持っていた事実」を優先するため、
+                # すでに証券コードがマスタに刻まれている場合は Listed モードでも保持する。
+                has_code_now = sec_code is not None and len(str(sec_code)) >= 4
+                historical_code = m_rec.get("code") is not None and len(str(m_rec.get("code"))) >= 4
+
+                if self.scope == "Listed" and not (has_code_now or historical_code):
+                    # スコープ外（かつ歴史的コードもなし）ならマスタから削除 (同期)
                     master_dict.pop(e_code, None)
                     continue
-                if self.scope == "Unlisted" and has_code:
+                if self.scope == "Unlisted" and has_code_now:
                     master_dict.pop(e_code, None)
                     continue
 
@@ -225,6 +220,20 @@ class CatalogManager:
                 master_dict[e_code] = new_master_rec.model_dump()
                 updated_count += 1
 
+        # 【集約ブリッジ】旧コード→新コードの付け替えを「登録完了後」に適用
+        # これにより、新規登録されたエンティティに対しても旧コードのリンクが成立する
+        aggregation_applied_count = 0
+        for old_code, new_code in self.aggregation_map.items():
+            if new_code in master_dict:
+                existing_former = master_dict[new_code].get("former_edinet_codes") or ""
+                former_set = set(existing_former.split(",")) if existing_former else set()
+                if old_code not in former_set:
+                    former_set.add(old_code)
+                    former_set.discard("")
+                    master_dict[new_code]["former_edinet_codes"] = ",".join(sorted(former_set))
+                    aggregation_applied_count += 1
+                    logger.debug(f"集約ブリッジ適用: {old_code} → {new_code} (旧コードをリンク)")
+
         if updated_count > 0:
             new_df = pd.DataFrame(list(master_dict.values()))
             # 【重要】スコープ強制: マスタ全体に対してもフィルタを適用し、不適合なデータを除去する
@@ -240,9 +249,18 @@ class CatalogManager:
             self._save_and_upload("master", self.master_df, defer=True)
 
         if listing_events:
-            events_df = pd.DataFrame(listing_events)
+            # 証券コード単位での重複を除外（4546 vs 4543 の差分を工学的に許容・制御）
+            events_df = pd.DataFrame(listing_events).drop_duplicates(subset=["code", "type"])
             self.update_listing_history(events_df)
             logger.success(f"上場履歴同期完了: {len(events_df)} 件のイベントを追加予約しました。")
+
+        # 最終サマリーログの出力 (工学的主権による透明性の確保)
+        active_master = self.master_df[self.master_df["is_active"]]
+        unique_sec_codes = active_master["code"].nunique()
+        logger.success(
+            f"同期完了: 総エンティティ数 {len(self.master_df)} / 有効証券コード数 {unique_sec_codes} "
+            f"(集約適用: {aggregation_applied_count}件)"
+        )
 
     def sync_edinet_code_lists(self) -> Tuple[Dict[str, EdinetCodeRecord], Dict[str, str]]:
         """金融庁から和英両方のコードリストおよび集約一覧を取得し、協同してマスタベースを構築する"""

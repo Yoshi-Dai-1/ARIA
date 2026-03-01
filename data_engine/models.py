@@ -153,9 +153,10 @@ class StockMasterRecord(BaseModel):
     company_name_en: Optional[str] = Field(None, description="提出者名 (英文)")
     submitter_name_kana: Optional[str] = Field(None, description="提出者名 (ヨミ)")
     submitter_type: Optional[str] = Field(None, description="提出者種別")
-    is_consolidated: Optional[bool] = Field(None, description="連結の有無 (True/False)")
+    # --- 財務属性 ---
+    is_consolidated: Optional[bool] = Field(None, description="連結の有無 (有/無 -> True/False)")
     capital: Optional[float] = Field(None, description="資本金 (単位: 百万円)")
-    settlement_date: Optional[str] = Field(None, description="決算日")
+    settlement_date: Optional[str] = Field(None, description="決算期末")
     address: Optional[str] = Field(None, description="所在地")
 
     # --- 3. 業界・市場属性 (Industry & Market / JPX系) ---
@@ -186,7 +187,7 @@ class StockMasterRecord(BaseModel):
         "market",
         "last_submitted_at",
         "former_edinet_codes",
-        "is_consolidated",  # is_consolidated は nan_to_none で処理
+        "is_consolidated",
         mode="before",
     )
     @classmethod
@@ -196,20 +197,21 @@ class StockMasterRecord(BaseModel):
             return None
         if isinstance(v, float) and math.isnan(v):
             return None
-        if isinstance(v, str) and (v.lower() in ["nan", "none", "", "-"]):
-            return None
-
-        # 連結フラグの Bool 変換 (有/無 -> True/False)
         if isinstance(v, str):
             s_v = v.strip()
+            # 連結フラグの正規化: "有" -> True, "無" -> False
             if s_v == "有":
                 return True
             if s_v == "無":
                 return False
-        if v in [1, True]:
-            return True
-        if v in [0, False]:
-            return False
+            # 欠損値の正規化
+            if s_v.lower() in ["nan", "none", "", "-"]:
+                return None
+            return s_v
+
+        # 既に bool や数値などの場合はそのまま
+        if isinstance(v, (bool, int, float)):
+            return v
 
         return str(v).strip()
 
@@ -254,14 +256,6 @@ class IndexEvent(BaseModel):
 
     index_name: str
     code: str
-    type: str  # ADITION, REMOVAL
+    type: str  # ADD, REMOVE
     event_date: str
-
-
-class NameChangeEvent(BaseModel):
-    """社名変更イベントの記録モデル"""
-
-    code: str
-    old_name: str
-    new_name: str
-    change_date: str
+    note: Optional[str] = None
