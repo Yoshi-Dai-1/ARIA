@@ -146,10 +146,14 @@ class CatalogManager:
                 sec_code = ed_rec.sec_code or m_rec.get("code")
 
                 # 【追加】スコープフィルタリング (同期段階)
-                has_code = sec_code is not None and len(sec_code) >= 4
+                # 物理的なコードの有無で判定
+                has_code = sec_code is not None and len(str(sec_code)) >= 4
                 if self.scope == "Listed" and not has_code:
+                    # スコープ外ならマスタから削除 (同期)
+                    master_dict.pop(e_code, None)
                     continue
                 if self.scope == "Unlisted" and has_code:
+                    master_dict.pop(e_code, None)
                     continue
 
                 if sec_code:
@@ -192,7 +196,7 @@ class CatalogManager:
                 sec_code = ed_rec.sec_code
 
                 # 【追加】スコープフィルタリング (新規追加段階)
-                has_code = sec_code is not None and len(sec_code) >= 4
+                has_code = sec_code is not None and len(str(sec_code)) >= 4
                 if self.scope == "Listed" and not has_code:
                     continue
                 if self.scope == "Unlisted" and has_code:
@@ -908,6 +912,14 @@ class CatalogManager:
         today = pd.Timestamp.now().strftime("%Y-%m-%d")
 
         for code, group in all_states.groupby("code"):
+            # 【追加】スコープフィルタリング (JPX/属性更新段階)
+            # 物理的なコードの有無で判定
+            has_code = code is not None and len(str(code)) >= 4
+            if self.scope == "Listed" and not has_code:
+                continue
+            if self.scope == "Unlisted" and has_code:
+                continue
+
             # 【重要】提出日時の降順でソート。日時が同じ（または欠損）ならインデックスが大きい（最新入力）を優先。
             # sort_values は安定ソートのため、先に出順（インデックス）で降順ソートしておく。
             sorted_group = group.sort_index(ascending=False).sort_values(
@@ -924,18 +936,22 @@ class CatalogManager:
 
             # --- 上場履歴 (Listing History) の生成 ---
             # is_active の変化を、既存マスタ(current_m)と比較して検知
-            old_row = current_m[current_m["code"] == code] if not current_m.empty else pd.DataFrame()
-
-            if not old_row.empty:
-                old_active = old_row.iloc[0].get("is_active", True)
-                new_active = latest_rec["is_active"]
-                if old_active and not new_active:
-                    listing_events.append({"code": code, "type": "DELISTING", "event_date": today})
-                elif not old_active and new_active:
-                    listing_events.append({"code": code, "type": "LISTING", "event_date": today})
+            new_active = latest_rec.get("is_active", True)
+            if not current_m.empty:
+                old_row = current_m[current_m["code"] == code]
+                if not old_row.empty:
+                    old_active = old_row.iloc[0].get("is_active", True)
+                    if old_active and not new_active:
+                        listing_events.append({"code": code, "type": "DELISTING", "event_date": today})
+                    elif not old_active and new_active:
+                        listing_events.append({"code": code, "type": "LISTING", "event_date": today})
+                else:
+                    # 【修正】新規レコードでかつ Active なら、無条件で LISTING を生成 (ETF等の救済)
+                    if new_active:
+                        listing_events.append({"code": code, "type": "LISTING", "event_date": today})
             else:
-                # 【修正】新規銘柄（current_m にない、または master が空）且つ is_active=True なら無条件で LISTING 生成
-                if latest_rec.get("is_active", False):
+                # マスタが完全に空（初回全件投入時）の場合も、Active なら履歴を残す
+                if new_active:
                     listing_events.append({"code": code, "type": "LISTING", "event_date": today})
 
             best_records.append(latest_rec)

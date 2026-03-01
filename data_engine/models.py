@@ -72,8 +72,19 @@ class EdinetCodeRecord(BaseModel):
     )
     @classmethod
     def nan_to_none(cls, v: Any) -> Any:
+        """物理的事実に基づき、NaN/空欄/- を None に、有/無を bool に正規化する"""
+        if v is None:
+            return None
         if isinstance(v, float) and math.isnan(v):
             return None
+        if isinstance(v, str):
+            s_v = v.strip()
+            if s_v.lower() in ["nan", "none", "", "-"]:
+                return None
+            if s_v == "有":
+                return True
+            if s_v == "無":
+                return False
         return v
 
 
