@@ -43,12 +43,16 @@ def run_market_pipeline(target_date: str, mode: str = "all"):
         logger.critical("HF_TOKEN / HF_REPO が設定されていません。")
         sys.exit(1)
 
+    # 【追加】スコープの取得
+    aria_scope = os.getenv("ARIA_SCOPE", "Listed").capitalize()
+    logger.info(f"ARIA Execution Scope: {aria_scope}")
+
     # 初期化
     DATA_PATH.mkdir(parents=True, exist_ok=True)
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
     engine = MarketDataEngine(DATA_PATH)
-    catalog = CatalogManager(hf_repo, hf_token, DATA_PATH)  # 再利用
+    catalog = CatalogManager(hf_repo, hf_token, DATA_PATH, scope=aria_scope)  # スコープを伝播
 
     import shutil
 

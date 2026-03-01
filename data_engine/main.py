@@ -422,7 +422,7 @@ def main():
         logger.warning(f"タクソノミURL定義が見つかりません: {taxonomy_urls_path}")
 
     edinet = EdinetEngine(api_key, DATA_PATH, taxonomy_urls=taxonomy_urls)
-    catalog = CatalogManager(hf_repo, hf_token, DATA_PATH)
+    catalog = CatalogManager(hf_repo, hf_token, DATA_PATH, scope=ARIA_SCOPE)
     merger = MasterMerger(hf_repo, hf_token, DATA_PATH)
 
     # 【追加】Mergerモード分岐

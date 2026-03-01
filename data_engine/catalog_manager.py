@@ -17,10 +17,11 @@ from utils import normalize_code
 
 
 class CatalogManager:
-    def __init__(self, hf_repo: str, hf_token: str, data_path: Path):
+    def __init__(self, hf_repo: str, hf_token: str, data_path: Path, scope: str = "Listed"):
         self.hf_repo = hf_repo
         self.hf_token = hf_token
         self.data_path = data_path
+        self.scope = scope.capitalize()
         self.data_path.mkdir(parents=True, exist_ok=True)
 
         # 【修正】通信安定性向上のため、タイムアウト環境変数を設定
@@ -143,6 +144,14 @@ class CatalogManager:
                 # 【リスティングイベント生成 (生死判定)】
                 old_is_active = bool(m_rec.get("is_active", False))
                 sec_code = ed_rec.sec_code or m_rec.get("code")
+
+                # 【追加】スコープフィルタリング (同期段階)
+                has_code = sec_code is not None and len(sec_code) >= 4
+                if self.scope == "Listed" and not has_code:
+                    continue
+                if self.scope == "Unlisted" and has_code:
+                    continue
+
                 if sec_code:
                     if old_is_active is False and is_listed_official is True:
                         listing_events.append({"code": sec_code, "type": "LISTING", "event_date": today})
@@ -181,6 +190,14 @@ class CatalogManager:
             else:
                 # 新規レコードの追加
                 sec_code = ed_rec.sec_code
+
+                # 【追加】スコープフィルタリング (新規追加段階)
+                has_code = sec_code is not None and len(sec_code) >= 4
+                if self.scope == "Listed" and not has_code:
+                    continue
+                if self.scope == "Unlisted" and has_code:
+                    continue
+
                 if sec_code and is_listed_official:
                     listing_events.append({"code": sec_code, "type": "LISTING", "event_date": today})
 
@@ -205,9 +222,17 @@ class CatalogManager:
                 updated_count += 1
 
         if updated_count > 0:
-            self.master_df = pd.DataFrame(list(master_dict.values()))
-            self.master_df = self._clean_dataframe("master", self.master_df)
-            logger.success(f"マスタ同期完了: {updated_count} 件のレコードを更新/追加しました。")
+            new_df = pd.DataFrame(list(master_dict.values()))
+            # 【重要】スコープ強制: マスタ全体に対してもフィルタを適用し、不適合なデータを除去する
+            if self.scope == "Listed":
+                # 上場スコープ: 証券コードがないものは排除
+                new_df = new_df[~(~new_df["is_listed_edinet"] & new_df["code"].isna())]
+            elif self.scope == "Unlisted":
+                # 非上場スコープ: 上場銘柄を排除
+                new_df = new_df[~new_df["is_listed_edinet"]]
+
+            self.master_df = self._clean_dataframe("master", new_df)
+            logger.success(f"マスタ同期完了: {updated_count} 件のレコードを更新/追加し、スコープ強制を適用しました。")
             self._save_and_upload("master", self.master_df, defer=True)
 
         if listing_events:
@@ -625,7 +650,8 @@ class CatalogManager:
 
     def _save_and_upload(self, key: str, df: pd.DataFrame, defer: bool = False) -> bool:
         filename = self.paths[key]
-        local_file = self.data_path / Path(filename).name
+        local_file = self.data_path / filename  # 【修正】Path(filename).name によるディレクトリ剥離を廃止
+        local_file.parent.mkdir(parents=True, exist_ok=True)  # 【追加】親ディレクトリの存在を保証
 
         # 【絶対ガード】保存直前に最終クレンジング
         df = self._clean_dataframe(key, df)
@@ -898,15 +924,19 @@ class CatalogManager:
 
             # --- 上場履歴 (Listing History) の生成 ---
             # is_active の変化を、既存マスタ(current_m)と比較して検知
-            if not current_m.empty:
-                old_row = current_m[current_m["code"] == code]
-                if not old_row.empty:
-                    old_active = old_row.iloc[0].get("is_active", True)
-                    new_active = latest_rec["is_active"]
-                    if old_active and not new_active:
-                        listing_events.append({"code": code, "type": "DELISTING", "event_date": today})
-                    elif not old_active and new_active:
-                        listing_events.append({"code": code, "type": "LISTING", "event_date": today})
+            old_row = current_m[current_m["code"] == code] if not current_m.empty else pd.DataFrame()
+
+            if not old_row.empty:
+                old_active = old_row.iloc[0].get("is_active", True)
+                new_active = latest_rec["is_active"]
+                if old_active and not new_active:
+                    listing_events.append({"code": code, "type": "DELISTING", "event_date": today})
+                elif not old_active and new_active:
+                    listing_events.append({"code": code, "type": "LISTING", "event_date": today})
+            else:
+                # 【修正】新規銘柄（current_m にない、または master が空）且つ is_active=True なら無条件で LISTING 生成
+                if latest_rec.get("is_active", False):
+                    listing_events.append({"code": code, "type": "LISTING", "event_date": today})
 
             best_records.append(latest_rec)
 

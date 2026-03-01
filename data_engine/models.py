@@ -44,7 +44,7 @@ class EdinetCodeRecord(BaseModel):
     edinet_code: str
     submitter_type: Optional[str] = None  # 提出者種別
     is_listed: Optional[str] = None  # 上場区分 (上場/非上場)
-    is_consolidated: Optional[str] = None  # 連結の有無
+    is_consolidated: Optional[bool] = None  # 連結の有無 (True/False)
     capital: Optional[float] = None  # 資本金
     settlement_date: Optional[str] = None  # 決算日
     submitter_name: str  # 提出者名 (和文)
@@ -142,8 +142,8 @@ class StockMasterRecord(BaseModel):
     company_name_en: Optional[str] = Field(None, description="提出者名 (英文)")
     submitter_name_kana: Optional[str] = Field(None, description="提出者名 (ヨミ)")
     submitter_type: Optional[str] = Field(None, description="提出者種別")
-    is_consolidated: Optional[str] = Field(None, description="連結の有無")
-    capital: Optional[float] = Field(None, description="資本金")
+    is_consolidated: Optional[bool] = Field(None, description="連結の有無 (True/False)")
+    capital: Optional[float] = Field(None, description="資本金 (単位: 百万円)")
     settlement_date: Optional[str] = Field(None, description="決算日")
     address: Optional[str] = Field(None, description="所在地")
 
@@ -162,13 +162,10 @@ class StockMasterRecord(BaseModel):
 
     @field_validator(
         "edinet_code",
-        "code",
-        "parent_code",
         "jcn",
         "company_name_en",
         "submitter_name_kana",
         "submitter_type",
-        "is_consolidated",
         "settlement_date",
         "address",
         "sector_jpx_33",
@@ -178,6 +175,7 @@ class StockMasterRecord(BaseModel):
         "market",
         "last_submitted_at",
         "former_edinet_codes",
+        "is_consolidated",  # is_consolidated は nan_to_none で処理
         mode="before",
     )
     @classmethod
@@ -187,20 +185,48 @@ class StockMasterRecord(BaseModel):
             return None
         if isinstance(v, float) and math.isnan(v):
             return None
-        if isinstance(v, str) and v.lower() in ["nan", "none", ""]:
+        if isinstance(v, str) and (v.lower() in ["nan", "none", "", "-"]):
             return None
+
+        # 連結フラグの Bool 変換 (有/無 -> True/False)
+        if isinstance(v, str):
+            s_v = v.strip()
+            if s_v == "有":
+                return True
+            if s_v == "無":
+                return False
+        if v in [1, True]:
+            return True
+        if v in [0, False]:
+            return False
+
         return str(v).strip()
 
-    @field_validator("code", "parent_code", mode="after")
+    # 証券コードを5桁に正規化 (SICC準拠)
+    @field_validator("code", "parent_code", mode="before")
     @classmethod
     def normalize_sec_code(cls, v: Optional[str]) -> Optional[str]:
-        """証券コードを5桁に正規化 (SICC準拠)"""
         if v is None:
             return None
-        code_str = str(v).strip()
-        if len(code_str) == 4:
-            return code_str + "0"
-        return code_str
+        s_v = str(v).strip()
+        if not s_v or s_v == "nan":
+            return None
+        if len(s_v) == 4:
+            return s_v + "0"
+        return s_v
+
+    @field_validator("is_listed_edinet", mode="before")
+    @classmethod
+    def convert_to_bool_listed(cls, v: Any) -> bool:
+        """「上場/非上場」の文字列を物理的な bool へ変換する"""
+        if isinstance(v, bool):
+            return v
+        s_v = str(v).strip()
+        if s_v == "上場":
+            return True
+        if s_v == "非上場":
+            return False
+        return True  # デフォルトは上場扱い
 
 
 class ListingEvent(BaseModel):
