@@ -886,11 +886,11 @@ class CatalogManager:
         if new_events.empty:
             if history.empty:
                 # 空の履歴ファイルを初期化して保存
-                return self._save_and_upload("listing", history)
+                return self._save_and_upload("listing", history, defer=True)
             return True
 
         history = pd.concat([history, new_events], ignore_index=True).drop_duplicates()
-        return self._save_and_upload("listing", history)
+        return self._save_and_upload("listing", history, defer=True)
 
     def update_index_history(self, new_events: pd.DataFrame) -> bool:
         history = self._load_parquet("index")
@@ -899,11 +899,11 @@ class CatalogManager:
         if new_events.empty:
             if history.empty:
                 # 空の履歴ファイルを初期化して保存
-                return self._save_and_upload("index", history)
+                return self._save_and_upload("index", history, defer=True)
             return True
 
         history = pd.concat([history, new_events], ignore_index=True).drop_duplicates()
-        return self._save_and_upload("index", history)
+        return self._save_and_upload("index", history, defer=True)
 
     def get_listing_history(self) -> pd.DataFrame:
         """現在の上場履歴マスタを取得"""
