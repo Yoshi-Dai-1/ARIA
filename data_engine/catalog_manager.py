@@ -222,7 +222,7 @@ class CatalogManager:
                     industry_edinet=ed_rec.industry_edinet,
                     industry_edinet_en=ed_rec.industry_edinet_en,
                     is_listed_edinet=is_listed_official,
-                    is_active=is_listed_official,  # 初期値は公式に追従
+                    is_active=is_listed_official,  # 初回は公式状態をセット
                 )
                 master_dict[e_code] = new_master_rec.model_dump()
                 updated_count += 1
@@ -925,6 +925,20 @@ class CatalogManager:
             vals = group[col].dropna()
             return vals.iloc[0] if not vals.empty else None
 
+        # --- JPX 銘柄注入ログの追加 ---
+        is_jpx_update = "sector_jpx_33" in incoming_data.columns
+        if is_jpx_update:
+            jpx_count = len(incoming_data)
+            # 新規銘柄（既存マスタに証券コードがないもの）を特定
+            existing_codes = set(self.master_df["code"].dropna().unique())
+            incoming_codes = set(incoming_data["code"].dropna().unique())
+            new_codes_count = len(incoming_codes - existing_codes)
+
+            logger.info(
+                f"📊 JPX マスタ情報注入: 合計 {jpx_count} 件 "
+                f"(新規発見: {new_codes_count} 件 / 属性更新: {jpx_count - new_codes_count} 件)"
+            )
+
         # 1. 前処理と名寄せ (Registration Guard & Discovery)
         processed_records = []
         for _, row in incoming_data.iterrows():
@@ -1052,9 +1066,17 @@ class CatalogManager:
             ]:
                 val = resolve_attr(sorted_group, attr)
                 if val is not None:
+                    # 【重要】is_listed_edinet は EDINET 由来の情報のみを正とし、JPX 情報で True に上書きしない
+                    if attr == "is_listed_edinet" and is_jpx_update:
+                        continue
                     latest_rec[attr] = val
 
             # --- 上場履歴 (Listing History) の生成 ---
+            # 【重要】証券コードがない銘柄（NAVER 等）は、JPX 上場履歴の対象外
+            if code is None:
+                best_records.append(latest_rec)
+                continue
+
             # is_active の変化を、既存マスタ(current_m)と比較して検知
             new_active = latest_rec.get("is_active", True)
             if not current_m.empty:

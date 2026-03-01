@@ -168,7 +168,7 @@ class StockMasterRecord(BaseModel):
 
     # --- 4. 状態とライフサイクル (Status & Lifecycle) ---
     is_active: bool = Field(True, description="ARIA 収集・追跡対象フラグ (運用の真実)")
-    is_listed_edinet: bool = Field(True, description="EDINET公式名簿 上場フラグ (法令の真実)")
+    is_listed_edinet: bool = Field(False, description="EDINET公式名簿 上場フラグ (法令の真実)")
     last_submitted_at: Optional[str] = Field(None, description="最終書類提出日時")
     former_edinet_codes: Optional[str] = Field(None, description="旧EDINETコード (集約ブリッジ用)")
 
@@ -239,7 +239,7 @@ class StockMasterRecord(BaseModel):
             return True
         if s_v == "非上場":
             return False
-        return True  # デフォルトは上場扱い
+        return False  # デフォルトは非上場扱い（EDINETコードリストに載っていない場合）
 
 
 class ListingEvent(BaseModel):
