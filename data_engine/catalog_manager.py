@@ -44,12 +44,13 @@ class CatalogManager:
             "name": "meta/name_history.parquet",
         }
 
+        # 状態管理 (バッファ・スナップショット)
+        self._commit_operations = {}
+        self._snapshots = {}
+
         self.catalog_df = self._load_parquet("catalog")
         self.master_df = self._load_parquet("master")
 
-        # 【最重要】一括コミット用バッファ
-        self._commit_operations = {}
-        self._snapshots = {}  # 整合性保護のためのロールバックスナップショット
         logger.info("CatalogManager を初期化しました。")
 
         # 全ファイルの整合性チェックと最新スキーマへのアップグレード
@@ -642,6 +643,13 @@ class CatalogManager:
 
     def _load_parquet(self, key: str, force_download: bool = False) -> pd.DataFrame:
         filename = self.paths[key]
+
+        # 【重要: Lost Update 防止】保留中のコミット（メモリ上）があれば、リモートより優先する (Read-Your-Writes)
+        if key in self._commit_operations:
+            data = self._commit_operations[key]
+            logger.debug(f"メモリ上の保留中データをロードに使用します: {key}")
+            return data[0] if isinstance(data, tuple) else data
+
         try:
             local_path = hf_hub_download(
                 repo_id=self.hf_repo,
@@ -758,8 +766,10 @@ class CatalogManager:
 
         if self.api:
             if defer:
-                # バッファに追加して終了 (パスをキーにして最新のもので上書き)
-                self.add_commit_operation(filename, local_file)
+                # 【重要】バッファには CommitOperationAdd ではなく、(DataFrame, 物理パス) を保持する
+                # これにより _load_parquet での再利用(Read-Your-Writes)を可能にする
+                self._commit_operations[filename] = (df, local_file)
+                logger.debug(f"コミットバッファに追加: {filename}")
                 return True
 
             max_retries = 5  # 強化
@@ -1315,7 +1325,16 @@ class CatalogManager:
         if not self.api or not self._commit_operations:
             return True
 
-        ops_list = list(self._commit_operations.values())
+        # バッファ内の DataFrame 情報を CommitOperationAdd に変換
+        ops_list = []
+        for repo_path, data in self._commit_operations.items():
+            if isinstance(data, tuple):
+                _, local_path = data
+                ops_list.append(CommitOperationAdd(path_in_repo=repo_path, path_or_fileobj=str(local_path)))
+            else:
+                # 念のため CommitOperationAdd が直接入っている場合も考慮
+                ops_list.append(data)
+
         total_ops = len(ops_list)
 
         # 1コミットあたりの最大操作数
