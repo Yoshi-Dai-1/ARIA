@@ -17,10 +17,16 @@ from utils import normalize_code
 
 
 class CatalogManager:
-    def __init__(self, hf_repo: str, hf_token: str, data_path: Path, scope: str = "Listed"):
+    def __init__(self, hf_repo: str, hf_token: str, data_path: Path, scope: str = None):
         self.hf_repo = hf_repo
         self.hf_token = hf_token
         self.data_path = data_path
+
+        # 【SSOT】scope が明示的に渡されなかった場合、aria_config.json から自動で読み込む
+        if scope is None:
+            from config import ARIA_SCOPE
+
+            scope = ARIA_SCOPE
         self.scope = scope.capitalize()
         self.data_path.mkdir(parents=True, exist_ok=True)
 

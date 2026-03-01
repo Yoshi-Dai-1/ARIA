@@ -12,7 +12,7 @@ description: ARIA プロジェクトにおける技術的真実、データ整�
 - **FMEA の義務**: 重大な変更前には必ず故障モードとその影響を洗い出す。
 
 ## 2. 物理的な掟 (Physical Facts)
-- **RaW-V (Read-after-Write Verification)**: 破壊的更新前には必ず [CatalogManager.take_snapshot](file:///Users/yoshi_dai/repos/ARIA/data_engine/catalog_manager.py#L220) を実行。
+- **RaW-V (Read-after-Write Verification)**: 破壊的更新前には必ず CatalogManager のスナップショット機能を実行。
 - **NaN / Null Integrity**: pandas 由来の NaN が Pydantic モデルの文字列フィールドを破壊するのを防ぐため、`field_validator` による強制変換を必須とする。
 - **Network Stability**: 外部通信を伴う処理では [network_utils.patch_all_networking](file:///Users/yoshi_dai/repos/ARIA/data_engine/network_utils.py) の適用を必須とする。
 
@@ -26,3 +26,4 @@ description: ARIA プロジェクトにおける技術的真実、データ整�
 ## 参照リソース
 - [エンジニアリングパターン](references/patterns.md): FMEA、冪等性の具体例
 - [技術用語翻訳ガイド](references/PEDAGOGICAL_GUIDE.md): 投資家向けの分かりやすい説明指針
+- [SSOT 設定](file:///Users/yoshi_dai/repos/ARIA/data_engine/config.py): `aria_config.json` による一元管理モジュール
