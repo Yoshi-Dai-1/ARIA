@@ -240,6 +240,12 @@ class CatalogManager:
                     master_dict[new_code]["former_edinet_codes"] = ",".join(sorted(former_set))
                     aggregation_applied_count += 1
                     logger.debug(f"集約ブリッジ適用: {old_code} → {new_code} (旧コードをリンク)")
+            else:
+                # 継続先コードが現在の EDINET リストに存在しない場合の理由を詳細化 (透明性向上)
+                logger.debug(
+                    f"集約ブリッジ・スキップ: {old_code} → {new_code} "
+                    f"(継続先 {new_code} が現在の EDINET リストに存在しません)"
+                )
 
         # マスタ反映 & スコープ強制
         if updated_count > 0 or aggregation_applied_count > 0 or not self.master_df.empty:
