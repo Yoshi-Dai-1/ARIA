@@ -17,7 +17,7 @@ on:
         default: false
 
 env:
-  ARIA_SCOPE: All
+  ARIA_SCOPE: Unlisted
 
 jobs:
   discovery:
@@ -197,7 +197,7 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO: ${{ vars.HF_REPO }}
           PYTHONPATH: data_engine
-          ARIA_SCOPE: All
+          ARIA_SCOPE: Unlisted
         run: |
           RUN_ID="harvest-${{ needs.discovery.outputs.today }}-${{ github.run_id }}"
           python data_engine/main.py --mode worker --run-id "$RUN_ID" --chunk-id "primary-${{ matrix.idx }}" --id_list "${{ matrix.ids }}"
@@ -239,7 +239,7 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO: ${{ vars.HF_REPO }}
           PYTHONPATH: data_engine
-          ARIA_SCOPE: All
+          ARIA_SCOPE: Unlisted
         run: |
           RUN_ID="harvest-${{ needs.discovery.outputs.today }}-${{ github.run_id }}"
           python data_engine/main.py --mode worker --run-id "$RUN_ID" --chunk-id "retry-${{ matrix.idx }}" --id_list "${{ matrix.ids }}"
@@ -277,7 +277,7 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO: ${{ vars.HF_REPO }}
           PYTHONPATH: data_engine
-          ARIA_SCOPE: All
+          ARIA_SCOPE: Unlisted
         run: |
           RUN_ID="harvest-${{ needs.discovery.outputs.today }}-${{ github.run_id }}"
           python data_engine/main.py --mode merger --run-id "$RUN_ID"
