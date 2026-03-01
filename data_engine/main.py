@@ -17,6 +17,7 @@ import tqdm as tqdm_mod
 
 # モジュールのインポート
 from catalog_manager import CatalogManager
+from config import ARIA_SCOPE
 from dotenv import load_dotenv
 from edinet_engine import EdinetEngine
 from edinet_xbrl_prep.edinet_xbrl_prep.fs_tbl import get_fs_tbl
@@ -69,10 +70,8 @@ TEMP_DIR = DATA_PATH / "temp"
 PARALLEL_WORKERS = int(os.getenv("PARALLEL_WORKERS", os.cpu_count() or 4))
 BATCH_PARALLEL_SIZE = 8
 
-# 【極限刷新】環境変数による実行スコープの強制 (Listed or Unlisted)
-ARIA_SCOPE = os.getenv("ARIA_SCOPE", "Listed").capitalize()  # Default to Listed
-logger.info(f"ARIA Execution Scope: {ARIA_SCOPE}")
-
+# 【極限刷新】環境ファイルによる実行スコープの強制 (Listed, Unlisted, All)
+logger.info(f"ARIA Execution Scope (from SSOT config): {ARIA_SCOPE}")
 is_shutting_down = False
 
 

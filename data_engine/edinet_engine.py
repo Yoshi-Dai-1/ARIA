@@ -105,18 +105,10 @@ class EdinetEngine:
         )
 
         # 【修正】TSE URL を設定ファイルから読み込み (Issue-6: ハードコード排除)
-        import json
+        # TSE URL を config から読み込み (SSOT準拠)
+        from config import TSE_URL
 
-        config_path = Path(__file__).parent / "aria_config.json"
-        try:
-            with open(config_path, "r") as cf:
-                config = json.load(cf)
-            tse_url = config.get(
-                "tse_url",
-                "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls",
-            )
-        except Exception:
-            tse_url = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
+        tse_url = TSE_URL
         meta = edinet_response_metadata(tse_sector_url=tse_url, tmp_path_str=str(self.data_path))
         meta.set_data(res_results)
 

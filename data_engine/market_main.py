@@ -44,7 +44,9 @@ def run_market_pipeline(target_date: str, mode: str = "all"):
         sys.exit(1)
 
     # 【追加】スコープの取得
-    aria_scope = os.getenv("ARIA_SCOPE", "Listed").capitalize()
+    from config import ARIA_SCOPE
+
+    aria_scope = ARIA_SCOPE
     logger.info(f"ARIA Execution Scope: {aria_scope}")
 
     # 初期化
