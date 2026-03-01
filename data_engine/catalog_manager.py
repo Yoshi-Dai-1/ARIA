@@ -394,7 +394,7 @@ class CatalogManager:
 
                 # 数値型の可能性があるカラムを安全に文字列化 (2024.0 回避)
                 def safe_int_str(val):
-                    if pd.isna(val) or str(val).lower() in ["nan", "none", ""]:
+                    if pd.isna(val) or str(val).strip().lower() in ["", "none", "nan", "null", "-"]:
                         return None
                     try:
                         return str(int(float(val)))
@@ -1006,7 +1006,10 @@ class CatalogManager:
         listing_events = []
         today = pd.Timestamp.now().strftime("%Y-%m-%d")
 
-        for code, group in all_states.groupby("code"):
+        for _, group in all_states.groupby("edinet_code", dropna=False):
+            # edinet_code すら無い極端なケース（JPXのみなど）は、証券コードで個別化を試みる
+            # 基本的には edinet_code ごとにユニークなレコードを生成する。
+            code = resolve_attr(group, "code")
             # 【重要】スコープフィルタリング (JPX/属性更新段階)
             # 物理的なコードの有無で判定
             has_code = code is not None and len(str(code)) >= 4

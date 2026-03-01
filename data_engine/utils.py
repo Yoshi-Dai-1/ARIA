@@ -1,17 +1,19 @@
+from typing import Optional
+
 import pandas as pd
 
 
-def normalize_code(code) -> str:
+def normalize_code(code) -> Optional[str]:
     """
     証券コードを ARIA 規格 (5桁) に正規化した文字列として返す。
-    - None / NaN は空文字列 "" に変換。
+    - None / NaN は None を返す。
     - 数値 (float/int) は文字列に変換。
     - "1301.0" のような Excel 由来の .0 サフィックスを除去。
     - 4桁の場合は末尾に "0" を付与して 5 桁化する。
     - すでに 5 桁以上の場合はそのまま返す。
     """
     if code is None or pd.isna(code):
-        return ""
+        return None
 
     # 文字列化して空白除去
     c = str(code).strip()

@@ -94,7 +94,7 @@ class CatalogRecord(BaseModel):
     # 1. Identifiers (識別子・基本情報)
     doc_id: str
     jcn: Optional[str] = None  # 法人番号 (Japan Corporate Number)
-    code: str  # 証券コード (5桁)
+    code: Optional[str] = None  # 証券コード (5桁)
     company_name: str
     edinet_code: Optional[str] = None
     issuer_edinet_code: Optional[str] = None  # 発行者EDINETコード
