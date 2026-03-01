@@ -137,13 +137,13 @@ class CatalogManager:
                 sec_code = ed_rec.sec_code or m_rec.get("code")
 
                 # 【追加】スコープフィルタリング (同期段階)
-                # 物理的なコードの有無で判定。ただし「過去にコードを持っていた事実」を優先するため、
-                # すでに証券コードがマスタに刻まれている場合は Listed モードでも保持する。
+                # 物理的なコードの有無で判定。ただし「過去にコードを持っていた事実」または「集約の継続先」を優先する。
                 has_code_now = sec_code is not None and len(str(sec_code)) >= 4
                 historical_code = m_rec.get("code") is not None and len(str(m_rec.get("code"))) >= 4
+                is_agg_target = e_code in self.aggregation_map.values()
 
-                if self.scope == "Listed" and not (has_code_now or historical_code):
-                    # スコープ外（かつ歴史的コードもなし）ならマスタから削除 (同期)
+                if self.scope == "Listed" and not (has_code_now or historical_code or is_agg_target):
+                    # スコープ外（かつ歴史的コードも集約先指定もなし）ならマスタから削除 (同期)
                     master_dict.pop(e_code, None)
                     continue
                 if self.scope == "Unlisted" and has_code_now:
@@ -191,7 +191,8 @@ class CatalogManager:
 
                 # 【追加】スコープフィルタリング (新規追加段階)
                 has_code = sec_code is not None and len(str(sec_code)) >= 4
-                if self.scope == "Listed" and not has_code:
+                is_agg_target = e_code in self.aggregation_map.values()
+                if self.scope == "Listed" and not (has_code or is_agg_target):
                     continue
                 if self.scope == "Unlisted" and has_code:
                     continue
@@ -240,8 +241,11 @@ class CatalogManager:
             # 【重要】スコープ強制: マスタ全体に対してもフィルタを適用し、不適合なデータを除去する
             if self.scope == "Listed":
                 # 上場スコープ: 「証券コードを一度も持ったことがなく（NaN）、かつ非上場」のエンティティを物理的に排除
-                # すでにコードが刻まれている（歴史的コードあり）場合は、is_listed_edinet が False でも保持する。
-                new_df = new_df[~((new_df["code"].isna() | (new_df["code"] == "")) & ~new_df["is_listed_edinet"])]
+                # ただし、歴史的コード保持者、または「集約の継続先」である場合は特別に保持する。
+                is_agg_targets = new_df["edinet_code"].isin(self.aggregation_map.values())
+                new_df = new_df[
+                    ~((new_df["code"].isna() | (new_df["code"] == "")) & ~new_df["is_listed_edinet"] & ~is_agg_targets)
+                ]
             elif self.scope == "Unlisted":
                 # 非上場スコープ: 証券コードを持つ（上場実績のある）銘柄を排除
                 new_df = new_df[new_df["code"].isna() | (new_df["code"] == "")]
