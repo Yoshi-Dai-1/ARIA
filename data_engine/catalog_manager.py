@@ -63,6 +63,13 @@ class CatalogManager:
         # 【追加】同期したコードリストをマスタに反映
         if self.edinet_codes:
             self._update_master_from_edinet_codes()
+            # 【重要: Silent Data Loss の根治】
+            # 初期構築したデータは defer=True でバッファに積まれているが、
+            # main.py --list-only 等ですぐにプロセスが終了した場合、コミットされずに揮発する。
+            # プロセスをまたいで確実な永続化を保証するため、初期構築直後にコミットを強制する。
+            if self._commit_operations:
+                logger.info("初期マスター構築を検知しました。直ちに Hugging Face に保存します。")
+                self.push_commit("Initial Master Build from EDINET")
 
     def _discover_edinet_code(self, sec_code: str, name: Optional[str] = None) -> Optional[Tuple[str, str]]:
         """EDINET書類一覧APIをスキャニングし、証券コードからEDINETコード/JCNを特定する"""
@@ -1122,9 +1129,15 @@ class CatalogManager:
         return pd.DataFrame(columns=["code"])
 
     def get_sector(self, code: str) -> str:
-        """証券コードから業種取得"""
+        # 初回起動時: マスタが空なら構築
         if self.master_df.empty:
-            return None
+            logger.info("マスタファイルが空です。EDINET APIから初期構築を行います。")
+            self.sync_edinet_code_lists()
+            # 【重要: Silent Data Loss の根治】
+            # __init__ で初期構築したデータは _save_and_upload(defer=True) でバッファに積まれるが、
+            # main.py が --list-only 等ですぐに終了した場合、push_commit が呼ばれずに揮発してしまう。
+            # そのため、初期構築が行われた場合は必ずここでコミットを強制する。
+            self.push_commit("Initial Master Build from EDINET")
         row = self.master_df[self.master_df["code"] == code]
         if not row.empty:
             col_name = "sector_jpx_33" if "sector_jpx_33" in self.master_df.columns else "sector"
