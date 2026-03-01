@@ -295,7 +295,7 @@ class CatalogManager:
         # 3. 集約の継続先として保持
         agg_targets_only = master_df[~listed_mask & ~has_code_mask & is_agg_target_mask]
 
-        unique_sec_codes = pure_listed["code"].nunique()
+        unique_sec_codes = master_df[has_code_mask]["code"].nunique()
         total_aggregated = master_df["former_edinet_codes"].dropna().str.split(",").str.len().sum()
 
         logger.success(
@@ -303,11 +303,13 @@ class CatalogManager:
             f"コード保持非上場:{len(unlisted_with_code)} / 集約先保護:{len(agg_targets_only)})"
         )
         logger.success(
-            f"有効証券コード数 {unique_sec_codes} (集約適用: 今回+{aggregation_applied_count}件 / 総保持 {int(total_aggregated)}件)"
+            f"有効証券コード数 {unique_sec_codes} "
+            f"(集約適用: 今回+{aggregation_applied_count}件 / 総保持 {int(total_aggregated)}件)"
         )
 
     def sync_edinet_code_lists(self) -> Tuple[Dict[str, EdinetCodeRecord], Dict[str, str]]:
-        """金融庁から和英両方のコードリストおよび集約一覧を取得し、協同してマスタベースを構築する"""
+        """金融庁から和英両方のコードリストおよび集約一覧を取得し、
+        協同してマスタベースを構築する"""
         urls = {
             "jp": "https://disclosure2dl.edinet-fsa.go.jp/searchdocument/codelist/Edinetcode.zip",
             "en": "https://disclosure2dl.edinet-fsa.go.jp/searchdocument/codelisteng/Edinetcode.zip",
