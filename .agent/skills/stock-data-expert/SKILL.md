@@ -28,6 +28,8 @@ ARIA における「証券データの真実」を管理するためのドメイ
 
 ## 4. 履歴の自己修復 (History Self-Healing)
 - **Status-based History**: `is_active` フラグの遷移に基づき、`LISTING` / `DELISTING` イベントを一貫して生成。
+- **Tripartite Name Tracking**: 社名変更履歴を「漢字・カナ・英語」の三位一体で管理。将来のグローバル検索を見据え、EDINET から取得可能な全ての言語バリエーションを網羅する。
+- **Chronological Reconstruction**: バックフィル（非時系列な書類取得）に対処するため、特定の銘柄コードに紐付く全書類を日付順に動的スキャンし、隣接する書類間での名称変化を検知して `NameEvent` を再構成する。
 - **0000-00-00 Seed**: 社名変更履歴の起点としてシードレコードを注入。
 
 ## 5. 異常検知の閾値 (Anomaly Thresholds)
