@@ -12,6 +12,7 @@ Layer 4: APIカタログ照合（10年枠内のメタデータ不一致検証）
 import json
 import logging
 import os
+import re
 import sys
 import zipfile
 from datetime import datetime, timedelta
@@ -124,14 +125,11 @@ class DataReconciliationEngine:
                     continue
 
                 # ユーティリティ関数による共通パス導出 (SSOT)
-                dt = pd.to_datetime(submit_date_str)
-                base_dir = utils.get_edinet_repo_path(dt)
-
                 if str(row.get("xbrl_flag", "0")) == "1" or row.get("raw_zip_path"):
-                    expected_zips[doc_id] = f"{base_dir}/zip/{doc_id}.zip"
+                    expected_zips[doc_id] = utils.get_edinet_repo_path(doc_id, submit_date_str, suffix="zip")
 
                 if str(row.get("pdf_flag", "0")) == "1" or row.get("pdf_path"):
-                    expected_pdfs[doc_id] = f"{base_dir}/pdf/{doc_id}.pdf"
+                    expected_pdfs[doc_id] = utils.get_edinet_repo_path(doc_id, submit_date_str, suffix="pdf")
 
             # 存在確認 (Existence check)
             missing_zips = [doc_id for doc_id, path in expected_zips.items() if path not in raw_files]
@@ -202,7 +200,7 @@ class DataReconciliationEngine:
             bin_files = [
                 f
                 for f in files
-                if f.startswith("data/financial_values_bin") or f.startswith("data/qualitative_text_bin")
+                if f.startswith("master/financial_values/bin=") or f.startswith("master/qualitative_text/bin=")
             ]
 
             if not bin_files:
@@ -214,16 +212,20 @@ class DataReconciliationEngine:
             bin_mismatches = []
 
             # 各 Bin ファイルの監査
+            from huggingface_hub import hf_hub_download
+
             for bf in bin_files:
                 try:
-                    df = self.cm.hf.load_parquet_lazy(bf)  # 実装次第でメモリに乗せる
+                    # HFからダウンロードして読み込み
+                    local_p = hf_hub_download(
+                        repo_id=self.hf_repo, filename=bf, repo_type="dataset", token=self.hf_token
+                    )
+                    df = pd.read_parquet(local_p)
                     if df.empty:
                         continue
 
-                    # 期待されるBin名 (ファイル名から抽出: 例 'financial_values_bin12' -> '12')
-                    import re
-
-                    match = re.search(r"_bin(\w+)\.parquet", bf)
+                    # 期待されるBin名 (パスから抽出: 例 'master/financial_values/bin=J01/data.parquet' -> 'J01')
+                    match = re.search(r"bin=([^/]+)/", bf)
                     expected_bin = match.group(1) if match else "Unknown"
 
                     # 1. 重複チェック

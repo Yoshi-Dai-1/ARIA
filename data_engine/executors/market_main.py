@@ -20,7 +20,8 @@ def run_market_pipeline(target_date: str, mode: str = "all"):
     patch_all_networking()
 
     # 【究極の統合】システムの SSOT から初期化 (環境変数バリデーション含む)
-    catalog = CatalogManager()
+    # Market Data 更新時は EDINET API を使用しないため、edinet=False で初期化して API KEY 依存を排除
+    catalog = CatalogManager(edinet=False)
     logger.info(f"ARIA Execution Scope: {catalog.scope}")
 
     # 初期化 (物理パスは CONFIG から取得)
@@ -57,7 +58,10 @@ def run_market_pipeline(target_date: str, mode: str = "all"):
 
             for index_name in indices:
                 logger.info(f"--- Processing {index_name} ---")
-                df_hist_current = pd.DataFrame()  # NameError 防止のための初期化
+                # 変数未定義 (NameError) 防止のための初期化
+                df_hist_current = pd.DataFrame()
+                hist_path = f"master/indices/{index_name}/history.parquet"
+                local_hist = data_path / f"{index_name}_history.parquet"
                 try:
                     # A. Fetch Latest Data
                     df_new = engine.fetch_index_data(index_name)
@@ -130,8 +134,6 @@ def run_market_pipeline(target_date: str, mode: str = "all"):
                         if not diff_events.empty:
                             # Historyファイルのロードと追記
                             # master/indices/{index_name}/history.parquet
-                            hist_path = f"master/indices/{index_name}/history.parquet"
-                            local_hist = data_path / f"{index_name}_history.parquet"
 
                             # 既存History取得
                             try:
