@@ -288,15 +288,6 @@ class ListingEvent(BaseModel):
     event_date: str
 
 
-class IndexEvent(BaseModel):
-    """指数採用・除外イベントの記録モデル"""
-
-    index_name: str
-    code: str
-    type: str  # ADD, REMOVE
-    event_date: str
-
-
 # =============================================================================
 # PyArrow Schema 自動導出 (Phase 3: 金型アーキテクチャ)
 # =============================================================================
@@ -352,12 +343,10 @@ def pydantic_to_pyarrow(model_class) -> pa.Schema:
 SCHEMA_CATALOG = pydantic_to_pyarrow(CatalogRecord)
 SCHEMA_MASTER = pydantic_to_pyarrow(StockMasterRecord)
 SCHEMA_LISTING = pydantic_to_pyarrow(ListingEvent)
-SCHEMA_INDEX = pydantic_to_pyarrow(IndexEvent)
 
 # キーベースのレジストリ (hf_storage / delta_manager が参照)
 ARIA_SCHEMAS = {
     "catalog": SCHEMA_CATALOG,
     "master": SCHEMA_MASTER,
     "listing": SCHEMA_LISTING,
-    "index": SCHEMA_INDEX,
 }

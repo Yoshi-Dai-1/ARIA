@@ -18,7 +18,7 @@ from huggingface_hub import CommitOperationAdd, HfApi, hf_hub_download
 from huggingface_hub.utils import EntryNotFoundError, HfHubHTTPError, RepositoryNotFoundError
 from loguru import logger
 
-from data_engine.core.models import ARIA_SCHEMAS, CatalogRecord, IndexEvent, ListingEvent, StockMasterRecord
+from data_engine.core.models import ARIA_SCHEMAS, CatalogRecord, ListingEvent, StockMasterRecord
 
 
 class HfStorage:
@@ -107,9 +107,7 @@ class HfStorage:
             elif key == "listing":
                 cols = list(ListingEvent.model_fields.keys())
                 return pd.DataFrame(columns=cols)
-            elif key == "index":
-                cols = list(IndexEvent.model_fields.keys())
-                return pd.DataFrame(columns=cols)
+
             elif key == "name":
                 return pd.DataFrame(columns=["code", "old_name", "new_name", "change_date"])
             return pd.DataFrame()

@@ -57,6 +57,7 @@ def run_market_pipeline(target_date: str, mode: str = "all"):
 
             for index_name in indices:
                 logger.info(f"--- Processing {index_name} ---")
+                df_hist_current = pd.DataFrame()  # NameError 防止のための初期化
                 try:
                     # A. Fetch Latest Data
                     df_new = engine.fetch_index_data(index_name)

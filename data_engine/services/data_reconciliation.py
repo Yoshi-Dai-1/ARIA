@@ -24,7 +24,7 @@ from data_engine.catalog_manager import CatalogManager
 from data_engine.core import utils
 
 # ARIA モジュール
-from data_engine.core.models import CatalogRecord, IndexEvent, ListingEvent, StockMasterRecord
+from data_engine.core.models import CatalogRecord, ListingEvent, StockMasterRecord
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,6 @@ class DataReconciliationEngine:
             ("catalog", "documents_index.parquet", CatalogRecord),
             ("master", "stocks_master.parquet", StockMasterRecord),
             ("listing", "listing_history.parquet", ListingEvent),
-            ("index", "index_history.parquet", IndexEvent),
         ]
 
         for key, filename, model_class in check_targets:

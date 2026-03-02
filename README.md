@@ -56,7 +56,6 @@ financial-lakehouse/
 ├── meta/                           # メタデータ
 │   ├── stocks_master.parquet       # 銘柄マスタ (EDINETコードリスト連動)
 │   ├── listing_history.parquet     # 上場・廃止・再上場イベント履歴
-│   ├── index_history.parquet       # 指数採用・除外イベント履歴
 │   ├── name_history.parquet        # 社名変更イベント履歴
 │   └── backfill_cursor.json        # バックフィル進行状況
 ├── master/                         # 分析用マスタデータ

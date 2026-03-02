@@ -39,7 +39,6 @@ class CatalogManager:
             "catalog": "catalog/documents_index.parquet",
             "master": "meta/stocks_master.parquet",
             "listing": "meta/listing_history.parquet",
-            "index": "meta/index_history.parquet",
             "name": "meta/name_history.parquet",
         }
 
@@ -195,7 +194,6 @@ class CatalogManager:
             "catalog": self.catalog_df.copy(),
             "master": self.master_df.copy(),
             "listing": self.hf.load_parquet("listing").copy(),
-            "index": self.hf.load_parquet("index").copy(),
             "name": self.hf.load_parquet("name").copy(),
         }
         logger.info("Global 状態のスナップショットを取得しました (安全性確保)")
@@ -259,18 +257,19 @@ class CatalogManager:
         m_df.sort_values(["event_date", "code"], ascending=[False, True], inplace=False)
         self.hf.save_and_upload("listing", m_df, defer=True)
 
-    def update_index_history(self, new_events: pd.DataFrame):
-        hist_df = self.hf.load_parquet("index")
+    def update_name_history(self, new_events: pd.DataFrame):
+        """社名変更履歴を更新（将来の機能拡張用）"""
+        hist_df = self.hf.load_parquet("name")
         m_df = pd.concat([hist_df, new_events], ignore_index=True)
-        m_df.drop_duplicates(subset=["index_name", "code", "type", "event_date"], keep="last", inplace=True)
-        m_df.sort_values(["event_date", "index_name", "code"], ascending=[False, True, True], inplace=False)
-        self.hf.save_and_upload("index", m_df, defer=True)
+        m_df.drop_duplicates(subset=["code", "old_name", "new_name", "change_date"], keep="last", inplace=True)
+        m_df.sort_values(["change_date", "code"], ascending=[False, True], inplace=False)
+        self.hf.save_and_upload("name", m_df, defer=True)
 
     def get_listing_history(self) -> pd.DataFrame:
         return self.hf.load_parquet("listing")
 
-    def get_index_history(self) -> pd.DataFrame:
-        return self.hf.load_parquet("index")
+    def get_name_history(self) -> pd.DataFrame:
+        return self.hf.load_parquet("name")
 
     def process_documents(self, doc_ids: List[str], force_refresh: bool = False) -> bool:
         """
