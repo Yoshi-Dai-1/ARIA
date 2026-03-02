@@ -121,7 +121,11 @@ def run_market_pipeline(target_date: str, mode: str = "all"):
                             df_old = pd.DataFrame(columns=["code", "weight"])
 
                         # Diff生成
-                        diff_events = engine.generate_index_diff(index_name, df_old, df_new, target_date)
+                        diff_events = pd.DataFrame()
+                        if not df_old.empty:
+                            diff_events = engine.generate_index_diff(index_name, df_old, df_new, target_date)
+                        else:
+                            logger.info(f"Initial run for {index_name}. Baseline established.")
 
                         if not diff_events.empty:
                             # Historyファイルのロードと追記

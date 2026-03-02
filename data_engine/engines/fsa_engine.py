@@ -70,7 +70,11 @@ class FsaEngine:
             # --- 英文業種名のインデックス構築 ---
             en_industry_map = {}
             en_code_col = "Edinet Code" if "Edinet Code" in df_en.columns else "ＥＤＩＮＥＴコード"
-            en_ind_col = "Industry" if "Industry" in df_en.columns else "提出者業種"
+            en_ind_col = (
+                "Submitter's industry"
+                if "Submitter's industry" in df_en.columns
+                else ("Industry" if "Industry" in df_en.columns else "提出者業種")
+            )
             for _, row in df_en.iterrows():
                 e_code = str(row.get(en_code_col, "")).strip()
                 ind_en = str(row.get(en_ind_col, "")).strip()

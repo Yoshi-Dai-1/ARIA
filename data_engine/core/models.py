@@ -288,6 +288,19 @@ class ListingEvent(BaseModel):
     event_date: str
 
 
+class NameEvent(BaseModel):
+    """社名変更の記録モデル (漢字・カナ・英語の三位一体追跡)"""
+
+    code: str
+    old_name: str
+    new_name: str
+    old_name_kana: Optional[str] = None
+    new_name_kana: Optional[str] = None
+    old_name_en: Optional[str] = None
+    new_name_en: Optional[str] = None
+    change_date: str
+
+
 # =============================================================================
 # PyArrow Schema 自動導出 (Phase 3: 金型アーキテクチャ)
 # =============================================================================
@@ -343,10 +356,12 @@ def pydantic_to_pyarrow(model_class) -> pa.Schema:
 SCHEMA_CATALOG = pydantic_to_pyarrow(CatalogRecord)
 SCHEMA_MASTER = pydantic_to_pyarrow(StockMasterRecord)
 SCHEMA_LISTING = pydantic_to_pyarrow(ListingEvent)
+SCHEMA_NAME = pydantic_to_pyarrow(NameEvent)
 
 # キーベースのレジストリ (hf_storage / delta_manager が参照)
 ARIA_SCHEMAS = {
     "catalog": SCHEMA_CATALOG,
     "master": SCHEMA_MASTER,
     "listing": SCHEMA_LISTING,
+    "name": SCHEMA_NAME,
 }

@@ -250,6 +250,15 @@ class CatalogManager:
         self.hf.save_and_upload("catalog", self.catalog_df, clean_fn=self._clean_dataframe, defer=True)
         logger.info(f"カタログを更新・コミットバッファに追加しました (全 {len(self.catalog_df)} 件)")
 
+        # 【工学的主権】更新された銘柄の社名変更履歴を再構成
+        unique_codes = df_new["code"].unique()
+        for code in unique_codes:
+            if not code:
+                continue
+            history_df = self.reconciliation.reconstruct_name_history(code)
+            if not history_df.empty:
+                self.update_name_history(history_df)
+
     def update_listing_history(self, new_events: pd.DataFrame):
         hist_df = self.hf.load_parquet("listing")
         m_df = pd.concat([hist_df, new_events], ignore_index=True)

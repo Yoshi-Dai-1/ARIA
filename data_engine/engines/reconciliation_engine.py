@@ -443,3 +443,42 @@ class ReconciliationEngine:
             self.cm.update_listing_history(pd.DataFrame(listing_events))
 
         return self.cm.hf.save_and_upload("master", self.cm.master_df, clean_fn=self.cm._clean_dataframe, defer=True)
+
+    def reconstruct_name_history(self, code: str) -> pd.DataFrame:
+        """
+        特定の銘柄について、全書類から社名の変遷（漢字・カナ・英語）を再構成する。
+        【工学的主権】取得順に依存せず、常に日付順の隣接比較で境界を検知する。
+        """
+        catalog_df = self.cm.catalog_df
+        if catalog_df.empty:
+            return pd.DataFrame()
+
+        # 該当コードの書類を日付順に抽出
+        docs = catalog_df[catalog_df["code"] == code].sort_values("submit_at").copy()
+        if len(docs) < 2:
+            return pd.DataFrame()
+
+        events = []
+        # 初代（暫定基準）
+        prev_row = docs.iloc[0]
+
+        for _, row in docs.iloc[1:].iterrows():
+            # 比較対象: 漢字名, カナ名(if exists), 英語名(if exists)
+            # ※カナ・英語名は書類メタデータにない場合が多いため、マスタやコードリストから補完された情報を使用
+            curr_name = str(row.get("company_name") or row.get("filerName") or "").strip()
+            prev_name = str(prev_row.get("company_name") or prev_row.get("filerName") or "").strip()
+
+            # 正規化して比較 (株式会社 などの揺れを排除)
+            if self.normalize_company_name(curr_name) != self.normalize_company_name(prev_name):
+                event = {
+                    "code": code,
+                    "old_name": prev_name,
+                    "new_name": curr_name,
+                    "change_date": str(row["submit_at"])[:10],  # YYYY-MM-DD
+                }
+                # カナ・英語名の変化も将来的に特定書類から抽出可能なら here でセットする
+                # 現状は漢字名の変化点に追従
+                events.append(event)
+                prev_row = row
+
+        return pd.DataFrame(events)

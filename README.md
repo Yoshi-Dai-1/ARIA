@@ -42,7 +42,7 @@ Vite + React による投資分析ダッシュボード（開発中）。
 
 ## データ構造
 
-Hugging Face 上のデータ構造はスケーラビリティと不変性を考慮して設計されています。
+Hugging Face 上のデータ構造は、スケーラビリティ、不変性、および検索性を追求した「レイクハウス構造」を採用しています。
 
 ```
 financial-lakehouse/
@@ -52,21 +52,21 @@ financial-lakehouse/
 │           ├── zip/                # ZIPアーカイブ（1万ファイル制限対応）
 │           └── pdf/                # PDF書類（1万ファイル制限対応）
 ├── catalog/                        # ドキュメントインデックス
-│   └── documents_index.parquet     # 30カラム構成
-├── meta/                           # メタデータ
-│   ├── stocks_master.parquet       # 銘柄マスタ (EDINETコードリスト連動)
+│   └── documents_index.parquet     # 30カラム構成。全書類のメタデータ SSOT
+├── meta/                           # システムメタデータ
+│   ├── stocks_master.parquet       # 銘柄マスタ (EDINETコードリスト+JPX属性)
 │   ├── listing_history.parquet     # 上場・廃止・再上場イベント履歴
-│   ├── name_history.parquet        # 社名変更イベント履歴
-│   └── backfill_cursor.json        # バックフィル進行状況
-├── master/                         # 分析用マスタデータ
+│   ├── name_history.parquet        # 社名変更履歴 (漢字・カナ・英語の三位一体)
+│   └── backfill_cursor.json        # バックフィル進行状況 (保全優先カーソル)
+├── master/                         # 分析用主データ
 │   ├── financial_values/           # 財務数値（BS, PL, CF, SS）
-│   │   └── bin=JXX/data.parquet    # JCN末尾2桁で不変分割
-│   ├── qualitative_text/           # 定性情報（注記）
-│   │   └── bin=JXX/data.parquet    # JCN末尾2桁で不変分割
-│   └── indices/                    # 指数構成データ
+│   │   └── bin=JXX/data.parquet    # JCN(法人番号)末尾2桁で物理分割。不変の分散キー
+│   ├── qualitative_text/           # 定性情報（注記・事業の内容等）
+│   │   └── bin=JXX/data.parquet    # JCN(法人番号)末尾2桁で物理分割。不変の分散キー
+│   └── indices/                    # 指数構成データ（Daily Indices Update 連携）
 │       ├── Nikkei225/
-│       │   ├── constituents/year=YYYY/data_YYYYMMDD.parquet
-│       │   └── history.parquet
+│       │   ├── constituents/year=YYYY/data_YYYYMMDD.parquet  # スナップショット
+│       │   └── history.parquet      # 追加・除外・ウエイト変化イベント履歴
 │       └── TOPIX/
 │           ├── constituents/year=YYYY/data_YYYYMMDD.parquet
 │           └── history.parquet

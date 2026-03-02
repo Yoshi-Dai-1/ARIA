@@ -205,8 +205,6 @@ class DeltaManager:
             return "master"
         if fname == "listing_history.parquet":
             return "listing"
-        if fname == "index_history.parquet":
-            return "index"
         if fname == "name_history.parquet":
             return "name"
         if fname.startswith("financial_values_bin"):
