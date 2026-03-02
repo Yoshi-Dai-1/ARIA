@@ -390,9 +390,10 @@ def request_term(api_key:str, start_date_str:str,end_date_str:str, ope_date_time
             "date_api_param" : target_date.strftime("%Y-%m-%d"),
             "type_api_param" : 2,
             "api_key":api_key,
-            # ope_date_time は指定された場合、全日程に適用するか初日のみにするかは呼び出し側の意図に依存するが、
-            # 一般的な増分同期では「指定日時以降」を全検索期間に対して求めるため、全日程に適用可能とする設計に変更
-            "ope_date_time_api_param": ope_date_time_str
+            # 【main準拠】ope_date_time は初日のみ適用。
+            # 初日: 前回取得以降の更新分のみ取得（増分同期）
+            # 2日目以降: 全件取得（未見の日付のためフィルタ不要）
+            "ope_date_time_api_param": ope_date_time_str if itr == 0 else None
         }
         params = EdinetMetadataInputV2(**input_dict)
         res_results.append(get_edinet_metadata(params, session=session))

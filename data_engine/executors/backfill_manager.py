@@ -88,7 +88,7 @@ def calculate_next_period():
     yesterday = get_jst_today() - timedelta(days=1)
 
     if start_date >= yesterday:
-        logger.info("FINISHED")
+        print("FINISHED")
         return None, None
 
     if end_date >= yesterday:
@@ -113,7 +113,7 @@ def main():
     start, end = calculate_next_period()
 
     if start is None:
-        logger.info("FINISHED")  # GHA側で検知するためのキーワード
+        print("FINISHED")  # GHA側で検知するためのキーワード
         return
 
     # 【追加】再試行期間の計算（カーソルの開始日から過去60日分）
@@ -122,12 +122,12 @@ def main():
         retry_start = LIMIT_DATE
     retry_end = start - timedelta(days=1)
 
-    logger.info(f"START={start.strftime('%Y-%m-%d')}")
-    logger.info(f"END={end.strftime('%Y-%m-%d')}")
+    print(f"START={start.strftime('%Y-%m-%d')}")
+    print(f"END={end.strftime('%Y-%m-%d')}")
 
     if retry_start < start:
-        logger.info(f"RETRY_START={retry_start.strftime('%Y-%m-%d')}")
-        logger.info(f"RETRY_END={retry_end.strftime('%Y-%m-%d')}")
+        print(f"RETRY_START={retry_start.strftime('%Y-%m-%d')}")
+        print(f"RETRY_END={retry_end.strftime('%Y-%m-%d')}")
 
 
 if __name__ == "__main__":

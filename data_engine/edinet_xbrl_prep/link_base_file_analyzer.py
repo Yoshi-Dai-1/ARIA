@@ -129,15 +129,15 @@ def safe_attr_get(attr_sr, pattern, default=None):
 
 
 class PreLocator(BaseModel):
-    role: StrOrNone
-    schima_taxonomi: StrOrNone
-    label: StrOrNone
-    schima_taxonomi_head: StrOrNone
+    role: StrOrNone = None
+    schima_taxonomi: StrOrNone = None
+    label: StrOrNone = None
+    schima_taxonomi_head: StrOrNone = None
 
 class Locator(BaseModel):
-    role: StrOrNone
-    schima_taxonomi: StrOrNone
-    label: StrOrNone
+    role: StrOrNone = None
+    schima_taxonomi: StrOrNone = None
+    label: StrOrNone = None
 
 class Arc(BaseModel):
     role: StrOrNone
@@ -712,6 +712,15 @@ class get_label_common():
         return label_tbl
     
     def export_label_tbl(self,label_to_taxonomi_dict:dict)->pd.DataFrame:
+        """
+        TODO: change label to taxonomi
+        """
+        if not hasattr(self, 'label_tbl') or self.label_tbl is None:
+            # label_tbl が未生成の場合は空の AccountLabel を返す
+            return pd.DataFrame(columns=get_columns_df(AccountLabel))
+            
+        label_tbl=self.label_tbl.query("key_all in @label_to_taxonomi_dict.keys()")
+        #print("label: ",len(label_tbl))
         label_tbl=AccountLabel(
             label_tbl.assign(
                 label=label_tbl.label_lab.str.replace('label_',''),
