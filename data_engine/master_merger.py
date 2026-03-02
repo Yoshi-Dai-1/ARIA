@@ -106,6 +106,8 @@ class MasterMerger:
                     pass
 
         local_file.parent.mkdir(parents=True, exist_ok=True)
+        # 【Phase 3 注記】Bin ファイルは XBRL 由来の動的カラム構成のため、
+        # 固定 PyArrow スキーマの適用は不適切。dto 推論に委ねるのが正しい設計判断。
         combined_df.to_parquet(local_file, compression="zstd", index=False)
 
         if self.api:

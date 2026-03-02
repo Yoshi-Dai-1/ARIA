@@ -15,7 +15,7 @@ ARIA における「証券データの真実」を管理するためのドメイ
     - 種類株は親銘柄から `edinet_code` や `jcn` を継承することを許可する。
 
 ## 2. 属性解決とリコンシリエーション (Hierarchy of Truth)
-[CatalogManager.update_stocks_master](file:///Users/yoshi_dai/repos/ARIA/data_engine/catalog_manager.py) の実装に基づき、以下の優先順位を遵守します。
+[ReconciliationEngine.update_stocks_master](file:///Users/yoshi_dai/repos/ARIA/data_engine/reconciliation_engine.py) の実装に基づき、以下の優先順位を遵守します。
 1. **EDINET Document API (Real-time)**: IPO 銘柄の `secCode` から `edinetCode/jcn` を逆引きする最優先ソース。
 2. **EDINET / Catalog (Regulatory)**: 会社名および公的ステータスの正解。
 3. **JPX Master (Market)**: 業種区分および市場名の補完ソース。

@@ -29,12 +29,18 @@
 本プロジェクトは **Monorepo** 構成を採用しており、データ収集エンジンと Web フロントエンドが分かれています。
 
 ### 1. Data Engine (`data_engine/`)
-Python による堅牢なデータ処理基盤。
+Python による堅牢なデータ処理基盤。Facade パターンと単一責任原則に基づくモジュール構成。
 - **Unified Harvester (`edinet_harvester.yml`)**: 開示書類の並列収集・解析 (Worker/Merger)。本日分と歴史分を同時に走査。
+- **Pipeline (`pipeline.py`)**: Worker/Merger パイプラインの実行エンジン。`main.py` (CLIエントリーポイント) から呼び出される。
+- **Catalog Manager (`catalog_manager.py`)**: Facade として以下の専門モジュールをオーケストレーション:
+  - `hf_storage.py`: Hugging Face I/O 層（Parquet 読み書き、バッチコミット）
+  - `delta_manager.py`: Worker/Merger 間のデルタファイル管理
+  - `reconciliation_engine.py`: EDINET コード名寄せ、IPO 自動発見、スコープフィルタリング
+- **Data Reconciliation (`data_reconciliation.py`)**: モデル駆動型 4 層 11 項目の自動監査エンジン (スキーマ / 物理ファイル / 分析マスタ / API カタログ)
 - **Backfill Manager (`backfill_manager.py`)**: 2016年2月15日からの過去データ取得管理。7日単位の増分管理。
 - **Market Data Pipeline (`market_main.py`)**: 市場データと銘柄属性の同期。
-- **Catalog Manager (`catalog_manager.py`)**: EDINET コードリスト同期、集約ブリッジ、上場生死判定、名寄せ。
-- **Master Merger (`master_merger.py`)**: JCN 主尾不変分割による物理データ配置。
+- **Master Merger (`master_merger.py`)**: JCN 主導不変分割による物理データ配置。
+- **PyArrow Schema Enforcement**: `models.py` の Pydantic モデルから PyArrow スキーマを自動導出 (`pydantic_to_pyarrow()`) し、全 Parquet 書き出しに適用。10年間の無人運転でも型ブレ (Schema Drift) が物理的に発生しない SSOT 設計。
 
 ### 2. Web Frontend (`web_frontend/`)
 Vite + React による投資分析ダッシュボード（開発中）。

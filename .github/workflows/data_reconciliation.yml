@@ -10,13 +10,7 @@ concurrency:
 #     - cron: '0 18 * * 6'
 on:
   workflow_dispatch:
-    inputs:
-      start_date:
-        description: 'Start Date (YYYY-MM-DD)'
-        required: false
-      end_date:
-        description: 'End Date (YYYY-MM-DD)'
-        required: false
+
 
 jobs:
   audit:
@@ -44,16 +38,4 @@ jobs:
           HF_REPO: ${{ vars.HF_REPO }}
           PYTHONPATH: data_engine
         run: |
-          START_ARG=""
-          END_ARG=""
-          
-          if [[ -n "${{ github.event.inputs.start_date }}" ]]; then
-            START_ARG="--start ${{ github.event.inputs.start_date }}"
-          fi
-          
-          if [[ -n "${{ github.event.inputs.end_date }}" ]]; then
-            END_ARG="--end ${{ github.event.inputs.end_date }}"
-          fi
-          
-          # 引数がなければデフォルト(10年)で実行
-          python data_engine/integrity_audit.py $START_ARG $END_ARG
+          python data_engine/data_reconciliation.py --save-report

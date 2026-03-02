@@ -102,6 +102,7 @@ def run_market_pipeline(target_date: str, mode: str = "all"):
                         f"year={year}/data_{target_date.replace('-', '')}.parquet"
                     )
                     local_snap = DATA_PATH / f"{index_name}_{target_date}.parquet"
+                    # 【Phase 3 注記】指数構成銘柄の動的カラム構成のため、固定スキーマ不適用
                     df_new.to_parquet(local_snap, index=False, compression="zstd")
 
                     catalog.upload_raw(local_snap, snap_path, defer=True)
@@ -179,12 +180,14 @@ def run_market_pipeline(target_date: str, mode: str = "all"):
                                 df_hist_new.drop(columns=["rec"], inplace=True)
 
                             # Save (Deferred)
+                            # 【Phase 3 注記】指数イベント履歴は動的カラム構成のため、固定スキーマ不適用
                             df_hist_new.to_parquet(local_hist, index=False, compression="zstd")
                             catalog.upload_raw(local_hist, hist_path, defer=True)
                             logger.info(f"History staged: {index_name}")
                         elif df_hist_current.empty:
                             # 初回実行時: 空でもファイルを作成してアップロード
                             local_hist = DATA_PATH / f"{index_name}_history.parquet"
+                            # 【Phase 3 注記】初回作成時も動的カラム構成のため、固定スキーマ不適用
                             df_hist_current.to_parquet(local_hist, index=False, compression="zstd")
                             catalog.upload_raw(local_hist, hist_path, defer=True)
                             logger.info(f"History initialized: {index_name}")

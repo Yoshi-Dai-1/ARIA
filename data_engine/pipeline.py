@@ -1,0 +1,960 @@
+import os
+
+# CI環境でのログ視認性向上のための設定 (全てのライブラリ読み込み前に実行)
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+os.environ["TQDM_DISABLE"] = "1"
+
+import json
+import signal
+import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from datetime import datetime
+from pathlib import Path
+
+import pandas as pd
+import tqdm as tqdm_mod
+
+# モジュールのインポート
+from config import ARIA_SCOPE
+from edinet_xbrl_prep.edinet_xbrl_prep.fs_tbl import get_fs_tbl
+from loguru import logger
+from network_utils import patch_all_networking
+from tqdm import tqdm
+from utils import normalize_code
+
+
+# tqdm を無効化
+def no_op_tqdm(*args, **kwargs):
+    kwargs.update({"disable": True})
+    return tqdm(*args, **kwargs)
+
+
+tqdm_mod.tqdm = no_op_tqdm
+
+# 全体的な通信の堅牢化を適用
+patch_all_networking()
+
+
+# normalize_code is now imported from utils
+
+
+def parse_datetime(dt_str: str) -> datetime:
+    """EDINET の submitDateTime (YYYY-MM-DD HH:MM[:SS]) を堅牢にパースする"""
+    if not dt_str:
+        return datetime.now()
+    formats = ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"]
+    for fmt in formats:
+        try:
+            return datetime.strptime(dt_str, fmt)
+        except ValueError:
+            continue
+    # 最終手段: 日付部分だけで試行
+    try:
+        return datetime.strptime(dt_str[:10], "%Y-%m-%d")
+    except Exception:
+        logger.error(f"日時パース失敗: {dt_str}")
+        return datetime.now()
+
+
+# 設定
+# 【修正】リポジトリのモジュール化に伴い、常にプロジェクトのルートにある 'data' を参照するように調整
+ROOT_DIR = Path(__file__).parent.parent.resolve()
+DATA_PATH = ROOT_DIR / "data"
+RAW_BASE_DIR = DATA_PATH / "raw"
+TEMP_DIR = DATA_PATH / "temp"
+PARALLEL_WORKERS = int(os.getenv("PARALLEL_WORKERS", os.cpu_count() or 4))
+BATCH_PARALLEL_SIZE = 8
+
+# 【極限刷新】環境ファイルによる実行スコープの強制 (Listed, Unlisted, All)
+logger.info(f"ARIA Execution Scope (from SSOT config): {ARIA_SCOPE}")
+is_shutting_down = False
+
+
+def signal_handler(sig, frame):
+    global is_shutting_down
+    logger.warning("中断信号を受信しました。シャットダウンしています...")
+    is_shutting_down = True
+
+
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
+
+def parse_worker(args):
+    """並列処理用ワーカー関数"""
+    docid, row, acc_obj, raw_zip, role_kws, task_type = args
+    # 【修正】タスクタイプごとに個別の作業ディレクトリを作成し、競合（Race Condition）を回避
+    # extract_dir = TEMP_DIR / f"{docid}_{task_type}"
+    # 【効率化】Deep Extraction で既に展開済みの共通ディレクトリを使用することで、
+    # parse_worker ごとに再度解凍する無駄を避ける
+    extract_dir = TEMP_DIR / f"extract_{docid}_{task_type}"
+    try:
+        if acc_obj is None:
+            return docid, None, "Account list not loaded"
+
+        logger.debug(f"解析開始: {docid} (Path: {raw_zip})")
+
+        # 【根治】サブモジュールが中間ファイルを書き出す深い階層 (XBRL/PublicDoc) を事前に強制作成。
+        # 親ディレクトリ (extract_dir) の作成だけでは、open() 時に FileNotFoundError が発生するケースがあるため。
+        (extract_dir / "XBRL" / "PublicDoc").mkdir(parents=True, exist_ok=True)
+
+        # 【フェーズ2：Deep Extraction】三井物産(S100LJUR)等の gla 参照エラー対策
+        # サブモジュールの「つまみ食い解凍」による FileNotFoundError を防ぐため、
+        # 解析に必要な PublicDoc / AuditDoc 配下の全ファイルを事前に強制展開する
+        from zipfile import ZipFile
+
+        with ZipFile(str(raw_zip)) as zf:
+            for member in zf.namelist():
+                if "PublicDoc" in member or "AuditDoc" in member:
+                    zf.extract(member, extract_dir)
+
+        # 開発者ブログ推奨の get_fs_tbl を呼び出し
+        df = get_fs_tbl(
+            account_list_common_obj=acc_obj,
+            docid=docid,
+            zip_file_str=str(raw_zip),
+            temp_path_str=str(extract_dir),
+            role_keyward_list=role_kws,
+        )
+
+        if df is not None and not df.empty:
+            df["docid"] = docid
+            # 【修正】ブログ記事(https://norororo.hatenablog.com/entry/2024/12/20/081109)に基づき、
+            # secCode は XBRL 解析結果(df)ではなく、APIメタデータ(row)から注入する。
+            # 【修正】NULL基底アーキテクチャに基づき、不明な場合は "99990" ではなく None を設定する。
+            # これにより、後続の処理で「不明」であることが明確になる (binningの結果は "bin=No" となる想定)
+            sec_code_meta = row.get("secCode")
+            if sec_code_meta and str(sec_code_meta).strip():
+                df["code"] = normalize_code(sec_code_meta)
+            else:
+                df["code"] = None
+
+            df["submitDateTime"] = row.get("submitDateTime", "")
+            for col in df.columns:
+                if df[col].dtype == "object":
+                    df[col] = df[col].astype(str)
+            logger.debug(f"解析成功: {docid} ({task_type}) | 抽出レコード数: {len(df)}")
+
+            # 【追加】サブモジュールに手を加えず会計基準を抽出
+            # get_xbrl_rapper が extract_dir に書き出した log_dict.json を読み込む
+            accounting_std = None
+            log_path = extract_dir / "XBRL" / "PublicDoc" / "log_dict.json"
+            if log_path.exists():
+                try:
+                    with open(log_path, "r", encoding="utf-8") as f:
+                        log_data = json.load(f)
+                    accounting_std = log_data.get("AccountingStandardsDEI")
+                except Exception as e:
+                    logger.warning(f"log_dict.json の読み込み失敗 ({docid}): {e}")
+
+            return docid, df, None, (task_type, accounting_std)
+
+        msg = "No objects to concatenate" if (df is None or df.empty) else "Empty Results"
+        return docid, None, msg, (task_type, None)
+
+    except Exception as e:
+        import traceback
+
+        err_detail = traceback.format_exc()
+        logger.error(f"解析例外: {docid} ({task_type})\n{err_detail}")
+        return docid, None, f"{str(e)}", (task_type, None)
+    finally:
+        if extract_dir.exists():
+            import shutil
+
+            shutil.rmtree(extract_dir)
+
+
+def run_merger(catalog, merger, run_id):
+    """Mergerモード: デルタファイルの集約とGlobal更新 (Atomic Commit & Rollback 戦略)"""
+    logger.info(f"=== Merger Process Started (Run ID: {run_id}) ===")
+
+    # 1. 準備：ロールバック用のスナップショット取得
+    catalog.take_snapshot()
+
+    # 2. ハウスキーピング (古いデルタの削除)
+    catalog.cleanup_deltas(run_id, cleanup_old=True)
+
+    # 2. 有効なデルタの収集
+    deltas = catalog.load_deltas(run_id)
+    if not deltas:
+        logger.warning("有効なデルタデータが見つかりませんでした (No valid chunks found).")
+        catalog.cleanup_deltas(run_id, cleanup_old=False)
+        return
+
+    # 3. マージとGlobal更新 (Atomic Commit: すべて defer=True でバッファに積む)
+    all_masters_success = True
+    processed_count = 0
+
+    # --- A. Stock Master & Name History (Catalogデルタから全イベントを抽出) ---
+    if "catalog" in deltas and not deltas["catalog"].empty:
+        processed_count += 1
+        cat_df = deltas["catalog"]
+
+        # 同一バッチ内での全社名状態を抽出 (リコンシリエーション用)
+        # 1つの期間内に A -> B -> C と変わる可能性を考慮し、(code, company_name, submit_at) の固有ペアを取得
+        name_events_in_batch = cat_df.sort_values("submit_at", ascending=True).drop_duplicates(
+            subset=["code", "company_name"]
+        )[["code", "company_name", "submit_at"]]
+        name_events_in_batch.rename(columns={"submit_at": "last_submitted_at"}, inplace=True)
+
+        # 提出日時が欠落しているドキュメントは時系列解析から除外 (情報の誠実性を担保)
+        initial_event_count = len(name_events_in_batch)
+        name_events_in_batch = name_events_in_batch[name_events_in_batch["last_submitted_at"].notna()]
+        if len(name_events_in_batch) < initial_event_count:
+            logger.warning(
+                f"Filtered out {initial_event_count - len(name_events_in_batch)} events with missing last_submitted_at"
+            )
+
+        # 基本属性の付与
+        # EDINET由来は初期状態で Unknown (None) とし、JPX同期で初めて Active/Inactive に確定させる
+        name_events_in_batch["is_active"] = None
+
+        if "rec" in name_events_in_batch.columns:
+            name_events_in_batch.drop(columns=["rec"], inplace=True)
+
+        # 【究極の時系列整合性】update_stocks_master 内で既存データとの照合と履歴生成を行う
+        if catalog.update_stocks_master(name_events_in_batch):
+            logger.info("Stock Master & History reconciled from Catalog events (Atomic & Chronological)")
+        else:
+            logger.error("❌ Failed to reconcile Global Stock Master")
+            all_masters_success = False
+
+    # --- B. History (listing, index, name) ---
+    for key in ["listing", "index", "name"]:
+        if key in deltas and not deltas[key].empty:
+            processed_count += 1
+            new_hist = deltas[key]
+            current_hist = catalog._load_parquet(key)
+            merged_hist = pd.concat([current_hist, new_hist], ignore_index=True).drop_duplicates()
+            # 履歴も defer=True でバッファリング
+            if catalog._save_and_upload(key, merged_hist, defer=True):
+                logger.info(f"Global {key} History staged (Atomic)")
+            else:
+                logger.error(f"❌ Failed to stage Global {key} History")
+                all_masters_success = False
+
+    # --- C. Financial / Text (Sector based) ---
+    for key, sector_df in deltas.items():
+        if (key.startswith("financial_") or key.startswith("text_")) and not sector_df.empty:
+            processed_count += 1
+            identifier = key.replace("financial_", "").replace("text_", "")
+            m_type = "financial_values" if key.startswith("financial_") else "qualitative_text"
+
+            # defer=True を明示的に指定
+            if not merger.merge_and_upload(
+                identifier, m_type, sector_df, worker_mode=False, catalog_manager=catalog, defer=True
+            ):
+                logger.error(f"❌ Failed to stage {m_type} for {identifier}")
+                all_masters_success = False
+
+    # --- D. Catalog & RAW Assets ---
+    if all_masters_success:
+        # RAWデータのアップロード復旧 (Atomicバッファに積む)
+        if RAW_BASE_DIR.exists() and any(RAW_BASE_DIR.iterdir()):
+            processed_count += 1
+            catalog.upload_raw_folder(RAW_BASE_DIR, path_in_repo="raw", defer=True)
+            logger.info("RAW assets staged for upload (Atomic)")
+
+        if "catalog" in deltas and not deltas["catalog"].empty:
+            processed_count += 1
+            new_df = deltas["catalog"]
+            merged_catalog = pd.concat([catalog.catalog_df, new_df], ignore_index=True).drop_duplicates(
+                subset=["doc_id"], keep="last"
+            )
+            # カタログも予約
+            catalog._save_and_upload("catalog", merged_catalog, defer=True)
+            logger.info("Global Catalog staged (Atomic)")
+
+        # 【アトミック・コミット実行】
+        if processed_count > 0:
+            if catalog.push_commit(f"Merger Atomic Success: {run_id}"):
+                logger.success(
+                    f"=== Merger完了: 全データをアトミックに更新しました (Total: {processed_count} files) ==="
+                )
+                # メモリ上のカタログ状態を確定させる
+                catalog.catalog_df = merged_catalog
+
+                # 【極限の堅牢性：Read-after-Write Verification (RaW-V)】
+                # コミット直後に、キャッシュを無視してリモートから再取得し、実際に書き込まれたことを検証する
+                logger.info("極限整合性検証 (RaW-V: カタログ, マスタ, RAW) を実行中...")
+                try:
+                    # 1. カタログ & マスタの検証 (force_download=True で最新を強制取得)
+                    vf_catalog = catalog._load_parquet("catalog", force_download=True)
+                    vf_master = catalog._load_parquet("master", force_download=True)
+
+                    if vf_catalog.empty or vf_master.empty:
+                        raise ValueError("リモートの基幹ファイルが空です。")
+
+                    # 2. RAWデータの存在検証 (サンプリング)
+                    if not deltas["catalog"].empty:
+                        # 実際にアップロードされたレコードから検証パスを取得
+                        sample_rec = deltas["catalog"].iloc[0]
+                        sample_doc = sample_rec["doc_id"]
+                        # XBRL または PDF のどちらか存在する方を検証対象にする
+                        raw_repo_path = sample_rec["raw_zip_path"] or sample_rec["pdf_path"]
+
+                        # カタログ上のレコード存在確認
+                        if sample_doc not in vf_catalog["doc_id"].values:
+                            raise ValueError(
+                                f"検知失敗: 追加されたはずの書類 {sample_doc} がリモートカタログに見当たりません。"
+                            )
+
+                        if raw_repo_path:
+                            # RAWファイルの存在確認 (エビデンス)
+                            # get_paths_info が空リストを返す場合は例外を投げるようにガードを強化
+                            info = catalog.api.get_paths_info(
+                                repo_id=catalog.hf_repo,
+                                paths=[raw_repo_path],
+                                repo_type="dataset",
+                                token=catalog.hf_token,
+                            )
+                            if not info:
+                                # 固有のzip名でない可能性も考慮し、フォルダ存在を確認
+                                files = catalog.api.list_repo_files(repo_id=catalog.hf_repo, repo_type="dataset")
+                                if not any(
+                                    f.startswith("raw/edinet/year=") and f.endswith(f"{sample_doc}.zip") for f in files
+                                ):
+                                    raise ValueError(f"RAWファイル未検出: {raw_repo_path} がリモートで見つかりません。")
+
+                            logger.info(f"✅ RAWファイル検証成功 (代表サンプリング): {raw_repo_path}")
+
+                    logger.success("✅ RaW-V 成功: 全データの書き込みと整合性がリモート上で確認されました。")
+                    catalog.cleanup_deltas(run_id, cleanup_old=False)
+                except Exception as e:
+                    logger.critical(f"❌ 整合性不整合を検知 (RaW-V ERROR): {e}")
+                    # 【世界最高の対応：自動ロールバック】
+                    if catalog.rollback(f"RaW-V Failure Rollback: {e}"):
+                        logger.success("✅ 自動ロールバックに成功しました。不完全なデータは破棄されました。")
+                    else:
+                        logger.critical("❌ ロールバックに失敗しました。データが不安定な状態です！手動介入が必要です。")
+                    sys.exit(1)
+            else:
+                logger.error("❌ 最終バッチコミットに失敗しました。データ整合性は維持されています。")
+                sys.exit(1)
+        else:
+            logger.info("処理対象のデータはありませんでした。")
+    else:
+        logger.error("⛔ Master更新準備中にエラーが発生したため、コミットを中断しました (整合性保護)")
+        logger.info("=== Merger Process Completed with Errors (No changes applied) ===")
+
+
+def run_worker_pipeline(args, edinet, catalog, merger, run_id, chunk_id):
+    """Workerモード (デフォルト): データの取得・解析・保存のパイプラインを実行する"""
+    logger.info("=== Worker Pipeline Started ===")
+
+    # 1. 増分同期のためのチェックポイント取得 (カタログから最新の ope_date_time を抽出)
+    last_ope_time = None
+    if not catalog.catalog_df.empty and "ope_date_time" in catalog.catalog_df.columns:
+        # 文字列として最大のものを取得 (ISO形式 HH:MM:SS なので比較可能)
+        last_ope_time = catalog.catalog_df["ope_date_time"].max()
+        if pd.isna(last_ope_time) or str(last_ope_time).strip() == "":
+            last_ope_time = None
+
+    # 1. メタデータ取得 (ope_date_time を渡して真の増分同期を実行)
+    all_meta = edinet.fetch_metadata(args.start, args.end, ope_date_time=last_ope_time)
+    if not all_meta:
+        if args.list_only:
+            print("JSON_MATRIX_DATA: []")
+        return
+
+    # 【修正】ARIA_SCOPE による完全排他的フィルタリング
+    # Listed の場合: 証券コードがあり（長さ4以上）の書類のみを処理対象とする
+    # Unlisted の場合: 証券コードがない、または長さ4未満の書類のみを処理対象とする
+    initial_count = len(all_meta)
+
+    filtered_meta = []
+    skipped_reasons = {"no_sec_code": 0, "invalid_length": 0, "has_sec_code": 0}
+
+    for row in all_meta:
+        # 【修正】str(None)が"None"(長さ4)になってしまうバグを防ぐためのセキュアな文字列化
+        raw_code = row.get("secCode")
+        if raw_code is None:
+            sec_code = ""
+        else:
+            sec_code = str(raw_code).strip()
+            if sec_code.lower() in ["none", "nan", "null"]:
+                sec_code = ""
+
+        if ARIA_SCOPE == "Listed":
+            # 上場企業モード: 証券コードが無い/不正な書類を除外
+            if not sec_code:
+                skipped_reasons["no_sec_code"] += 1
+                continue
+            if len(sec_code) < 4:
+                skipped_reasons["invalid_length"] += 1
+                logger.debug(f"書類スキップ (コード短縮): {row.get('docID')} - {sec_code}")
+                continue
+            filtered_meta.append(row)
+
+        elif ARIA_SCOPE == "Unlisted":
+            # 非上場企業モード: 証券コードが適正（長さ4以上）な書類を除外（Listed側で処理するため）
+            if sec_code and len(sec_code) >= 4:
+                skipped_reasons["has_sec_code"] += 1
+                continue
+            filtered_meta.append(row)
+
+        elif ARIA_SCOPE == "All":
+            # 全量モード: フィルタリングせずすべて採用
+            filtered_meta.append(row)
+
+        else:
+            logger.warning(f"Unknown ARIA_SCOPE: {ARIA_SCOPE}. Falling back to skip.")
+            continue
+
+    # ... (後続処理) ...
+
+    all_meta = filtered_meta
+    if not args.id_list:
+        logger.info(
+            f"最終処理対象書類数: {len(all_meta)} 件 "
+            f"(全 {initial_count} 件中 | 証券コードなし: {skipped_reasons.get('no_sec_code', 0)} 件, "
+            f"コード不正: {skipped_reasons.get('invalid_length', 0)} 件, "
+            f"上場企業コードあり: {skipped_reasons.get('has_sec_code', 0)} 件)"
+        )
+
+    # 【重要】不整合(Drift)対策：メタデータをファイルに保存/読み込み
+    # Workerモード時、Discoveryと同じ情報を共有することでAPIの応答不整合をゼロにする
+    meta_cache_path = Path("data/meta/discovery_metadata.json")
+    if args.list_only:
+        meta_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(meta_cache_path, "w", encoding="utf-8") as f:
+            json.dump(all_meta, f, ensure_ascii=False, indent=2)
+        logger.info(f"Discoveryメタデータを保存しました: {meta_cache_path}")
+    elif args.mode == "worker" and meta_cache_path.exists():
+        try:
+            with open(meta_cache_path, "r", encoding="utf-8") as f:
+                all_meta = json.load(f)
+            logger.info("Discovery時のメタデータキャッシュを利用してDriftを防止します。")
+        except Exception as e:
+            logger.warning(f"メタデータキャッシュの読み込みに失敗しました: {e}")
+
+    # 2. GHAマトリックス用出力
+    if args.list_only:
+        matrix_data = []
+        for row in all_meta:
+            docid = row["docID"]
+
+            # 【重要】不整合(Withdrawal Sync)対策
+            # 既に成功(success)としてカタログにあっても、API側で取下(withdrawalStatus=='1')が発生している場合、
+            # カタログを更新(retractedに)するためにスキップ対象から外す
+            if catalog.is_processed(docid):
+                api_retracted = row.get("withdrawalStatus") == "1"
+                local_status = catalog.get_status(docid)
+                # すでにカタログ側も retracted ならスキップ継続、success なのに APIが取下なら再処理(更新)へ
+                if not (api_retracted and local_status != "retracted"):
+                    continue
+
+            raw_sec_code = normalize_code(str(row.get("secCode", "")).strip())
+            # 解析対象の厳密判定条件をマトリックス側でも提供
+            matrix_data.append(
+                {
+                    "id": docid,
+                    "code": raw_sec_code,
+                    "xbrl": row.get("xbrlFlag") == "1",
+                    "type": row.get("docTypeCode"),
+                    "ord": row.get("ordinanceCode"),
+                    "form": row.get("formCode"),
+                }
+            )
+        print(f"JSON_MATRIX_DATA: {json.dumps(matrix_data)}")
+        return
+
+    logger.info("=== Data Lakehouse 2.0 実行開始 ===")
+
+    # 4. 処理対象の選定
+    tasks = []
+    # 【カタログ整合性】ダウンロード直後ではなく、解析結果に基づき登録するよう設計変更
+    potential_catalog_records = {}  # docid -> record_base (全レコード保持)
+    parsing_target_ids = set()  # 解析対象のdocidセット
+
+    # 【RAW整合性】バッチ処理用
+    current_batch_docids = []
+
+    loaded_acc = {}
+    skipped_types = {}  # 新たに追加
+
+    # 解析タスクの追加 (XBRL がある Yuho/Shihanki のみ)
+    target_ids = args.id_list.split(",") if args.id_list else None
+    found_target_ids = set()
+
+    # ... (fs_dict, quant_roles, text_roles definitions) ...
+    fs_dict = {
+        "BS": ["_BalanceSheet", "_ConsolidatedBalanceSheet"],
+        "PL": ["_StatementOfIncome", "_ConsolidatedStatementOfIncome"],
+        "CF": ["_StatementOfCashFlows", "_ConsolidatedStatementOfCashFlows"],
+        "SS": ["_StatementOfChangesInEquity", "_ConsolidatedStatementOfChangesInEquity"],
+        "notes": ["_Notes", "_ConsolidatedNotes"],
+        "report": ["_CabinetOfficeOrdinanceOnDisclosure"],
+    }
+    quant_roles = fs_dict["BS"] + fs_dict["PL"] + fs_dict["CF"] + fs_dict["SS"]
+    text_roles = fs_dict["report"] + fs_dict["notes"]
+
+    for row in all_meta:
+        docid = row["docID"]
+        edinet_code = row.get("edinetCode")
+        title = row.get("docDescription", "名称不明")
+
+        # 【ルーティング】マスタの上場判定に基づくフィルタリング
+        # edinet_code が無い場合は非上場(Unlisted)とみなす
+        is_listed_meta = False
+        if edinet_code:
+            m_rec = catalog.master_df[catalog.master_df["edinet_code"] == edinet_code]
+            if not m_rec.empty:
+                is_listed_meta = bool(m_rec.iloc[0].get("is_listed_edinet", False))
+
+        # 現在のスコープと一致しない場合はスキップ
+        current_scope_is_listed = ARIA_SCOPE == "Listed"
+        if is_listed_meta != current_scope_is_listed:
+            # logger.debug(f"Scope Mismatch: Skipping {docid} ({'Listed' if is_listed_meta else 'Unlisted'})")
+            continue
+
+        if target_ids and docid not in target_ids:
+            continue
+
+        if target_ids:
+            found_target_ids.add(docid)
+
+        if not target_ids and catalog.is_processed(docid):
+            continue
+
+        submit_date_str = row["submitDateTime"]
+        submit_date = parse_datetime(submit_date_str)
+        # 【修正】パス最適化: raw/edinet/year=YYYY/month=MM/
+        # 【修正】Hugging Face の1ディレクトリ1万件制限を回避するため、日次フォルダを追加
+        # raw/edinet/year=YYYY/month=MM/day=DD/
+        save_dir = (
+            RAW_BASE_DIR
+            / "edinet"
+            / f"year={submit_date.year}"
+            / f"month={submit_date.month:02d}"
+            / f"day={submit_date.day:02d}"
+        )
+        zip_dir = save_dir / "zip"
+        pdf_dir = save_dir / "pdf"
+        zip_dir.mkdir(parents=True, exist_ok=True)
+        pdf_dir.mkdir(parents=True, exist_ok=True)
+        raw_zip = zip_dir / f"{docid}.zip"
+        raw_pdf = pdf_dir / f"{docid}.pdf"
+
+        # ダウンロード実行 (フラグに基づき正確に試行)
+        has_xbrl = row.get("xbrlFlag") == "1"
+        has_pdf = row.get("pdfFlag") == "1"
+
+        zip_ok = False
+        if has_xbrl:
+            zip_ok = edinet.download_doc(docid, raw_zip, 1)
+            if zip_ok:
+                pass
+            else:
+                logger.error(f"XBRLダウンロード失敗: {docid} | {title}")
+
+        pdf_ok = False
+        if has_pdf:
+            pdf_ok = edinet.download_doc(docid, raw_pdf, 2)
+            if pdf_ok:
+                pass
+            else:
+                logger.error(f"PDFダウンロード失敗: {docid} | {title}")
+
+        file_status = []
+        if has_xbrl:
+            file_status.append("XBRLあり" if zip_ok else "XBRL(DL失敗)")
+        if has_pdf:
+            file_status.append("PDFあり" if pdf_ok else "PDF(DL失敗)")
+        status_str = " + ".join(file_status) if file_status else "ファイルなし"
+
+        # 解析タスク判定用のコードを先に取得
+        dtc = row.get("docTypeCode")
+        ord_c = row.get("ordinanceCode")
+        form_c = row.get("formCode")
+
+        # 期末日・決算年度・決算期間（月数）の抽出 (NULL正規化)
+        period_start = (row.get("periodStart") or "").strip() or None
+        period_end = (row.get("periodEnd") or "").strip() or None
+
+        fiscal_year = int(period_end[:4]) if period_end else None
+
+        # 決算期の月数を算出 (変則決算対応)
+        num_months = None  # デフォルトは NULL（期間不明）
+        if period_start and period_end:
+            try:
+                d1 = datetime.strptime(period_start, "%Y-%m-%d")
+                d2 = datetime.strptime(period_end, "%Y-%m-%d")
+                # 通常は 12, 9, 6, 3 などに収束。
+                # 異常値（0以下 または 24ヶ月超）は NULL として扱い、嘘の情報を記録しない
+                diff_days = (d2 - d1).days + 1
+                calc_months = round(diff_days / 30.4375)  # 365.25 / 12 (平均月日数)
+
+                if 1 <= calc_months <= 24:
+                    num_months = calc_months
+                else:
+                    num_months = None
+            except Exception:
+                num_months = None  # 計算失敗時も NULL
+
+        sec_code = normalize_code(row.get("secCode", ""))
+        # 訂正フラグの厳密判定
+        # 1. parentDocID が存在するか
+        # 2. 書類種別コード(docTypeCode) の末尾が '1' (例: 有報 120 に対する訂正 121)
+        # 3. タイトルに「訂正」が含まれる
+        parent_id = row.get("parentDocID")
+        is_amendment = parent_id is not None or str(dtc).endswith("1") or "訂正" in (title or "")
+
+        # 【重大】取下済（withdrawalStatus == '1'）の書類は解析しても無意味なため、
+        # ステータスを 'retracted' とし、正常系から除外する
+        w_status = row.get("withdrawalStatus")
+        final_status = "pending"
+        if w_status == "1":
+            final_status = "retracted"
+            logger.warning(f"【取下済書類を検知】: {docid} は解析対象から除外します。")
+
+        # 【修正】インデックスに記録するパスを、実際の階層構造（year/month/day）に合わせる
+        # RAW_BASE_DIR からの相対パスとして記録
+        rel_zip_path = str(raw_zip.relative_to(RAW_BASE_DIR.parent)) if zip_ok else None
+        rel_pdf_path = str(raw_pdf.relative_to(RAW_BASE_DIR.parent)) if pdf_ok else None
+
+        # カタログ情報のベースを保持 (models.py の 29カラム構成に準拠)
+        # 全ての項目において (val or "").strip() or None を徹底し、空文字を NULL 正規化する
+        record = {
+            "doc_id": docid,
+            "jcn": (row.get("JCN") or "").strip() or None,
+            "code": sec_code,
+            "company_name": (row.get("filerName") or "").strip() or "Unknown",
+            "edinet_code": (row.get("edinetCode") or "").strip() or None,
+            "issuer_edinet_code": (row.get("issuerEdinetCode") or "").strip() or None,
+            "subject_edinet_code": (row.get("subjectEdinetCode") or "").strip() or None,
+            "subsidiary_edinet_code": (row.get("subsidiaryEdinetCode") or "").strip() or None,
+            "fund_code": (row.get("fundCode") or "").strip() or None,
+            "submit_at": (row.get("submitDateTime") or "").strip() or None,
+            "fiscal_year": fiscal_year,
+            "period_start": period_start,
+            "period_end": period_end,
+            "num_months": num_months,
+            "accounting_standard": None,  # 後ほど解析結果から注入
+            "doc_type": dtc or "",
+            "title": (title or "").strip() or None,
+            "form_code": (form_c or "").strip() or None,
+            "ordinance_code": (ord_c or "").strip() or None,
+            "is_amendment": is_amendment,
+            "parent_doc_id": (parent_id or "").strip() or None,
+            "withdrawal_status": (w_status or "").strip() or None,
+            "doc_info_edit_status": (row.get("docInfoEditStatus") or "").strip() or None,
+            "disclosure_status": (row.get("disclosureStatus") or "").strip() or None,
+            "current_report_reason": (row.get("currentReportReason") or "").strip() or None,
+            "raw_zip_path": rel_zip_path,
+            "pdf_path": rel_pdf_path,
+            "processed_status": final_status,
+            "source": "EDINET",
+            "ope_date_time": (row.get("opeDateTime") or "").strip() or None,
+        }
+        potential_catalog_records[docid] = record
+
+        # 解析対象の厳密判定: 有報(120) / 一般事業用(010) / 標準様式(030000)
+        is_target_yuho = dtc == "120" and ord_c == "010" and form_c == "030000"
+
+        if is_target_yuho and zip_ok:
+            try:
+                # 【重要】提出日ではなく、XBRL内部の名前空間から「事業年度」基準で年を特定
+                import shutil
+
+                from edinet_xbrl_prep.edinet_xbrl_prep.fs_tbl import linkbasefile
+
+                # 判定用の一時ディレクトリ（自動削除用）
+                detect_dir = TEMP_DIR / f"detect_{docid}"
+                lb = linkbasefile(zip_file_str=str(raw_zip), temp_path_str=str(detect_dir))
+                lb.read_linkbase_file()
+                ty = lb.detect_account_list_year()
+
+                if ty == "-":
+                    raise ValueError(f"XBRL名前空間から事業年度（タクソノミ版）を特定できませんでした。({docid})")
+
+                if ty not in loaded_acc:
+                    acc = edinet.get_account_list(ty)
+                    if not acc:
+                        raise ValueError(
+                            f"タクソノミ版 '{ty}' は taxonomy_urls.json に未定義、または取得に失敗しました。"
+                        )
+                    loaded_acc[ty] = acc
+
+                # 数値データのタスク
+                tasks.append((docid, row, loaded_acc[ty], raw_zip, quant_roles, "financial_values"))
+                # テキストデータのタスク
+                tasks.append((docid, row, loaded_acc[ty], raw_zip, text_roles, "qualitative_text"))
+
+                parsing_target_ids.add(docid)
+                logger.info(f"【解析対象】: {docid} | 事業年度: {ty} | {title}")
+            except Exception as e:
+                logger.error(f"【解析中止】タクソノミ判定失敗 ({docid}): {e}")
+                record["processed_status"] = "failure"  # 明示的に失敗を記録
+                continue
+            finally:
+                if detect_dir.exists():
+                    shutil.rmtree(detect_dir)
+        else:
+            # 【改善】スキップ理由をより明確に
+            form_name = "特定有価証券報告書" if form_c == "080000" else "非解析対象"
+            codes_info = f"[Type:{dtc}, Ord:{ord_c}, Form:{form_c}]"
+            # ターゲット有報なのにXBRLがない場合、または単にターゲット外である場合を区別
+            reason = f"XBRLなし {codes_info}" if is_target_yuho else f"{form_name} {codes_info}"
+
+            if not is_target_yuho:
+                # 解析対象外の書類（臨時報告書など）
+                # これらは「解析しないこと」が正解なので、ステータスは 'success' (完了) とする
+                record["processed_status"] = "success"
+            elif is_target_yuho and not zip_ok:
+                # ターゲット有報なのにXBRLがないのは異常（要リトライまたは調査）-> failure
+                record["processed_status"] = "failure"
+
+            logger.info(f"【スキップ済として記録】: {docid} | {title} | {status_str} | 理由: {reason}")
+            skipped_types[dtc] = skipped_types.get(dtc, 0) + 1
+
+        # バッチ管理用にIDを追加
+        current_batch_docids.append(docid)
+
+        # 50件ごとに進捗を報告
+        processed_count = len(potential_catalog_records)
+        if not args.id_list and processed_count % 50 == 0:
+            logger.info(f"ダウンロード進捗: {processed_count} / {len(all_meta)} 件完了")
+            pass
+
+    # 【追加】Hugging Face フォルダファイル数の安全マージン警告
+    # HF は1フォルダあたり10,000ファイルが上限。7,000超で早期警告を発出。
+    import json as _json
+
+    _config_path = Path(__file__).parent / "aria_config.json"
+    _hf_warn_threshold = 7000
+    try:
+        with open(_config_path, "r") as _cf:
+            _hf_warn_threshold = _json.load(_cf).get("hf_folder_file_warning_threshold", 7000)
+    except Exception:
+        pass
+
+    checked_dirs = set()
+    for row in all_meta:
+        sd = parse_datetime(row.get("submitDateTime", ""))
+        if sd:
+            day_dir = RAW_BASE_DIR / "edinet" / f"year={sd.year}" / f"month={sd.month:02d}" / f"day={sd.day:02d}"
+            if day_dir not in checked_dirs and day_dir.exists():
+                checked_dirs.add(day_dir)
+                file_count = sum(1 for _ in day_dir.iterdir())
+                if file_count > _hf_warn_threshold:
+                    logger.warning(
+                        f"⚠️ HFフォルダファイル数警告: {day_dir.name} に {file_count} ファイル "
+                        f"(閾値: {_hf_warn_threshold}, HF上限: 10,000)"
+                    )
+
+    # 【重要】メタデータ不整合の検知 (Worker Mode 専用ガード)
+    if target_ids:
+        missing_ids = set(target_ids) - found_target_ids
+        if missing_ids:
+            logger.critical(
+                "【重大な不整合検知 (Drift)】Discoveryで見つかった以下のIDが、"
+                f"Worker実行時のメタデータ取得では見つかりませんでした: {list(missing_ids)}"
+            )
+            logger.info("これは EDINET API の一時的な応答遅延、または不整合の可能性があります。")
+    # 【修正】カタログレコードの収集は L947 の potential_catalog_records.values() に一本化済み
+    # (旧: new_catalog_records を extend していたが、L947 で完全上書きされるため不要)
+
+    # 5. 並列解析
+    all_quant_dfs = []
+    all_text_dfs = []  # テキスト用
+    processed_infos = []
+
+    if tasks:
+        logger.info(f"解析対象: {len(tasks) // 2} 書類 (Task数: {len(tasks)})")
+
+        # 【修正】解析スキップの内訳を精査。
+        # 厳密に 「有報(120)/一般事業会社(010)/標準様式(030000)」 が漏れている場合のみ警告。
+        unexpected_skips = []
+        for did in potential_catalog_records:
+            rec = potential_catalog_records[did]
+            # 重要判定: 120 / 010 / 030000 なのに tasks に入っていないものを警告対象とする
+            is_missed = (
+                rec["doc_type"] == "120"
+                and rec["ordinance_code"] == "010"
+                and rec["form_code"] == "030000"
+                and did not in parsing_target_ids
+            )
+            if is_missed:
+                unexpected_skips.append(did)
+
+        if unexpected_skips:
+            logger.warning(f"注意: 最優先解析対象(120/010/030000)がスキップされています: {unexpected_skips}")
+
+        TEMP_DIR.mkdir(parents=True, exist_ok=True)
+        with ProcessPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:
+            for i in range(0, len(tasks), BATCH_PARALLEL_SIZE):
+                if is_shutting_down:
+                    break
+                batch = tasks[i : i + BATCH_PARALLEL_SIZE]
+                futures = [executor.submit(parse_worker, t) for t in batch]
+
+                for f in as_completed(futures):
+                    did, res_df, err, worker_meta = f.result()
+                    t_type, accounting_std = worker_meta
+
+                    # 解析完了後に parsing_target_ids にあるレコードのステータスを更新
+                    if did in potential_catalog_records:
+                        target_rec = potential_catalog_records[did]
+
+                        if err:
+                            logger.error(f"解析結果({t_type}): {did} - {err}")
+                            # エラーがあれば failure とする（リトライ対象にするため）
+                            # ただし、連結/個別の片方しかない場合の正常なスキップ（No objects...）は除く
+                            if "No objects to concatenate" not in err:
+                                target_rec["processed_status"] = "failure"
+                            # 【厳格化】片方が成功していても、他方で重大なエラーが出ていれば成功とみなさない
+                        elif res_df is not None:
+                            # 少なくとも一方の解析に成功していれば一旦 success とするが、
+                            # すでに failure (他方のエラー) になっている場合は上書きしない
+                            if target_rec.get("processed_status") != "failure":
+                                target_rec["processed_status"] = "success"
+
+                            if t_type == "financial_values":
+                                quant_only = res_df[res_df["isTextBlock_flg"] == 0]
+                                if not quant_only.empty:
+                                    all_quant_dfs.append(quant_only)
+                            elif t_type == "qualitative_text":
+                                txt_only = res_df[res_df["isTextBlock_flg"] == 1]
+                                if not txt_only.empty:
+                                    all_text_dfs.append(txt_only)
+
+                            # 会計基準の抽出 (Worker の戻り値から取得)
+                            if accounting_std:
+                                target_rec["accounting_standard"] = str(accounting_std)
+
+                            # セクター判別用
+                            meta_row = next(m for m in all_meta if m["docID"] == did)
+                            processed_infos.append(
+                                {
+                                    "docID": did,
+                                    "sector": catalog.get_sector(normalize_code(meta_row.get("secCode", ""))),
+                                }
+                            )
+
+                # バッチごとに登録可能な未定記録を登録
+                # 解析対象のカタログ登録は最後にまとめて行うため、ここでは何もしない
+                pass
+
+                done_count = i + len(batch)
+                logger.info(
+                    f"解析進捗: {min(done_count, len(tasks))} / {len(tasks)} tasks 完了 "
+                    f"(Quant: {len(all_quant_dfs)}, Text: {len(all_text_dfs)})"
+                )
+    # (new_catalog_records の再初期化は不要 — L947 で potential_catalog_records から一括構築される)
+
+    # 6. マスターマージ & カタログ確定
+    all_success = True
+    # binリスト (重複排除)
+    processed_df = pd.DataFrame(processed_infos)
+    if not processed_df.empty:
+        # docid ごとに code を取得し、bin (=上2桁) を作成
+        processed_df["bin"] = processed_df["docID"].apply(
+            lambda x: str(next(m for m in all_meta if m["docID"] == x).get("secCode", ""))[:2]
+        )
+    bins = processed_df["bin"].unique() if not processed_df.empty else []
+
+    if all_quant_dfs:
+        logger.info("数値データ(financial_values)のマージを開始します...")
+        try:
+            full_quant_df = pd.concat(all_quant_dfs, ignore_index=True)
+            for b_val in bins:
+                # 当該 bin に属する docid を抽出
+                bin_docids = processed_df[processed_df["bin"] == b_val]["docID"].tolist()
+                sec_quant = full_quant_df[full_quant_df["docid"].isin(bin_docids)]
+                if sec_quant.empty:
+                    continue
+                # 【修正】Master更新は bin 単位で実行
+                merger.merge_and_upload(
+                    b_val,
+                    "financial_values",
+                    sec_quant,
+                    worker_mode=True,
+                    catalog_manager=catalog,
+                    run_id=run_id,
+                    chunk_id=chunk_id,
+                    defer=True,
+                )
+        except Exception as e:
+            logger.error(f"数値データマージ失敗: {e}")
+            all_success = False
+
+    if all_text_dfs:
+        logger.info("テキストデータ(qualitative_text)のマージを開始します...")
+        try:
+            full_text_df = pd.concat(all_text_dfs, ignore_index=True)
+            for b_val in bins:
+                bin_docids = processed_df[processed_df["bin"] == b_val]["docID"].tolist()
+                sec_text = full_text_df[full_text_df["docid"].isin(bin_docids)]
+                if sec_text.empty:
+                    continue
+                if not merger.merge_and_upload(
+                    b_val,
+                    "qualitative_text",
+                    sec_text,
+                    worker_mode=True,
+                    catalog_manager=catalog,
+                    run_id=run_id,
+                    chunk_id=chunk_id,
+                    defer=True,
+                ):
+                    all_success = False
+                    logger.error(f"Master更新失敗: bin={b_val} (qualitative_text)")
+        except Exception as e:
+            logger.error(f"テキストデータマージ失敗: {e}")
+            all_success = False
+
+    # 【修正】全カタログレコードの収集を一本化 (対象内・対象外すべて)
+    # 824件すべてが potential_catalog_records に格納されています
+    final_catalog_records = list(potential_catalog_records.values())
+
+    if final_catalog_records:
+        df_cat = pd.DataFrame(final_catalog_records)
+
+        # 【透明性】ID重複による件数不一致 (824 vs 822 等) を事前にログ出力
+        initial_len = len(df_cat)
+        df_cat = df_cat.drop_duplicates(subset=["doc_id"], keep="last")
+        final_len = len(df_cat)
+
+        if initial_len > final_len:
+            logger.info(f"Duplicate IDs removed: {initial_len} -> {final_len} (Reduced: {initial_len - final_len})")
+
+        logger.info(f"全書類の Catalog Delta を保存します ({final_len} 件)")
+        catalog.save_delta("catalog", df_cat, run_id, chunk_id, defer=True, local_only=True)
+
+    # 【修正】all_success が False の場合の処理を追加
+    if not all_success:
+        logger.warning("一部のMaster更新に失敗しました。次回実行時に再試行されます。")
+
+    # カタログ更新（全データ処理後）
+    # アップロードに成功したdocid (Quant/Text問わず、何らかのデータが保存できたもの)
+    # 厳密な判定は難しいが、ここではmergerの戻り値ベースで判定
+    if all_quant_dfs or all_text_dfs:
+        # ダウンロード済みのものは potential_catalog_records にある
+        # ここでは「データ保存まで完遂した」という意味での更新は不要かもしれない
+        # （ダウンロード時に processed_status=success でレコード作成済みで、update_catalogも呼ばれているため）
+        # ただし、main.py の設計上、最後にまとめて update_catalog を呼んでいた箇所。
+        # 360行目で都度呼んでいるので、ここは「最終的な完了ログ」だけで良い可能性。
+        pass
+
+    try:
+        if all_success:
+            # 【ゼロ・コンフリクト】Worker は直接コミットせず、成果をローカルに残すのみ。
+            # 書き込みは GitHub Artifacts 経由で収集された後に Merger が一括実行する。
+            catalog.mark_chunk_success(run_id, chunk_id, defer=True, local_only=True)
+            logger.success(f"=== Worker完了: 成果をローカルに保存しました ({run_id}/{chunk_id}) ===")
+        else:
+            logger.error("=== パイプライン停止 (解析エラーが発生したため中断) ===")
+            sys.exit(1)
+    finally:
+        # Cleanup Temporary Directories
+        import shutil
+
+        # Cleanup TEMP_DIR
+        if TEMP_DIR.exists():
+            try:
+                shutil.rmtree(TEMP_DIR)
+                logger.info(f"Cleaned up temporary directory: {TEMP_DIR}")
+            except Exception as e:
+                logger.warning(f"Failed to cleanup {TEMP_DIR}: {e}")

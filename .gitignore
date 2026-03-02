@@ -25,4 +25,7 @@ research_venv/
 research_taxonomy_failure/
 tmp_debug/
 debug_work/
+temp_test_data/
+logs/
+data_engine/main_backup.py
 

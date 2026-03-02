@@ -1,1156 +1,69 @@
-import io
-import random
-import re
-import time
-import unicodedata
+"""
+Catalog Manager (Facade) — ARIA のデータレイクハウス状態管理の中核。
+I/O処理は HfStorage、デルタ管理は DeltaManager、複雑な名寄せは ReconciliationEngine に委譲し、
+自身は状態（DF）の保持とオーケストレーションに専念する。
+"""
+
 import zipfile
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import pandas as pd
 import requests
-from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi, hf_hub_download
-from huggingface_hub.utils import EntryNotFoundError, HfHubHTTPError, RepositoryNotFoundError
+
+# --- 分離されたモジュールのインポート ---
+from delta_manager import DeltaManager
+from hf_storage import HfStorage
 from loguru import logger
-from models import CatalogRecord, EdinetCodeRecord, StockMasterRecord
-from utils import normalize_code
+from models import EdinetCodeRecord
+from reconciliation_engine import ReconciliationEngine
 
 
 class CatalogManager:
     def __init__(self, hf_repo: str, hf_token: str, data_path: Path, scope: str = None):
-        self.hf_repo = hf_repo
-        self.hf_token = hf_token
-        self.data_path = data_path
-
-        # 【SSOT】scope が明示的に渡されなかった場合、aria_config.json から自動で読み込む
         if scope is None:
             from config import ARIA_SCOPE
 
             scope = ARIA_SCOPE
         self.scope = scope.capitalize()
-        self.data_path.mkdir(parents=True, exist_ok=True)
 
-        # 【修正】通信安定性向上のため、タイムアウト環境変数を設定
-        # huggingface_hub v0.20+ / 1.x は環境変数を参照してタイムアウトを制御します
-        if hf_repo and hf_token:
-            import os
-
-            os.environ["HF_HUB_TIMEOUT"] = "300"
-            os.environ["HF_HUB_HTTP_TIMEOUT"] = "300"
-            self.api = HfApi(token=hf_token)
-        else:
-            self.api = None
-
-        # ファイルパス定義
-        self.paths = {
+        # サブモジュールの初期化
+        paths = {
             "catalog": "catalog/documents_index.parquet",
             "master": "meta/stocks_master.parquet",
             "listing": "meta/listing_history.parquet",
             "index": "meta/index_history.parquet",
             "name": "meta/name_history.parquet",
         }
+        self.storage = HfStorage(hf_repo, hf_token, data_path, paths)
+        self.delta_mgr = DeltaManager(self.storage, data_path, paths, clean_fn=self._clean_dataframe)
+        self.engine = ReconciliationEngine(self)
 
-        # 状態管理 (バッファ・スナップショット)
-        self._commit_operations = {}
+        # 状態の初期化
         self._snapshots = {}
+        self.edinet_codes = {}
+        self.aggregation_map = {}
 
-        self.catalog_df = self._load_parquet("catalog")
-        self.master_df = self._load_parquet("master")
+        # データのロード
+        self.catalog_df = self.storage.load_parquet("catalog", clean_fn=self._clean_dataframe)
+        self.master_df = self.storage.load_parquet("master", clean_fn=self._clean_dataframe)
 
-        logger.info("CatalogManager を初期化しました。")
+        logger.info("CatalogManager (Facade) を初期化しました。")
 
-        # 全ファイルの整合性チェックと最新スキーマへのアップグレード
+        # 整合性チェックと最新スキーマへのアップグレード
         self._retrospective_cleanse()
 
-        # 【追加】起動時にEDINETコードリストを同期 (和英協同 + 集約一覧)
-        # ネットワークエラーで停止しないよう、内部で例外処理
+        # 起動時にEDINETコードリストを同期しマスタに反映
         self.edinet_codes, self.aggregation_map = self.sync_edinet_code_lists()
-
-        # 【追加】同期したコードリストをマスタに反映
         if self.edinet_codes:
-            self._update_master_from_edinet_codes()
-            # 【重要: Silent Data Loss の根治】
-            # 初期構築したデータは defer=True でバッファに積まれているが、
-            # main.py --list-only 等ですぐにプロセスが終了した場合、コミットされずに揮発する。
-            # プロセスをまたいで確実な永続化を保証するため、初期構築直後にコミットを強制する。
-            if self._commit_operations:
+            self.engine.update_master_from_edinet_codes()
+            if self.storage.has_pending_operations:
                 logger.info("初期マスター構築を検知しました。直ちに Hugging Face に保存します。")
-                self.push_commit("Initial Master Build from EDINET")
-
-    def _discover_edinet_code(self, sec_code: str, name: Optional[str] = None) -> Optional[Tuple[str, str]]:
-        """EDINET書類一覧APIをスキャニングし、証券コードからEDINETコード/JCNを特定する"""
-        display_name = f" ({name})" if name else ""
-        logger.debug(f"証券コード {sec_code}{display_name} の EDINET情報を書類一覧APIから探索中...")
-        import datetime
-
-        sec_code_5 = sec_code if len(sec_code) == 5 else sec_code + "0"
-        # 優先株 (5桁目≠0) の場合は、まず親銘柄 (末尾0) の EDINETコードを継承できないか試みる
-        if sec_code_5[4] != "0" and not self.master_df.empty:
-            parent_code = sec_code_5[:4] + "0"
-            parent_row = self.master_df[self.master_df["code"] == parent_code]
-            if not parent_row.empty and pd.notna(parent_row.iloc[0].get("edinet_code")):
-                # 継承成功は DEBUG レベルとする（ノイズ抑制）
-                logger.debug(f"優先株 {sec_code_5} の EDINETコードを親銘柄 {parent_code} から継承します。")
-                return parent_row.iloc[0]["edinet_code"], parent_row.iloc[0].get("jcn")
-
-        # 1. 最近の提出書類をスキャン (IPO銘柄の捕捉)
-        for i in range(30):
-            date = (datetime.datetime.now() - datetime.timedelta(days=i)).strftime("%Y-%m-%d")
-            url = f"https://disclosure.edinet-fsa.go.jp/api/v1/documents.json?date={date}&type=2"
-            try:
-                res = requests.get(url, timeout=10)
-                if res.status_code == 200:
-                    data = res.json()
-                    for doc in data.get("results", []):
-                        if doc.get("secCode") == sec_code_5:
-                            e_code = doc.get("edinetCode")
-                            jcn = doc.get("JCN")
-                            logger.success(f"発見: {sec_code_5} -> {e_code} (JCN: {jcn})")
-                            return e_code, jcn
-            except Exception as e:
-                logger.debug(f"書類API探索中のエラー ({date}): {e}")
-                continue
-        return None
-
-    def _update_master_from_edinet_codes(self):
-        """同期した edinet_codes および aggregation_map を master_df に反映させ、属性を最新化する"""
-        from datetime import datetime
-
-        logger.info("EDINETコードリストをマスタに反映中 (集約ブリッジ + JCN変更検知 + 上場生死判定)...")
-        updated_count = 0
-        listing_events = []
-        today = datetime.now().strftime("%Y-%m-%d")
-
-        # 既存マスタを edinet_code をキーにした辞書に変換 (高速化用)
-        master_dict = {
-            str(row["edinet_code"]): row.to_dict()
-            for _, row in self.master_df.iterrows()
-            if pd.notna(row.get("edinet_code"))
-        }
-
-        # 集約ブリッジは全ループ終了後に適用するため、ここでは実施しない
-
-        for e_code, ed_rec in self.edinet_codes.items():
-            # 【最適化】上場判定: 金融庁リストの「上場区分」が完全に "上場" である場合のみ
-            is_listed_official = str(ed_rec.is_listed or "").strip() == "上場"
-
-            if e_code in master_dict:
-                # 既存レコードの更新
-                m_rec = master_dict[e_code]
-
-                # 【JCN変更検知】
-                old_jcn = m_rec.get("jcn")
-                new_jcn = ed_rec.jcn
-                if old_jcn and new_jcn and str(old_jcn) != str(new_jcn):
-                    logger.warning(
-                        f"⚠️ JCN変更検知: {e_code} ({ed_rec.submitter_name}) 旧JCN={old_jcn} → 新JCN={new_jcn}"
-                    )
-
-                # 【リスティングイベント生成 (生死判定)】
-                old_is_active = bool(m_rec.get("is_active", False))
-                sec_code = ed_rec.sec_code or m_rec.get("code")
-
-                # 【追加】スコープフィルタリング (同期段階)
-                # 物理的なコードの有無で判定。ただし「過去にコードを持っていた事実」または「集約の継続先」を優先する。
-                has_code_now = sec_code is not None and len(str(sec_code)) >= 4
-                historical_code = m_rec.get("code") is not None and len(str(m_rec.get("code"))) >= 4
-                is_agg_target = e_code in self.aggregation_map.values()
-
-                if self.scope == "Listed" and not (has_code_now or historical_code or is_agg_target):
-                    # スコープ外（かつ歴史的コードも集約先指定もなし）ならマスタから削除 (同期)
-                    master_dict.pop(e_code, None)
-                    continue
-
-                # 【追加】非上場だが保護された場合の理由をロギング (透明性向上)
-                if self.scope == "Listed" and not is_listed_official:
-                    if has_code_now:
-                        logger.info(f"💡 非上場銘柄を保護 (証券コード保有): {sec_code} ({ed_rec.submitter_name})")
-                    elif is_agg_target:
-                        logger.info(f"💡 非上場銘柄を保護 (集約の継続先): {e_code} ({ed_rec.submitter_name})")
-                if self.scope == "Unlisted" and has_code_now:
-                    master_dict.pop(e_code, None)
-                    continue
-
-                if sec_code:
-                    if old_is_active is False and is_listed_official is True:
-                        listing_events.append({"code": sec_code, "type": "LISTING", "event_date": today})
-                        logger.info(f"🟢 新規上場/再上場検知: {sec_code} ({ed_rec.submitter_name})")
-                    elif old_is_active is True and is_listed_official is False:
-                        listing_events.append({"code": sec_code, "type": "DELISTING", "event_date": today})
-                        logger.info(f"🔴 上場廃止検知: {sec_code} ({ed_rec.submitter_name})")
-
-                # 変更がある場合のみ更新 (誠実な同期)
-                updates = {
-                    "jcn": ed_rec.jcn or m_rec.get("jcn"),
-                    "code": sec_code,
-                    "company_name": ed_rec.submitter_name,
-                    "company_name_en": ed_rec.submitter_name_en,
-                    "submitter_name_kana": ed_rec.submitter_name_kana,
-                    "submitter_type": ed_rec.submitter_type,
-                    "is_consolidated": ed_rec.is_consolidated,
-                    "capital": ed_rec.capital,
-                    "settlement_date": ed_rec.settlement_date,
-                    "address": ed_rec.address,
-                    "industry_edinet": ed_rec.industry_edinet,
-                    "industry_edinet_en": ed_rec.industry_edinet_en,
-                    "is_listed_edinet": is_listed_official,
-                    "is_active": is_listed_official if m_rec.get("is_active") is None else m_rec.get("is_active"),
-                }
-
-                changed = False
-                for k, v in updates.items():
-                    if m_rec.get(k) != v:
-                        m_rec[k] = v
-                        changed = True
-
-                if changed:
-                    master_dict[e_code] = m_rec
-                    updated_count += 1
-            else:
-                # 新規レコードの追加
-                sec_code = ed_rec.sec_code
-
-                # 【追加】スコープフィルタリング (新規追加段階)
-                has_code = sec_code is not None and len(str(sec_code)) >= 4
-                is_agg_target = e_code in self.aggregation_map.values()
-                if self.scope == "Listed" and not (has_code or is_agg_target):
-                    continue
-                if self.scope == "Unlisted" and has_code:
-                    continue
-
-                if sec_code and is_listed_official:
-                    listing_events.append({"code": sec_code, "type": "LISTING", "event_date": today})
-
-                new_master_rec = StockMasterRecord(
-                    edinet_code=e_code,
-                    code=sec_code,
-                    jcn=ed_rec.jcn,
-                    company_name=ed_rec.submitter_name,
-                    company_name_en=ed_rec.submitter_name_en,
-                    submitter_name_kana=ed_rec.submitter_name_kana,
-                    submitter_type=ed_rec.submitter_type,
-                    is_consolidated=ed_rec.is_consolidated,
-                    capital=ed_rec.capital,
-                    settlement_date=ed_rec.settlement_date,
-                    address=ed_rec.address,
-                    industry_edinet=ed_rec.industry_edinet,
-                    industry_edinet_en=ed_rec.industry_edinet_en,
-                    is_listed_edinet=is_listed_official,
-                    is_active=is_listed_official,  # 初回は公式状態をセット
-                )
-                master_dict[e_code] = new_master_rec.model_dump()
-                updated_count += 1
-
-        # 【集約ブリッジ】旧コード→新コードの付け替えを「登録完了後」に適用
-        # これにより、新規登録されたエンティティに対しても旧コードのリンクが成立する
-        aggregation_applied_count = 0
-        for old_code, new_code in self.aggregation_map.items():
-            # 旧コードの情報 (EdinetCodeRecord または 既存マスタ)
-            old_info = self.edinet_codes.get(old_code)
-            if old_info:
-                old_name = old_info.submitter_name
-                old_sec = old_info.sec_code
-            elif old_code in master_dict:
-                # EDINET最新リストにはないが、自社マスタには存在する場合（歴史的保持）
-                m_old = master_dict[old_code]
-                old_name = m_old.get("company_name", "不明")
-                old_sec = m_old.get("code")
-            else:
-                old_name = "不明"
-                old_sec = None
-
-            old_sec_disp = f"証券コード:{old_sec}" if old_sec else "コードなし"
-
-            if new_code in master_dict:
-                m_rec = master_dict[new_code]
-                new_name = m_rec.get("company_name", "不明")
-                new_sec = m_rec.get("code")
-                new_sec_disp = f"証券コード:{new_sec}" if new_sec else "非上場"
-
-                existing_former = m_rec.get("former_edinet_codes") or ""
-                former_set = set(existing_former.split(",")) if existing_former else set()
-                if old_code not in former_set:
-                    former_set.add(old_code)
-                    former_set.discard("")
-                    m_rec["former_edinet_codes"] = ",".join(sorted(former_set))
-                    aggregation_applied_count += 1
-                    logger.debug(
-                        f"集約ブリッジ適用: {old_code}({old_name} / {old_sec_disp}) → "
-                        f"{new_code}({new_name} / {new_sec_disp}) [旧コードをリンク]"
-                    )
-            else:
-                # 継続先コードが現在の EDINET リストに存在しない場合
-                logger.debug(
-                    f"集約ブリッジ・スキップ: {old_code}({old_name} / {old_sec_disp}) → {new_code} "
-                    f"(継続先 {new_code} が現在の EDINET リストに存在しません)"
-                )
-
-        # マスタ反映 & スコープ強制
-        if updated_count > 0 or aggregation_applied_count > 0 or not self.master_df.empty:
-            new_df = pd.DataFrame(list(master_dict.values()))
-
-            # 【重要】スコープ強制: マスタ全体に対してもフィルタを適用し、不適合なデータを除去する
-            if self.scope == "Listed":
-                # 上場スコープ: 「証券コードを一度も持ったことがなく（NaN）、かつ非上場」のエンティティを物理的に排除
-                # ただし、歴史的コード保持者、または「集約の継続先」である場合は特別に保持する。
-                is_agg_targets = new_df["edinet_code"].isin(self.aggregation_map.values())
-                new_df = new_df[
-                    ~((new_df["code"].isna() | (new_df["code"] == "")) & ~new_df["is_listed_edinet"] & ~is_agg_targets)
-                ]
-            elif self.scope == "Unlisted":
-                # 非上場スコープ: 証券コードを持つ（上場実績のある）銘柄を排除
-                new_df = new_df[new_df["code"].isna() | (new_df["code"] == "")]
-
-            # 最終的なマスタデータの更新
-            self.master_df = self._clean_dataframe("master", new_df)
-
-            # 何らかの「論理的変化（更新・追加・集約・削除）」があった場合のみ保存
-            # 単なるロード後の再同期でデータが同一なら保存をスキップしてIOを節約
-            if (
-                updated_count > 0
-                or aggregation_applied_count > 0
-                or len(self.master_df) != len(pd.DataFrame(list(master_dict.values())))
-            ):
-                logger.success(
-                    f"マスタ同期完了: {updated_count} 件のレコードを更新/追加し、スコープ強制を適用しました。"
-                )
-                self._save_and_upload("master", self.master_df, defer=True)
-            elif updated_count == 0 and aggregation_applied_count == 0:
-                # ログを出さずに静かに終了
-                pass
-
-        if listing_events:
-            # 証券コード単位での重複を除外（4546 vs 4543 の差分を工学的に許容・制御）
-            events_df = pd.DataFrame(listing_events).drop_duplicates(subset=["code", "type"])
-            self.update_listing_history(events_df)
-            logger.success(f"上場履歴同期完了: {len(events_df)} 件のイベントを追加予約しました。")
-
-        # 最終サマリーログの出力 (工学的主権による透明性の確保)
-        # 3889 と 3884 の乖離を完全に説明するために内訳を計算
-        master_df = self.master_df
-        listed_mask = master_df["is_listed_edinet"].fillna(False).astype(bool)
-        has_code_mask = (master_df["code"].notna()) & (master_df["code"] != "")
-        is_agg_target_mask = master_df["edinet_code"].isin(self.aggregation_map.values())
-
-        # 1. 純粋な上場銘柄
-        pure_listed = master_df[listed_mask & has_code_mask]
-        # 2. 非上場だが証券コードを保持
-        unlisted_with_code = master_df[~listed_mask & has_code_mask]
-        # 3. 集約の継続先として保持
-        agg_targets_only = master_df[~listed_mask & ~has_code_mask & is_agg_target_mask]
-
-        unique_sec_codes = master_df[has_code_mask]["code"].nunique()
-        total_aggregated = master_df["former_edinet_codes"].dropna().str.split(",").str.len().sum()
-
-        logger.success(
-            f"同期完了: 総エンティティ数 {len(master_df)} (上場:{len(pure_listed)} / "
-            f"コード保持非上場:{len(unlisted_with_code)} / 集約先保護:{len(agg_targets_only)})"
-        )
-        logger.success(
-            f"有効証券コード数 {unique_sec_codes} "
-            f"(集約適用: 今回+{aggregation_applied_count}件 / 総保持 {int(total_aggregated)}件)"
-        )
-
-    def sync_edinet_code_lists(self) -> Tuple[Dict[str, EdinetCodeRecord], Dict[str, str]]:
-        """金融庁から和英両方のコードリストおよび集約一覧を取得し、
-        協同してマスタベースを構築する"""
-        urls = {
-            "jp": "https://disclosure2dl.edinet-fsa.go.jp/searchdocument/codelist/Edinetcode.zip",
-            "en": "https://disclosure2dl.edinet-fsa.go.jp/searchdocument/codelisteng/Edinetcode.zip",
-            "agg": "https://disclosure2dl.edinet-fsa.go.jp/guide/static/disclosure/download/ESE140190.csv",
-        }
-
-        results = {}
-        agg_map = {}  # 旧コード -> 新コード
-        try:
-            logger.info("EDINETコードリスト (和英) の同期を開始...")
-
-            # 日本語版の取得と解析
-            res_jp = requests.get(urls["jp"], timeout=30)
-            res_jp.raise_for_status()
-            with zipfile.ZipFile(io.BytesIO(res_jp.content)) as z:
-                csv_file = [f for f in z.namelist() if f.endswith(".csv")][0]
-                df_jp = pd.read_csv(z.open(csv_file), encoding="cp932", skiprows=1)
-
-            # 英語版の取得と解析 (業種翻訳の抽出用)
-            res_en = requests.get(urls["en"], timeout=30)
-            res_en.raise_for_status()
-            with zipfile.ZipFile(io.BytesIO(res_en.content)) as z:
-                csv_file = [f for f in z.namelist() if f.endswith(".csv")][0]
-                df_en = pd.read_csv(z.open(csv_file), encoding="cp932", skiprows=1)
-
-            # 【重要】集約一覧 (ESE140190.csv) の取得と解析 (コード付け替え対応)
-            # 物理検証結果: エンコーディングは CP932、1行目はタイトル行
-            try:
-                res_agg = requests.get(urls["agg"], timeout=30)
-                res_agg.raise_for_status()
-                # CSV 読み込み: [集約処理日, 廃止EDINETコード, 継続EDINETコード] 形式を想定
-                # 1行目が「EDINETコード集約一覧,,」のため skiprows=1
-                df_agg = pd.read_csv(io.BytesIO(res_agg.content), encoding="cp932", skiprows=1)
-                for _, agg_row in df_agg.iterrows():
-                    # 0:処理日, 1:廃止コード, 2:継続コード
-                    old_c = str(agg_row.iloc[1]).strip()
-                    new_c = str(agg_row.iloc[2]).strip()
-                    if old_c and new_c and old_c != new_c:
-                        agg_map[old_c] = new_c
-                logger.info(f"EDINETコード集約一覧をロード: {len(agg_map)} 件の付け替えを特定")
-            except Exception as ae:
-                logger.warning(f"集約一覧の取得・解析に失敗しました (継続可能): {ae}")
-
-            # 名寄せ: EDINETコードをキーにする
-            # 日本語版をベースにし、英語版から業種名を補完
-            for _, row in df_jp.iterrows():
-                e_code = str(row["ＥＤＩＮＥＴコード"])
-
-                # 英語版から対応するレコードを検索
-                en_row = df_en[df_en.iloc[:, 0] == e_code]
-                ind_en = en_row.iloc[0]["Submitter's industry"] if not en_row.empty else None
-
-                # 数値型の可能性があるカラムを安全に文字列化 (2024.0 回避)
-                def safe_int_str(val):
-                    if pd.isna(val) or str(val).lower() in ["nan", "none", ""]:
-                        return None
-                    try:
-                        return str(int(float(val)))
-                    except Exception:
-                        return str(val).strip()
-
-                res_dict = {
-                    "edinet_code": e_code,
-                    "submitter_type": row.get("提出者種別"),
-                    "is_listed": row.get("上場区分"),
-                    "is_consolidated": row.get("連結の有無"),
-                    "capital": float(row["資本金"]) if pd.notna(row.get("資本金")) else None,
-                    "settlement_date": str(row.get("決算日")) if pd.notna(row.get("決算日")) else None,
-                    "submitter_name": str(row.get("提出者名")),
-                    "submitter_name_en": str(row.get("提出者名（英字）"))
-                    if pd.notna(row.get("提出者名（英字）"))
-                    else None,
-                    "submitter_name_kana": str(row.get("提出者名（ヨミ）"))
-                    if pd.notna(row.get("提出者名（ヨミ）"))
-                    else None,
-                    "address": str(row.get("所在地")) if pd.notna(row.get("所在地")) else None,
-                    "industry_edinet": str(row.get("提出者業種")),
-                    "industry_edinet_en": ind_en,
-                    "sec_code": normalize_code(str(row["証券コード"]))
-                    if pd.notna(row.get("証券コード")) and str(row["証券コード"]).strip()
-                    else None,
-                    "jcn": safe_int_str(row.get("提出者法人番号")),
-                }
-                results[e_code] = EdinetCodeRecord(**res_dict)
-
-            logger.success(f"EDINETコードリスト同期完了: {len(results)} 件")
-
-        except Exception as e:
-            logger.error(f"EDINETコードリストの同期に失敗しました: {e}")
-            # 失敗した場合は既存の master_df から最小限の情報を復元することを検討
-
-        return results, agg_map
-
-    def _retrospective_cleanse(self):
-        """データディレクトリ内の全Parquetファイルを走査し、不備があれば自動修正してアップロード"""
-        if not self.api:
-            return
-
-        logger.info("Starting integrity check for all Parquet files...")
-        updated_count = 0
-
-        # 1. 定義済み主要ファイルのチェック
-        for key in self.paths.keys():
-            try:
-                # 既にロード済みの catalog_df, master_df は _load_parquet でクレンジング済み
-                df = self.catalog_df if key == "catalog" else (self.master_df if key == "master" else None)
-                if df is None:
-                    df = self._load_parquet(key)
-
-                # カタログの場合、18カラム未満なら強制保存してスキーマ拡張
-                if key == "catalog" and len(df.columns) < 18:
-                    self._save_and_upload(key, df, defer=True)
-                    updated_count += 1
-            except Exception:
-                continue
-
-        # 2. マスターの全Binファイルを走査
-        try:
-            files = self.api.list_repo_files(repo_id=self.hf_repo, repo_type="dataset")
-            bin_files = [f for f in files if "master/bin/" in f and f.endswith(".parquet")]
-
-            for b_file in bin_files:
-                local_tmp = self.data_path / "temp_cleanse.parquet"
-                self.api.hf_hub_download(
-                    repo_id=self.hf_repo,
-                    filename=b_file,
-                    repo_type="dataset",
-                    token=self.hf_token,
-                    local_dir=str(self.data_path),
-                    local_dir_use_symlinks=False,
-                )
-                df_bin = pd.read_parquet(self.data_path / b_file)
-
-                # スキーマ不適合があればクレンジングして予約
-                # (具体的な rec チェックではなく、モデルとの不一致を基準にする)
-                df_clean = self._clean_dataframe("master", df_bin)
-                if len(df_clean.columns) != len(df_bin.columns):
-                    logger.info(f"Cleaned up bin file schema: {b_file}")
-                    df_clean.to_parquet(local_tmp, index=False, compression="zstd")
-                    self.add_commit_operation(b_file, local_tmp)
-                    updated_count += 1
-        except Exception:
-            pass
-
-    def _clean_dataframe(self, key: str, df: pd.DataFrame) -> pd.DataFrame:
-        """全てのDataFrameに対して共通のクレンジングを適用"""
-        if df.empty:
-            return df
-
-        # 0. カラム名の正規化（空白除去）
-        df.columns = df.columns.astype(str).str.strip()
-
-        # 【追加】全文字列カラムの空文字を明示的に None (NULL) に統一
-        for col in df.columns:
-            if df[col].dtype == "object":
-                # 空白のみの文字列も NULL 扱いとする
-                df[col] = df[col].apply(lambda x: None if (isinstance(x, str) and not x.strip()) else x)
-
-        # 1. 不要なインデックス由来カラムの除去
-        drop_targets = ["index", "level_0", "Unnamed: 0"]
-        cols_to_drop = [c for c in drop_targets if c in df.columns]
-
-        if cols_to_drop:
-            logger.debug(f"{key}: Removed unnecessary columns: {cols_to_drop}")
-            df = df.drop(columns=cols_to_drop)
-
-        # 2. カタログの場合、モデル定義のカラム構成を強制 (現在は27カラムに拡張)
-        if key == "catalog":
-            # NaN を None に置換
-            df = df.replace({pd.NA: None, float("nan"): None})
-
-            # モデル定義の全フィールドを取得
-            expected_cols = list(CatalogRecord.model_fields.keys())
-
-            # 既存のカラムのみでPydanticバリデーションを通し、不足分をNoneで補完
-            validated = []
-            for rec_dict in df.to_dict("records"):
-                try:
-                    # 欠落しているフィールドがあっても Pydantic がデフォルト値を補完
-                    validated.append(CatalogRecord(**rec_dict).model_dump())
-                except Exception as e:
-                    # 必須項目(doc_id等)が欠けている場合のみエラー
-                    logger.warning(f"クレンジング中のバリデーション不備 (doc_id: {rec_dict.get('doc_id')}): {e}")
-                    # 構造だけでも維持するため、辞書として可能な限り保持
-                    row = {col: rec_dict.get(col) for col in expected_cols}
-                    validated.append(row)
-
-            df = pd.DataFrame(validated)
-            # カラム順をモデル定義に合わせる
-            df = df[expected_cols]
-
-            # 【重要】データ型の正規化 (2024.0 回避のための Int64 適用)
-            # pandas の浮動小数点化を阻止し、整数または NULL として保存
-            if "fiscal_year" in df.columns:
-                df["fiscal_year"] = pd.to_numeric(df["fiscal_year"], errors="coerce").astype("Int64")
-            if "num_months" in df.columns:
-                df["num_months"] = pd.to_numeric(df["num_months"], errors="coerce").astype("Int64")
-
-        # 3. 証券コードの正規化 (5桁統一)
-        targets = ["master", "listing", "index", "name"]
-        if key in targets and "code" in df.columns:
-            df["code"] = df["code"].apply(normalize_code)
-
-        # 4. Object型の安定化 (None を保持しつつ文字列化)
-        for col in df.columns:
-            if df[col].dtype == "object":
-                # 【最重要】論理値が含まれる場合は文字列化を回避
-                # 既に 'True' / 'False'（文字列）になってしまっている場合の復旧処置も兼ねる
-                has_string_bools = df[col].isin(["True", "False"]).any()
-                if has_string_bools:
-                    # 文字列の 'True'/'False' を正規の Boolean に戻す (None は維持)
-                    df[col] = df[col].map({"True": True, "False": False, True: True, False: False}, na_action="ignore")
-
-                # 改めてチェックし、純粋な文字列カラムのみを as_type(str) 相当の処理にかける
-                is_pure_bool = df[col].isin([True, False]).any()
-                if not is_pure_bool:
-                    df[col] = df[col].apply(lambda x: str(x) if (x is not None and not pd.isna(x)) else None)
-
-        return df
-
-    def _normalize_company_name(self, name: str) -> str:
-        """比較判定のために法人格や空白を除去して正規化する (NFKC対応版)"""
-        if not name or not isinstance(name, str):
-            return ""
-
-        # 1. NFKC正規化 (全角数字・英字を半角に、㈱ などを (株) に分解)
-        n = unicodedata.normalize("NFKC", name)
-
-        # 2. 全ての空白除去
-        n = n.replace(" ", "").replace("\u3000", "")
-
-        # 3. 代表的な法人格表記を除去
-        # NFKC後の (株) や (有) などに対応できるようパターンを整理
-        patterns = [
-            r"株式会社",
-            r"有限会社",
-            r"合同会社",
-            r"合資会社",
-            r"合名会社",
-            r"一般社団法人",
-            r"一般財団法人",
-            r"公益社団法人",
-            r"公益財団法人",
-            r"\(株\)",
-            r"\(有\)",
-            r"\(合\)",
-            r"\(社\)",
-            r"\(財\)",
-        ]
-        for p in patterns:
-            n = re.sub(p, "", n)
-
-        return n.strip()
-
-    def add_commit_operation(self, repo_path: str, local_path: Path):
-        """コミットバッファに操作を追加（重複は最新で上書き）"""
-        self._commit_operations[repo_path] = CommitOperationAdd(path_in_repo=repo_path, path_or_fileobj=str(local_path))
-        logger.debug(f"コミットバッファに追加: {repo_path}")
-
-    def take_snapshot(self):
-        """現在のGlobal状態のスナップショットをメモリに取得 (不整合発生時のロールバック用)"""
-        # 主要ファイルをロードしてスナップショットに保存
-        self._snapshots = {
-            "catalog": self.catalog_df.copy(),
-            "master": self.master_df.copy(),
-            "listing": self._load_parquet("listing").copy(),
-            "index": self._load_parquet("index").copy(),
-            "name": self._load_parquet("name").copy(),
-        }
-        logger.info("Global 状態のスナップショットを取得しました (安全性確保)")
-
-    def rollback(self, message: str = "RaW-V Failure: Automated Recovery Rollback"):
-        """スナップショットの状態を強制的に書き戻し、Globalデータの整合性を復旧する"""
-        if not self._snapshots:
-            logger.error("❌ スナップショットが存在しないため、ロールバックできません。")
-            return False
-
-        logger.warning(f"⛔ ロールバックを開始します: {message}")
-
-        # 既存のコミット予約をすべて破棄
-        self._commit_operations = {}
-
-        # スナップショットの内容を強制的に上書き予約
-        for key, df in self._snapshots.items():
-            self._save_and_upload(key, df, defer=True)
-
-        # 一括コミットの実行 (事実上の差し戻し)
-        success = self.push_commit(f"ROLLBACK: {message}")
-        if success:
-            logger.success("✅ ロールバック・コミットが完了しました。整合性は復旧されました。")
-            # メモリ上の最新状態もスナップショットに戻す
-            self.catalog_df = self._snapshots["catalog"]
-            self.master_df = self._snapshots["master"]
-        else:
-            logger.critical(
-                "❌ ロールバック自体に失敗しました！"
-                "Hugging Face上のデータが壊れている可能性があります。直ちに手動確認が必要です。"
-            )
-        return success
-
-    def _load_parquet(self, key: str, force_download: bool = False) -> pd.DataFrame:
-        filename = self.paths[key]
-
-        # 【重要: Lost Update 防止】保留中のコミット（メモリ上）があれば、リモートより優先する (Read-Your-Writes)
-        if filename in self._commit_operations:
-            data = self._commit_operations[filename]
-            logger.debug(f"メモリ上の保留中データをロードに使用します: {filename}")
-            return data[0] if isinstance(data, tuple) else data
-
-        try:
-            local_path = hf_hub_download(
-                repo_id=self.hf_repo,
-                filename=filename,
-                repo_type="dataset",
-                token=self.hf_token,
-                force_download=force_download,
-            )
-            df = pd.read_parquet(local_path)
-            # 【絶対ガード】読み込み直後にクレンジング
-            df = self._clean_dataframe(key, df)
-            logger.debug(f"ロード成功: {filename} ({len(df)} rows)")
-            return df
-        except RepositoryNotFoundError:
-            logger.error(f"リポジトリが見つかりません: {self.hf_repo}")
-            logger.error("環境変数 HF_REPO の設定を確認してください")
-            raise
-        except (EntryNotFoundError, requests.exceptions.HTTPError) as e:
-            # EntryNotFoundError (HFライブラリ) または 生の 404 (パッチ適用時) をハンドリング
-            is_404 = isinstance(e, EntryNotFoundError) or (
-                hasattr(e, "response") and e.response is not None and e.response.status_code == 404
-            )
-
-            if not is_404:
-                # 404 以外なら上位または Exception へ飛ばす
-                raise e
-
-            logger.info(f"ファイルが存在しないため新規作成します: {filename}")
-            if key == "catalog":
-                cols = list(CatalogRecord.model_fields.keys())
-                return pd.DataFrame(columns=cols)
-            elif key == "master":
-                cols = list(StockMasterRecord.model_fields.keys())
-                return pd.DataFrame(columns=cols)
-            elif key == "listing":
-                return pd.DataFrame(columns=["code", "type", "event_date"])
-            elif key == "index":
-                return pd.DataFrame(columns=["index_name", "code", "type", "event_date"])
-            elif key == "name":
-                return pd.DataFrame(columns=["code", "old_name", "new_name", "change_date"])
-            return pd.DataFrame()
-        except HfHubHTTPError as e:
-            logger.error(f"HF API エラー ({e.response.status_code}): {filename}")
-            logger.error(f"詳細: {e}")
-            if e.response.status_code == 401:
-                logger.error("認証エラー: HF_TOKEN が無効または期限切れの可能性があります")
-            elif e.response.status_code == 403:
-                logger.error("アクセス拒否: リポジトリへのアクセス権限がありません")
-            raise
-        except Exception as e:
-            logger.error(f"予期しないエラー: {filename} - {type(e).__name__}: {e}")
-            raise
-
-    def is_processed(self, doc_id: str) -> bool:
-        if self.catalog_df.empty:
-            return False
-        # doc_id が存在し、かつステータスが 'success' または 'retracted' (取下済) の場合のみ「処理済み」とみなす
-        # これにより、pending や failure の書類は自動的に再処理の対象になる
-        # retracted の書類は再送しても無意味なため、処理済みとして扱う
-        processed = self.catalog_df[
-            (self.catalog_df["doc_id"] == doc_id) & (self.catalog_df["processed_status"].isin(["success", "retracted"]))
-        ]
-        return not processed.empty
-
-    def get_status(self, doc_id: str) -> Optional[str]:
-        """指定した doc_id の現在のステータスを取得"""
-        if self.catalog_df.empty:
-            return None
-        match = self.catalog_df[self.catalog_df["doc_id"] == doc_id]
-        if match.empty:
-            return None
-        return match.iloc[0]["processed_status"]
-
-    def update_catalog(self, new_records: List[Dict]) -> bool:
-        """カタログを更新 (Pydanticバリデーション実施)"""
-        if not new_records:
-            return True
-
-        validated = []
-        for rec in new_records:
-            try:
-                validated.append(CatalogRecord(**rec).model_dump())
-            except Exception as e:
-                logger.error(f"カタログレコードのバリデーション失敗 (doc_id: {rec.get('doc_id')}): {e}")
-
-        if not validated:
-            return False
-
-        new_df = pd.DataFrame(validated)
-
-        # 【修正】一時的に結合したDataFrameを作成（メモリ上の状態は変更しない）
-        temp_catalog = pd.concat([self.catalog_df, new_df], ignore_index=True).drop_duplicates(
-            subset=["doc_id"], keep="last"
-        )
-
-        # 【修正】アップロード成功時のみ、メモリ上のカタログを更新
-        if self._save_and_upload("catalog", temp_catalog):
-            self.catalog_df = temp_catalog
-            logger.success(f"✅ カタログ更新成功: {len(validated)} 件")
-            return True
-        else:
-            logger.error("カタログのアップロードに失敗したため、メモリ上の状態を保持します")
-            return False
-
-    def _save_and_upload(self, key: str, df: pd.DataFrame, defer: bool = False) -> bool:
-        filename = self.paths[key]
-        local_file = self.data_path / filename  # 【修正】Path(filename).name によるディレクトリ剥離を廃止
-        local_file.parent.mkdir(parents=True, exist_ok=True)  # 【追加】親ディレクトリの存在を保証
-
-        # 【絶対ガード】保存直前に最終クレンジング
-        df = self._clean_dataframe(key, df)
-
-        df.to_parquet(local_file, index=False, compression="zstd")
-
-        if self.api:
-            if defer:
-                # 【重要】バッファには CommitOperationAdd ではなく、(DataFrame, 物理パス) を保持する
-                # これにより _load_parquet での再利用(Read-Your-Writes)を可能にする
-                self._commit_operations[filename] = (df, local_file)
-                logger.debug(f"コミットバッファに追加: {filename}")
-                return True
-
-            max_retries = 5  # 強化
-            for attempt in range(max_retries):
-                try:
-                    self.api.upload_file(
-                        path_or_fileobj=str(local_file),
-                        path_in_repo=filename,
-                        repo_id=self.hf_repo,
-                        repo_type="dataset",
-                        token=self.hf_token,
-                    )
-                    logger.success(f"アップロード成功: {filename}")
-                    return True
-                except Exception as e:
-                    # HfHubHTTPErrorの型チェックを行い、429の場合のみリトライ
-                    if isinstance(e, HfHubHTTPError) and e.response.status_code == 429:
-                        wait_time = int(e.response.headers.get("Retry-After", 60)) + 5
-                        logger.warning(f"Rate limit exceeded. Waiting {wait_time}s before retry ({attempt + 1}/5)...")
-                        time.sleep(wait_time)
-                        continue
-
-                    # その他のHTTPエラー (5xx等) もリトライ対象にする
-                    if isinstance(e, HfHubHTTPError) and e.response.status_code >= 500:
-                        wait_time = 15 * (attempt + 1)
-                        logger.warning(
-                            f"Master HF Server Error ({e.response.status_code}). "
-                            f"Waiting {wait_time}s... ({attempt + 1}/5)"
-                        )
-                        time.sleep(wait_time)
-                        continue
-
-                    logger.warning(f"アップロード一時エラー: {filename} - {e} - Retrying ({attempt + 1}/5)...")
-                    time.sleep(10 * (attempt + 1))
-            logger.error(f"❌ アップロードに最終的に失敗しました: {filename}")
-            return False
-        return True
-
-    def upload_raw(self, local_path: Path, repo_path: str, defer: bool = False) -> bool:
-        """ローカルの生データを Hugging Face の raw/ フォルダにアップロード"""
-        if not local_path.exists():
-            logger.error(f"ファイルが存在しないためアップロードできません: {local_path}")
-            return False
-
-        if self.api:
-            if defer:
-                self.add_commit_operation(repo_path, local_path)
-                logger.debug(f"RAWコミットバッファに追加: {repo_path}")
-                return True
-
-            max_retries = 5  # 強化
-            for attempt in range(max_retries):
-                try:
-                    self.api.upload_file(
-                        path_or_fileobj=str(local_path),
-                        path_in_repo=repo_path,
-                        repo_id=self.hf_repo,
-                        repo_type="dataset",
-                        token=self.hf_token,
-                    )
-                    logger.debug(f"RAWアップロード成功: {repo_path}")
-                    return True
-                except Exception as e:
-                    if isinstance(e, HfHubHTTPError) and e.response.status_code == 429:
-                        wait_time = int(e.response.headers.get("Retry-After", 60)) + 5
-                        logger.warning(f"Rate limit exceeded for RAW. Waiting {wait_time}s... ({attempt + 1}/5)")
-                        time.sleep(wait_time)
-                        continue
-
-                    logger.warning(f"RAWアップロード一時エラー: {repo_path} - {e} - Retrying ({attempt + 1}/5)...")
-                    time.sleep(10 * (attempt + 1))
-            return False
-        return True
-
-    def upload_raw_folder(self, folder_path: Path, path_in_repo: str, defer: bool = False) -> bool:
-        """フォルダ単位での一括アップロード (リトライ付)"""
-        if not folder_path.exists():
-            return True  # アップロード対象なしは成功とみなす
-
-        if self.api:
-            if defer:
-                # フォルダ内の各ファイルを個別にバッファに追加
-                for f in folder_path.glob("**/*"):
-                    if f.is_file():
-                        r_path = f"{path_in_repo}/{f.relative_to(folder_path)}"
-                        self._commit_operations[r_path] = CommitOperationAdd(
-                            path_in_repo=r_path, path_or_fileobj=str(f)
-                        )
-                logger.debug(f"RAWフォルダをコミットバッファに追加: {path_in_repo}")
-                return True
-
-            max_retries = 5  # 3回から5回に強化
-            for attempt in range(max_retries):
-                try:
-                    self.api.upload_folder(
-                        folder_path=str(folder_path),
-                        path_in_repo=path_in_repo,
-                        repo_id=self.hf_repo,
-                        repo_type="dataset",
-                        token=self.hf_token,
-                    )
-                    logger.success(f"一括アップロード成功: {path_in_repo} (from {folder_path})")
-                    return True
-                except Exception as e:
-                    if isinstance(e, HfHubHTTPError) and e.response.status_code == 429:
-                        wait_time = int(e.response.headers.get("Retry-After", 60)) + 5
-                        logger.warning(
-                            f"Folder Upload Rate limit exceeded. Waiting {wait_time}s... ({attempt + 1}/{max_retries})"
-                        )
-                        time.sleep(wait_time)
-                        continue
-
-                    logger.warning(f"アップロード一時エラー: {e} - Retrying ({attempt + 1}/{max_retries})...")
-                    time.sleep(10)
-
-            logger.error(f"一括アップロード失敗 (Give up): {path_in_repo}")
-            return False
-        return True
-
-    def update_listing_history(self, new_events: pd.DataFrame) -> bool:
-        history = self._load_parquet("listing")
-
-        # 初回実行時（ファイルが存在せず、イベントも空）の場合でも空ファイルを保存
-        if new_events.empty:
-            if history.empty:
-                # 空の履歴ファイルを初期化して保存
-                return self._save_and_upload("listing", history, defer=True)
-            return True
-
-        history = pd.concat([history, new_events], ignore_index=True).drop_duplicates()
-        return self._save_and_upload("listing", history, defer=True)
-
-    def update_index_history(self, new_events: pd.DataFrame) -> bool:
-        history = self._load_parquet("index")
-
-        # 初回実行時（ファイルが存在せず、イベントも空）の場合でも空ファイルを保存
-        if new_events.empty:
-            if history.empty:
-                # 空の履歴ファイルを初期化して保存
-                return self._save_and_upload("index", history, defer=True)
-            return True
-
-        history = pd.concat([history, new_events], ignore_index=True).drop_duplicates()
-        return self._save_and_upload("index", history, defer=True)
-
-    def get_listing_history(self) -> pd.DataFrame:
-        """現在の上場履歴マスタを取得"""
-        return self._load_parquet("listing")
-
-    def get_index_history(self) -> pd.DataFrame:
-        """現在の指数採用履歴マスタを取得"""
-        return self._load_parquet("index")
-
-    def update_stocks_master(self, incoming_data: pd.DataFrame):
-        """
-        マスタ更新 & 時系列リコンシリエーション (世界最高水準の自律的名寄せエンジン)
-        【工学的主権】重複排除、IPO動的発見、親子紐付け、属性継承を統合。
-        """
-        if incoming_data.empty:
-            return True
-
-        def resolve_attr(group, col):
-            vals = group[col].dropna()
-            return vals.iloc[0] if not vals.empty else None
-
-        # --- JPX 銘柄注入ログの追加 ---
-        is_jpx_update = "sector_jpx_33" in incoming_data.columns
-        if is_jpx_update:
-            jpx_count = len(incoming_data)
-            # 新規銘柄（既存マスタに証券コードがないもの）を特定
-            existing_codes = set(self.master_df["code"].dropna().unique())
-            incoming_codes = set(incoming_data["code"].dropna().unique())
-            new_codes_count = len(incoming_codes - existing_codes)
-
-            logger.info(
-                f"📊 JPX マスタ情報注入: 合計 {jpx_count} 件 "
-                f"(新規発見: {new_codes_count} 件 / 属性更新: {jpx_count - new_codes_count} 件)"
-            )
-
-        # 1. 前処理と名寄せ (Registration Guard & Discovery)
-        processed_records = []
-        for _, row in incoming_data.iterrows():
-            rec = row.to_dict()
-            rec = {k: (v if not pd.isna(v) else None) for k, v in rec.items()}
-            sec_code = rec.get("code")
-
-            if sec_code:
-                sec_code = str(sec_code).strip()
-                if len(sec_code) == 4:
-                    sec_code += "0"
-                rec["code"] = sec_code
-
-                # --- A. 親子紐付け (SICCルール) ---
-                if sec_code[4] != "0":
-                    parent_c = sec_code[:4] + "0"
-                    rec["parent_code"] = parent_c
-                    # logger.debug 削除（ノイズ抑制）
-
-                # --- B. IPO動的発見 & 登録ガード ---
-                # EDINETコード/JCNが不明な場合のみ探索
-                if not rec.get("edinet_code") or not rec.get("jcn"):
-                    # 判定: 特殊銘柄（ETF/REIT/PRO Market）または優先株か？
-                    market = str(rec.get("market") or "").upper()
-                    is_special = any(x in market for x in ["ETF", "REIT", "PRO MARKET"])
-                    is_preferred = sec_code[4] != "0"
-
-                    # 1. まず既存マスタにあるかチェック (APIを叩く前に100%復元)
-                    if not self.master_df.empty:
-                        # 型不一致を防ぐため、明示的に文字列として比較
-                        m_row = self.master_df[self.master_df["code"].astype(str) == str(sec_code)]
-                        if not m_row.empty:
-                            m_rec = m_row.iloc[0].to_dict()
-                            # 入力にない属性を既存マスタから補完 (Inheritance)
-                            for k, v in m_rec.items():
-                                if k not in rec or rec[k] is None:
-                                    rec[k] = v
-
-                    # 2. それでも不明、かつ「一般事業会社の新規IPO」の可能性がある場合のみ動的発見を実行
-                    # 特殊銘柄や優先株は Discovery Service (書類APIスキャン) の対象外とする。
-                    if (not rec.get("edinet_code") or not rec.get("jcn")) and not is_special and not is_preferred:
-                        discovery = self._discover_edinet_code(sec_code, name=rec.get("company_name"))
-                        if discovery:
-                            rec["edinet_code"], rec["jcn"] = discovery
-                        else:
-                            # 探索で見つからなかった場合のガード
-                            if not self.master_df.empty and sec_code in self.master_df["code"].values:
-                                pass  # 既存銘柄の場合はログを出さずに更新を許可
-                            else:
-                                # 未知銘柄の保留は DEBUG レベルへ
-                                logger.debug(
-                                    f"Registration Guard: {sec_code} ({rec.get('company_name')}) は"
-                                    "EDINET情報が未発見のため、新規登録を保留します。"
-                                )
-                                continue
-
-            try:
-                # バリデーション (models.py での5桁正規化、nan防止が効く)
-                processed_records.append(StockMasterRecord(**rec).model_dump())
-            except Exception as e:
-                logger.error(f"銘警情報のバリデーション失敗 (code: {sec_code}): {e}")
-
-        if not processed_records:
-            return True
-
-        incoming_df = pd.DataFrame(processed_records)
-
-        # 2. 既存データとの統合 (リコンシリエーション)
-        current_m = self.master_df.copy()
-        all_states = pd.concat([current_m, incoming_df], ignore_index=True)
-
-        # 重複排除 (最新属性を保持しつつ、同一イベントは1つに)
-        all_states.drop_duplicates(
-            subset=["code", "company_name", "last_submitted_at", "is_active", "sector_jpx_33", "market"], inplace=True
-        )
-
-        # 3. 属性継承とステータス確定
-        best_records = []
-        listing_events = []
-        today = pd.Timestamp.now().strftime("%Y-%m-%d")
-
-        # 【最重要】グループ化キーの適正化 (Identity Architecture)
-        # 証券コード単体では NULL 同士が衝突（統合・消失）し、
-        # EDINETコード単体では「同一提出者の異なる銘柄（優先株など）」が衝突する。
-        # 工学的主権に基づき、(edinet_code, code) のペアをユニークな識別子とする。
-        # dropna=False により、証券コードが NULL の非上場銘柄も EDINETコードごとに独立して管理される。
-        group_cols = ["edinet_code", "code"]
-        for _, group in all_states.groupby(group_cols, dropna=False):
-            # 代表コードを取得
-            code_vals = group["code"].dropna().unique()
-            code = code_vals[0] if len(code_vals) > 0 else None
-            # 【重要】スコープフィルタリング (JPX/属性更新段階)
-            # 物理的なコードの有無で判定
-            has_code = code is not None and len(str(code)) >= 4
-
-            # 【工学的主権】集約ターゲット（旧社名など）は、たとえ証券コードがなくても
-            # 履歴保持と名寄せのために Listed スコープでも残すべき。
-            is_agg_target = group["former_edinet_codes"].notna().any()
-
-            if self.scope == "Listed":
-                if not has_code and not is_agg_target:
-                    continue
-            elif self.scope == "Unlisted":
-                if has_code:
-                    continue
-
-            # 【重要】提出日時の降順でソート。日時が同じ（または欠損）ならインデックスが大きい（最新入力）を優先。
-            # sort_values は安定ソートのため、先に出順（インデックス）で降順ソートしておく。
-            sorted_group = group.sort_index(ascending=False).sort_values(
-                "last_submitted_at", ascending=False, na_position="last"
-            )
-            latest_rec = sorted_group.iloc[0].copy()
-
-            # --- 属性継承 (Inheritance) ---
-            # JPX由来の属性や親からの属性を、非NULLであれば継承する
-            # 【根治】former_edinet_codes を継承リストに追加。これにより集約情報が永続化される。
-            for attr in [
-                "sector_jpx_33",
-                "sector_jpx_17",
-                "market",
-                "jcn",
-                "edinet_code",
-                "parent_code",
-                "former_edinet_codes",
-            ]:
-                val = resolve_attr(sorted_group, attr)
-                if val is not None:
-                    # 【重要】is_listed_edinet は EDINET 由来の情報のみを正とし、JPX 情報で True に上書きしない
-                    if attr == "is_listed_edinet" and is_jpx_update:
-                        continue
-                    latest_rec[attr] = val
-
-            # --- 上場履歴 (Listing History) の生成 ---
-            # 【重要】証券コードがない銘柄（NAVER 等）は、JPX 上場履歴の対象外
-            if code is None:
-                best_records.append(latest_rec)
-                continue
-
-            # is_active の変化を、既存マスタ(current_m)と比較して検知
-            new_active = latest_rec.get("is_active", True)
-            if not current_m.empty:
-                old_row = current_m[current_m["code"] == code]
-                if not old_row.empty:
-                    old_active = old_row.iloc[0].get("is_active", True)
-                    if old_active and not new_active:
-                        listing_events.append({"code": code, "type": "DELISTING", "event_date": today})
-                    elif not old_active and new_active:
-                        listing_events.append({"code": code, "type": "LISTING", "event_date": today})
-                else:
-                    # 【修正】新規レコードでかつ Active なら、無条件で LISTING を生成 (ETF等の救済)
-                    if new_active:
-                        listing_events.append({"code": code, "type": "LISTING", "event_date": today})
-            else:
-                # マスタが完全に空（初回全件投入時）の場合も、Active なら履歴を残す
-                if new_active:
-                    listing_events.append({"code": code, "type": "LISTING", "event_date": today})
-
-            best_records.append(latest_rec)
-
-        self.master_df = pd.DataFrame(best_records)
-
-        # 履歴の保存
-        if listing_events:
-            self.update_listing_history(pd.DataFrame(listing_events))
-
-        # コミットバッファに積む
-        return self._save_and_upload("master", self.master_df, defer=True)
-
-    def get_last_index_list(self, index_name: str) -> pd.DataFrame:
-        """指定指数の構成銘柄を取得 (Phase 3用)"""
-        return pd.DataFrame(columns=["code"])
-
-    def get_sector(self, code: str) -> str:
-        # 初回起動時: マスタが空なら構築
-        if self.master_df.empty:
-            logger.info("マスタファイルが空です。EDINET APIから初期構築を行います。")
-            self.sync_edinet_code_lists()
-            # 【重要: Silent Data Loss の根治】
-            # __init__ で初期構築したデータは _save_and_upload(defer=True) でバッファに積まれるが、
-            # main.py が --list-only 等ですぐに終了した場合、push_commit が呼ばれずに揮発してしまう。
-            # そのため、初期構築が行われた場合は必ずここでコミットを強制する。
-            self.push_commit("Initial Master Build from EDINET")
-        row = self.master_df[self.master_df["code"] == code]
-        if not row.empty:
-            col_name = "sector_jpx_33" if "sector_jpx_33" in self.master_df.columns else "sector"
-            val = row.iloc[0].get(col_name)
-            return str(val) if val is not None else None
-        return None
-
+                self.storage.push_commit("Initial Master Build from EDINET")
+
+    # ──────────────────────────────────────────────
+    # 委譲 (Delegations)
+    # ──────────────────────────────────────────────
     def save_delta(
         self,
         key: str,
@@ -1161,396 +74,275 @@ class CatalogManager:
         defer: bool = False,
         local_only: bool = False,
     ) -> bool:
-        """
-        デルタファイルを保存してアップロード。
-        local_only=True の場合、HFにはアップロードせずローカルディレクトリに保存のみ行う (GHA Artifact用)。
-        """
-        if df.empty:
-            return True
-
-        if custom_filename:
-            filename = custom_filename
-        else:
-            filename = f"{Path(self.paths[key]).stem}.parquet"
-
-        # リポジトリ内パス
-        delta_repo_path = f"temp/deltas/{run_id}/{chunk_id}/{filename}"
-
-        # ローカル保存先 (Mergerが収集しやすいように構造化)
-        local_delta_dir = self.data_path / "deltas" / str(run_id) / str(chunk_id)
-        local_delta_dir.mkdir(parents=True, exist_ok=True)
-        local_file = local_delta_dir / filename
-
-        # 【絶対ガード】保存直前に最終クレンジング
-        df = self._clean_dataframe(key, df)
-
-        df.to_parquet(local_file, index=False, compression="zstd")
-
-        if local_only:
-            logger.debug(f"Delta saved locally (local_only): {local_file}")
-            return True
-
-        return self.upload_raw(local_file, delta_repo_path, defer=defer)
+        return self.delta_mgr.save_delta(key, df, run_id, chunk_id, custom_filename, defer, local_only)
 
     def mark_chunk_success(self, run_id: str, chunk_id: str, defer: bool = False, local_only: bool = False) -> bool:
-        """チャンク処理成功フラグ (_SUCCESS) を作成"""
-        success_repo_path = f"temp/deltas/{run_id}/{chunk_id}/_SUCCESS"
-
-        local_delta_dir = self.data_path / "deltas" / str(run_id) / str(chunk_id)
-        local_delta_dir.mkdir(parents=True, exist_ok=True)
-        local_file = local_delta_dir / "_SUCCESS"
-        local_file.touch()
-
-        if local_only:
-            logger.debug(f"Chunk success marked locally: {local_file}")
-            return True
-
-        return self.upload_raw(local_file, success_repo_path, defer=defer)
+        return self.delta_mgr.mark_chunk_success(run_id, chunk_id, defer, local_only)
 
     def load_deltas(self, run_id: str) -> Dict[str, pd.DataFrame]:
-        """
-        全デルタを収集してマージ (Merger用)
-        ローカル (data/deltas/{run_id}) とリモート (HF) の両方をスキャンする。
-        """
-        deltas = {}
-        processed_chunks = set()
-
-        # --- A. ローカルスキャン (GHA Artifacts 等でダウンロード済みの場合) ---
-        local_run_dir = self.data_path / "deltas" / str(run_id)
-        if local_run_dir.exists():
-            logger.info(f"Checking local deltas in {local_run_dir}")
-            for chunk_dir in local_run_dir.iterdir():
-                if not chunk_dir.is_dir():
-                    continue
-
-                chunk_id = chunk_dir.name
-                if not (chunk_dir / "_SUCCESS").exists():
-                    logger.warning(f"⚠️ 未完了のローカルチャンクをスキップ: {chunk_id}")
-                    continue
-
-                processed_chunks.add(chunk_id)
-                for p_file in chunk_dir.glob("*.parquet"):
-                    key = self._get_key_from_filename(p_file.name)
-                    if key:
-                        try:
-                            df = pd.read_parquet(p_file)
-                            deltas.setdefault(key, []).append(df)
-                        except Exception as e:
-                            logger.error(f"❌ ローカルデルタ読み込み失敗 ({p_file.name}): {e}")
-
-        # --- B. リモートスキャン (Hugging Face Repository) ---
-        if self.api:
-            try:
-                folder = f"temp/deltas/{run_id}"
-                files = []
-                # 反映遅延に対処
-                for attempt in range(3):
-                    files = self.api.list_repo_files(repo_id=self.hf_repo, repo_type="dataset")
-                    target_files = [f for f in files if f.startswith(folder)]
-                    if target_files:
-                        break
-                    if attempt < 2:
-                        logger.warning(f"リモートデルタフォルダが見つかりません。再試行中... ({attempt + 1}/3)")
-                        time.sleep(10)
-
-                # チャンクごとにグループ化
-                remote_chunks = {}
-                for f in target_files:
-                    parts = f.split("/")
-                    if len(parts) < 4:
-                        continue
-                    chunk_id = parts[3]
-                    # すでにローカルで処理済みのチャンクはスキップ (重複防止)
-                    if chunk_id in processed_chunks:
-                        continue
-                    remote_chunks.setdefault(chunk_id, []).append(f)
-
-                valid_remote_count = 0
-                for chunk_id, file_list in remote_chunks.items():
-                    if not any(f.endswith("_SUCCESS") for f in file_list):
-                        logger.warning(f"⚠️ 未完了のリモートチャンクをスキップ: {chunk_id}")
-                        continue
-
-                    valid_remote_count += 1
-                    for remote_path in file_list:
-                        if remote_path.endswith("_SUCCESS"):
-                            continue
-
-                        key = self._get_key_from_filename(Path(remote_path).name)
-                        if key:
-                            attempts = 2
-                            for att in range(attempts):
-                                try:
-                                    local_path = hf_hub_download(
-                                        repo_id=self.hf_repo,
-                                        filename=remote_path,
-                                        repo_type="dataset",
-                                        token=self.hf_token,
-                                    )
-                                    df = pd.read_parquet(local_path)
-                                    deltas.setdefault(key, []).append(df)
-                                    break
-                                except Exception as e:
-                                    if att == attempts - 1:
-                                        logger.error(f"❌ リモートデルタ読み込み失敗 ({remote_path}): {e}")
-                                    else:
-                                        time.sleep(5)
-
-                logger.info(f"収集結果: Local Chunks={len(processed_chunks)}, Remote Chunks={valid_remote_count}")
-
-            except Exception as e:
-                logger.error(f"リモートデルタ収集失敗: {e}")
-
-        # --- C. 最終マージ ---
-        merged = {}
-        for key, df_list in deltas.items():
-            if df_list:
-                merged[key] = pd.concat(df_list, ignore_index=True)
-            else:
-                merged[key] = pd.DataFrame()
-        return merged
-
-    def _get_key_from_filename(self, fname: str) -> Optional[str]:
-        """ファイル名から内部キーを判定する"""
-        if fname == "documents_index.parquet":
-            return "catalog"
-        if fname == "stocks_master.parquet":
-            return "master"
-        if fname == "listing_history.parquet":
-            return "listing"
-        if fname == "index_history.parquet":
-            return "index"
-        if fname == "name_history.parquet":
-            return "name"
-        if fname.startswith("financial_values_bin"):
-            bin_id = fname.replace("financial_values_bin", "").replace(".parquet", "")
-            return f"financial_bin{bin_id}"
-        if fname.startswith("qualitative_text_bin"):
-            bin_id = fname.replace("qualitative_text_bin", "").replace(".parquet", "")
-            return f"text_bin{bin_id}"
-        if fname.startswith("financial_values_"):
-            sector = fname.replace("financial_values_", "").replace(".parquet", "")
-            return f"financial_{sector}"
-        if fname.startswith("qualitative_text_"):
-            sector = fname.replace("qualitative_text_", "").replace(".parquet", "")
-            return f"text_{sector}"
-        return None
-
-    def push_commit(self, message: str = "Batch update from ARIA") -> bool:
-        """
-        バッファに溜まった操作をコミット実行。
-        【究極の安定化】操作数が多い場合は、HF側の負荷と429エラーを避けるため、自動的に分割してコミットする。
-        """
-        if not self.api or not self._commit_operations:
-            return True
-
-        # バッファ内の DataFrame 情報を CommitOperationAdd に変換
-        ops_list = []
-        for repo_path, data in self._commit_operations.items():
-            if isinstance(data, tuple):
-                _, local_path = data
-                ops_list.append(CommitOperationAdd(path_in_repo=repo_path, path_or_fileobj=str(local_path)))
-            else:
-                # 念のため CommitOperationAdd が直接入っている場合も考慮
-                ops_list.append(data)
-
-        total_ops = len(ops_list)
-
-        # 1コミットあたりの最大操作数
-        # レート制限 (128回/時) を回避するため、バッチサイズを拡大してコミット回数を削減する
-        # HF側でタイムアウトしないギリギリのラインとして 500件程度が最適
-        # 【修正】Hugging Face API 制限 (128 req/hour) とタイムアウト回避のため、
-        # GHA並列数(20) を考慮してバッチサイズを 200 に縮小し、合計リクエスト数を抑制する。
-        # (600 files / 200 = 3 commits * 20 jobs = 60 req < 128 req)
-        batch_size = 200
-
-        batches = [ops_list[i : i + batch_size] for i in range(0, total_ops, batch_size)]
-
-        logger.info(f"🚀 コミット送信開始: 合計 {total_ops} 操作を {len(batches)} バッチに分割して実行します")
-
-        for i, batch in enumerate(batches):
-            batch_msg = f"{message} (part {i + 1}/{len(batches)})"
-            max_retries = 12
-            success = False
-
-            for attempt in range(max_retries):
-                try:
-                    # 【重要】create_commit はリクエストが重いため、個別にタイムアウトを設定
-                    # (パッケージのバージョンによっては直接引数を取らない場合があるため、セッション側で保護)
-                    self.api.create_commit(
-                        repo_id=self.hf_repo,
-                        repo_type="dataset",
-                        operations=batch,
-                        commit_message=batch_msg,
-                        token=self.hf_token,
-                    )
-                    success = True
-                    break
-                except BaseException as e:
-                    if isinstance(e, Exception):
-                        status_code = getattr(getattr(e, "response", None), "status_code", None)
-
-                        # 429 レート制限 または 500 サーバーエラー
-                        if status_code in [429, 500]:
-                            # 429の場合はより長く待機 (HFの回復を待つ)
-                            wait_time = int(getattr(e.response.headers, "get", lambda x, y: y)("Retry-After", 60))
-                            wait_time = max(wait_time, 60) + (attempt * 30) + random.uniform(5, 15)
-                            logger.warning(
-                                f"HF Server Error ({status_code}). Waiting {wait_time:.1f}s... "
-                                f"(Batch {i + 1}, Attempt {attempt + 1}/{max_retries})"
-                            )
-                            time.sleep(wait_time)
-                            continue
-
-                        # 409 コンフリクト または 412 前提条件失敗
-                        if status_code in [409, 412]:
-                            # 20並列以上の環境下では、待機時間を広めに分散させる (10〜70秒 + 指数)
-                            wait_time = (2 ** (attempt + 1)) * 5 + (random.uniform(10, 60))
-                            logger.warning(
-                                f"Commit Conflict ({status_code}). Retrying in {wait_time:.2f}s... "
-                                f"(Batch {i + 1}, Attempt {attempt + 1}/{max_retries})"
-                            )
-                            time.sleep(wait_time)
-                            continue
-
-                        # タイムアウト等のネットワーク例外
-                        wait_time = (attempt + 1) * 20 + random.uniform(5, 15)
-                        logger.warning(
-                            f"通信エラー ({e}): {wait_time:.1f}秒待機して再試行します... "
-                            f"(Batch {i + 1}, Attempt {attempt + 1}/{max_retries})"
-                        )
-                        time.sleep(wait_time)
-                    else:
-                        # KeyboardInterrupt や SystemExit など、通常の例外以外で終了する場合
-                        logger.critical(
-                            f"⚠️ プロセスがシグナルまたは致命的な例外によって中断されました: {type(e).__name__}"
-                        )
-                        raise e
-
-            if not success:
-                logger.error(f"❌ バッチ {i + 1} の送信に最終的に失敗しました。")
-                return False
-
-            # バッチ間に短い休憩を挟んでHF側の負荷を逃がす
-            if i < len(batches) - 1:
-                time.sleep(random.uniform(3, 7))
-
-        logger.success(f"✅ 全 {total_ops} 操作のバッチコミットが完了しました")
-        self._commit_operations = {}  # クリア
-        return True
+        return self.delta_mgr.load_deltas(run_id)
 
     def cleanup_deltas(self, run_id: str, cleanup_old: bool = True):
-        """一時ファイルのクリーンアップ (Merger用)"""
-        if not self.api:
-            return
+        self.delta_mgr.cleanup_deltas(run_id, cleanup_old)
+
+    def push_commit(self, message: str = "Batch update from ARIA") -> bool:
+        return self.storage.push_commit(message)
+
+    def upload_raw(self, local_path: Path, repo_path: str, defer: bool = False) -> bool:
+        return self.storage.upload_raw(local_path, repo_path, defer)
+
+    def upload_raw_folder(self, folder_path: Path, path_in_repo: str, defer: bool = False) -> bool:
+        return self.storage.upload_raw_folder(folder_path, path_in_repo, defer)
+
+    def get_sector(self, code: str) -> str:
+        if self.master_df.empty:
+            logger.info("マスタファイルが空です。EDINET APIから初期構築を行います。")
+            self.edinet_codes, self.aggregation_map = self.sync_edinet_code_lists()
+            if self.edinet_codes:
+                self.engine.update_master_from_edinet_codes()
+                self.storage.push_commit("Initial Master Build from EDINET")
+        row = self.master_df[self.master_df["code"] == code]
+        if not row.empty:
+            col_name = "sector_jpx_33" if "sector_jpx_33" in self.master_df.columns else "sector"
+            val = row.iloc[0].get(col_name)
+            return str(val) if val is not None else None
+        return None
+
+    def update_stocks_master(self, incoming_data: pd.DataFrame):
+        return self.engine.update_stocks_master(incoming_data)
+
+    # ──────────────────────────────────────────────
+    # State Management & Validation
+    # ──────────────────────────────────────────────
+    def _clean_dataframe(self, key: str, df: pd.DataFrame) -> pd.DataFrame:
+        if df is None or df.empty:
+            return df
 
         try:
-            files = self.api.list_repo_files(repo_id=self.hf_repo, repo_type="dataset")
-            delta_root = "temp/deltas"
+            if key == "catalog":
+                from models import CatalogRecord
 
-            # 削除対象のファイルリストを作成
-            delete_files = []
+                df["is_amendment"] = df["is_amendment"].astype(bool) if "is_amendment" in df.columns else False
+                records = []
+                for _, row in df.iterrows():
+                    d = {k: (v if pd.notna(v) else None) for k, v in row.to_dict().items()}
+                    records.append(CatalogRecord(**d).model_dump())
+                return pd.DataFrame(records)
 
-            if cleanup_old:
-                # 24時間以上経過したものを対象とする
-                from datetime import datetime, timezone
+            elif key == "master":
+                from models import StockMasterRecord
 
-                now = datetime.now(timezone.utc)
-                expired_runs = set()
+                records = []
+                for _, row in df.iterrows():
+                    d = {k: (v if pd.notna(v) else None) for k, v in row.to_dict().items()}
+                    records.append(StockMasterRecord(**d).model_dump())
+                return pd.DataFrame(records)
+        except Exception as e:
+            logger.warning(f"データクレンジングエラー ({key}): {e} - フォールバックとして元のDFを返します。")
 
-                for f in files:
-                    if not f.startswith(delta_root):
-                        continue
-                    parts = f.split("/")
-                    if len(parts) < 3:
-                        continue
-                    r_id = parts[2]
+        return df
 
-                    # 【修正】run_id は 'backfill-YYYY-MM-DD-NNNNNN' 等の形式
-                    # 日付部分を正規表現で抽出し、24時間以上経過しているかを判定
-                    try:
-                        date_match = re.search(r"(\d{4}-\d{2}-\d{2})", r_id)
-                        if date_match:
-                            run_date = datetime.strptime(date_match.group(1), "%Y-%m-%d").replace(tzinfo=timezone.utc)
-                            if (now - run_date).total_seconds() > 86400:
-                                delete_files.append(f)
-                                expired_runs.add(r_id)
-                        else:
-                            # 日付を含まないrun_id（純粋な数値タイムスタンプ等）も処理
-                            try:
-                                timestamp = int(r_id)
-                                if (now.timestamp() - timestamp) > 86400:
-                                    delete_files.append(f)
-                                    expired_runs.add(r_id)
-                            except ValueError:
-                                # パース不能なrun_idは7日以上経過とみなしてクリーンアップ
-                                delete_files.append(f)
-                                expired_runs.add(r_id)
-                    except Exception:
-                        pass
+    def _retrospective_cleanse(self):
+        logger.info("データ構造の健全性確認を開始します (Retrospective Cleanse)...")
+        updates_needed = False
 
-                if delete_files:
-                    logger.info(f"古い一時フォルダを清掃中... (24時間以上経過: {len(expired_runs)} runs)")
+        try:
+            old_catalog_len = len(self.catalog_df)
+            new_catalog = self._clean_dataframe("catalog", self.catalog_df.copy())
+            if not new_catalog.equals(self.catalog_df):
+                logger.warning(f"CatalogSchemaの不一致を検知。自動修正します。({old_catalog_len}件)")
+                self.catalog_df = new_catalog
+                self.storage.save_and_upload("catalog", self.catalog_df, defer=True)
+                updates_needed = True
 
-            else:
-                # 今回のランIDのみ対象
-                target_prefix = f"{delta_root}/{run_id}"
-                delete_files = [f for f in files if f.startswith(target_prefix)]
-                if delete_files:
-                    logger.info(f"今回の一時ファイルを削除中... {run_id} ({len(delete_files)} files)")
+            old_master_len = len(self.master_df)
+            new_master = self._clean_dataframe("master", self.master_df.copy())
+            if not new_master.equals(self.master_df):
+                logger.warning(f"StockMasterSchemaの不一致を検知。自動修正します。({old_master_len}件)")
+                self.master_df = new_master
+                self.storage.save_and_upload("master", self.master_df, defer=True)
+                updates_needed = True
 
-            if not delete_files:
-                return
-
-            # バッチサイズを拡大 (50 -> 500) してAPIコール数を削減
-            batch_size = 500
-            total_batches = (len(delete_files) + batch_size - 1) // batch_size
-
-            for i in range(0, len(delete_files), batch_size):
-                batch = delete_files[i : i + batch_size]
-                del_ops = [CommitOperationDelete(path_in_repo=p) for p in batch]
-
-                batch_num = (i // batch_size) + 1
-                commit_msg = f"Cleanup deltas (Batch {batch_num}/{total_batches})"
-
-                # リトライロジック (Backoff)
-                max_retries = 10
-                success = False
-                for attempt in range(max_retries):
-                    try:
-                        self.api.create_commit(
-                            repo_id=self.hf_repo,
-                            repo_type="dataset",
-                            operations=del_ops,
-                            commit_message=commit_msg,
-                            token=self.hf_token,
-                        )
-                        success = True
-                        break
-                    except Exception as e:
-                        if isinstance(e, HfHubHTTPError) and e.response.status_code == 429:
-                            wait_time = int(e.response.headers.get("Retry-After", 60)) + 5
-                            logger.warning(
-                                f"Cleanup Rate limit exceeded. Waiting {wait_time}s... "
-                                f"(Batch {batch_num}/{total_batches}, Attempt {attempt + 1})"
-                            )
-                            time.sleep(wait_time)
-                            continue
-
-                        logger.warning(
-                            f"Cleanup error: {e}. Retrying... "
-                            f"(Batch {batch_num}/{total_batches}, Attempt {attempt + 1})"
-                        )
-                        time.sleep(10 * (attempt + 1))
-
-                if success:
-                    logger.debug(f"Cleanup batch {batch_num}/{total_batches} done.")
-                    if batch_num < total_batches:
-                        time.sleep(2)  # バッチ間のクールダウン
-                else:
-                    logger.error(f"❌ Cleanup batch {batch_num} failed permanently.")
-
-            logger.success("Cleanup sequence completed.")
+            if updates_needed:
+                logger.success("✅ データ構造の自動修正予約が完了しました。")
 
         except Exception as e:
-            logger.error(f"クリーンアップ全体失敗: {e}")
+            logger.error(f"Retrospective Cleanse に失敗しました: {e}")
+
+    def take_snapshot(self):
+        self._snapshots = {
+            "catalog": self.catalog_df.copy(),
+            "master": self.master_df.copy(),
+            "listing": self.storage.load_parquet("listing").copy(),
+            "index": self.storage.load_parquet("index").copy(),
+            "name": self.storage.load_parquet("name").copy(),
+        }
+        logger.info("Global 状態のスナップショットを取得しました (安全性確保)")
+
+    def rollback(self, message: str = "RaW-V Failure: Automated Recovery Rollback"):
+        if not self._snapshots:
+            logger.error("❌ スナップショットが存在しないため、ロールバックできません。")
+            return False
+
+        logger.warning(f"⛔ ロールバックを開始します: {message}")
+        self.storage.clear_operations()
+
+        for key, df in self._snapshots.items():
+            self.storage.save_and_upload(key, df, clean_fn=self._clean_dataframe, defer=True)
+
+        success = self.storage.push_commit(f"ROLLBACK: {message}")
+        if success:
+            logger.success("✅ ロールバック・コミットが完了しました。整合性は復旧されました。")
+            self.catalog_df = self._snapshots["catalog"]
+            self.master_df = self._snapshots["master"]
+        else:
+            logger.critical("❌ ロールバック自体に失敗しました！")
+        return success
+
+    # ──────────────────────────────────────────────
+    # FSA (金融庁) リスト同期機能
+    # ──────────────────────────────────────────────
+    def sync_edinet_code_lists(self) -> Tuple[Dict[str, EdinetCodeRecord], Dict[str, str]]:
+        import io
+
+        logger.info("金融庁からEDINETコードリストを取得・解析中...")
+        codes = {}
+        aggregation_map = {}
+
+        # --- 集約一覧 (aggregation_map) の取得 ---
+        url_consolidated = "https://disclosure2.edinet-fsa.go.jp/weee0040.zip"
+        try:
+            res_c = requests.get(url_consolidated, timeout=15)
+            if res_c.status_code == 200:
+                with zipfile.ZipFile(io.BytesIO(res_c.content)) as z:
+                    csv_filename = [f for f in z.namelist() if f.endswith(".csv")][0]
+                    with z.open(csv_filename) as f:
+                        df_agg = pd.read_csv(f, encoding="cp932", skiprows=1)
+                        for _, row in df_agg.iterrows():
+                            o_code = str(row["提出者等のEDINETコード（変更前）"]).strip()
+                            n_code = str(row["提出者等のEDINETコード（変更後）"]).strip()
+                            if len(o_code) == 6 and len(n_code) == 6:
+                                aggregation_map[o_code] = n_code
+                logger.info(f"提出者集約一覧を取得しました: {len(aggregation_map)}件の「旧→新」マッピング")
+        except Exception as e:
+            logger.warning(f"提出者集約一覧の取得に失敗しました: {e}。集約ブリッジ機能はスキップされます。")
+
+        def safe_int_str(val):
+            if pd.isna(val) or val is None or str(val).strip() == "":
+                return None
+            try:
+                return str(int(float(val)))
+            except ValueError:
+                return str(val).strip()
+
+        # --- 和文リスト (JCN, 上場区分, 業種等) ---
+        url_ja = "https://disclosure2.edinet-fsa.go.jp/weee0020.zip"
+        try:
+            res = requests.get(url_ja, timeout=15)
+            if res.status_code == 200:
+                with zipfile.ZipFile(io.BytesIO(res.content)) as z:
+                    csv_filename = [f for f in z.namelist() if f.endswith(".csv")][0]
+                    with z.open(csv_filename) as f:
+                        df_ja = pd.read_csv(f, encoding="cp932", skiprows=1)
+                        for _, row in df_ja.iterrows():
+                            e_code = str(row["ＥＤＩＮＥＴコード"]).strip()
+                            if len(e_code) != 6:
+                                continue
+                            sec_code = safe_int_str(row["証券コード"])
+                            # API側の "0" という異常な証券コードを排除
+                            if sec_code == "0" or sec_code == "0000" or sec_code == "00000":
+                                sec_code = None
+                            jcn = safe_int_str(row["提出者法人番号"])
+                            codes[e_code] = EdinetCodeRecord(
+                                edinet_code=e_code,
+                                jcn=jcn,
+                                submitter_type=row.get("提出者種別"),
+                                is_listed=row.get("上場区分"),
+                                is_consolidated=row.get("連結の有無"),
+                                capital=safe_int_str(row.get("資本金")),
+                                settlement_date=str(row.get("決算日") or "").strip() or None,
+                                submitter_name=str(row.get("提出者名") or "").strip() or None,
+                                submitter_name_en=str(row.get("提出者名（英字）") or "").strip() or None,
+                                submitter_name_kana=str(row.get("提出者名（ヨミ）") or "").strip() or None,
+                                address=str(row.get("所在地") or "").strip() or None,
+                                industry_edinet=str(row.get("提出者業種") or "").strip() or None,
+                                sec_code=sec_code,
+                            )
+            else:
+                logger.error(f"EDINETコードリスト本体のダウンロード失敗: HTTP {res.status_code}")
+                return {}, {}
+        except Exception as e:
+            logger.error(f"EDINETコードリストの処理中にエラー: {e}")
+            return {}, {}
+
+        # --- 英文リスト (industry_edinet_en のみ補完) ---
+        url_en = "https://disclosure2.edinet-fsa.go.jp/weee0030.zip"
+        try:
+            res_en = requests.get(url_en, timeout=15)
+            if res_en.status_code == 200:
+                with zipfile.ZipFile(io.BytesIO(res_en.content)) as z:
+                    csv_filename = [f for f in z.namelist() if f.endswith(".csv")][0]
+                    with z.open(csv_filename) as f:
+                        df_en = pd.read_csv(f, encoding="cp932", skiprows=1)
+                        for _, row in df_en.iterrows():
+                            e_code = str(row["Edinet Code"]).strip()
+                            ind_en = str(row.get("Industry") or "").strip() or None
+                            if e_code in codes and ind_en:
+                                codes[e_code].industry_edinet_en = ind_en
+        except Exception as e:
+            logger.warning(f"英文EDINETコードリストの取得・反映に失敗しました: {e} (和文のみで続行します)")
+
+        logger.info(f"EDINETコードリストの構築完了: {len(codes)} 件抽出")
+        return codes, aggregation_map
+
+    # ──────────────────────────────────────────────
+    # Catalog / History Methods
+    # ──────────────────────────────────────────────
+    def is_processed(self, doc_id: str) -> bool:
+        if self.catalog_df.empty:
+            return False
+        return doc_id in self.catalog_df["doc_id"].values
+
+    def get_status(self, doc_id: str) -> str:
+        if self.catalog_df.empty:
+            return "unknown"
+        row = self.catalog_df[self.catalog_df["doc_id"] == doc_id]
+        if not row.empty:
+            return str(row.iloc[0]["processed_status"])
+        return "unknown"
+
+    def update_catalog(self, new_records: List[Dict]):
+        if not new_records:
+            return
+
+        df_new = pd.DataFrame(new_records)
+        df_new = self._clean_dataframe("catalog", df_new)
+
+        if self.catalog_df.empty:
+            self.catalog_df = df_new
+        else:
+            self.catalog_df = pd.concat([self.catalog_df, df_new], ignore_index=True)
+            self.catalog_df.drop_duplicates(subset=["doc_id"], keep="last", inplace=True)
+
+        self.storage.save_and_upload("catalog", self.catalog_df, clean_fn=self._clean_dataframe, defer=True)
+        logger.info(f"カタログを更新・コミットバッファに追加しました (全 {len(self.catalog_df)} 件)")
+
+    def update_listing_history(self, new_events: pd.DataFrame):
+        hist_df = self.storage.load_parquet("listing")
+        m_df = pd.concat([hist_df, new_events], ignore_index=True)
+        m_df.drop_duplicates(subset=["code", "type", "event_date"], keep="last", inplace=True)
+        m_df.sort_values(["event_date", "code"], ascending=[False, True], inplace=True)
+        self.storage.save_and_upload("listing", m_df, defer=True)
+
+    def update_index_history(self, new_events: pd.DataFrame):
+        hist_df = self.storage.load_parquet("index")
+        m_df = pd.concat([hist_df, new_events], ignore_index=True)
+        m_df.drop_duplicates(subset=["index_name", "code", "type", "event_date"], keep="last", inplace=True)
+        m_df.sort_values(["event_date", "index_name", "code"], ascending=[False, True, True], inplace=True)
+        self.storage.save_and_upload("index", m_df, defer=True)
+
+    def get_listing_history(self) -> pd.DataFrame:
+        return self.storage.load_parquet("listing")
+
+    def get_index_history(self) -> pd.DataFrame:
+        return self.storage.load_parquet("index")

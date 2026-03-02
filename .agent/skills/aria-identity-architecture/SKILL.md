@@ -30,7 +30,7 @@ ARIA が「企業の同一性」をどのように追跡・保証するかを定
 ## 3. 集約ブリッジの検知メカニズム
 
 起動時に金融庁の `ESE140190.csv`（集約一覧）をダウンロードし、`aggregation_map` を構築。
-`_update_master_from_edinet_codes()` 内で旧コード→新コードの自動リンクを生成。
+`_update_master_from_edinet_codes()` (現在 [reconciliation_engine.py](file:///Users/yoshi_dai/repos/ARIA/data_engine/reconciliation_engine.py) に移動) 内で旧コード→新コードの自動リンクを生成。
 
 ## 詳細リファレンス
 - [キー構造の物理的根拠と法的根拠](references/KEY_STRUCTURE.md)

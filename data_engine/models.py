@@ -1,6 +1,7 @@
 import math
-from typing import Any, Optional
+from typing import Any, Optional, Union, get_args, get_origin
 
+import pyarrow as pa
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
@@ -248,7 +249,6 @@ class ListingEvent(BaseModel):
     code: str
     type: str  # LISTING, DELISTING
     event_date: str
-    note: Optional[str] = None
 
 
 class IndexEvent(BaseModel):
@@ -258,4 +258,59 @@ class IndexEvent(BaseModel):
     code: str
     type: str  # ADD, REMOVE
     event_date: str
-    note: Optional[str] = None
+
+
+# =============================================================================
+# PyArrow Schema 自動導出 (Phase 3: 金型アーキテクチャ)
+# =============================================================================
+
+# Python 型 → PyArrow 型の対応表
+_PYTHON_TO_PYARROW = {
+    str: pa.string(),
+    int: pa.int64(),
+    float: pa.float64(),
+    bool: pa.bool_(),
+}
+
+
+def pydantic_to_pyarrow(model_class) -> pa.Schema:
+    """
+    Pydantic モデルから PyArrow スキーマを自動導出する。
+    models.py を変更すれば Parquet スキーマが自動追従する SSOT 設計。
+    """
+    fields = []
+    for name, info in model_class.model_fields.items():
+        py_type = info.annotation
+
+        # Optional[X] → X に展開
+        nullable = False
+        origin = get_origin(py_type)
+        if origin is Union:
+            args = [a for a in get_args(py_type) if a is not type(None)]
+            if args:
+                py_type = args[0]
+                nullable = True
+
+        # デフォルト値が None なら nullable
+        if info.default is None:
+            nullable = True
+
+        pa_type = _PYTHON_TO_PYARROW.get(py_type, pa.string())
+        fields.append(pa.field(name, pa_type, nullable=nullable))
+
+    return pa.schema(fields)
+
+
+# --- 事前構築済みスキーマ定数 (モジュールロード時に1回だけ導出) ---
+SCHEMA_CATALOG = pydantic_to_pyarrow(CatalogRecord)
+SCHEMA_MASTER = pydantic_to_pyarrow(StockMasterRecord)
+SCHEMA_LISTING = pydantic_to_pyarrow(ListingEvent)
+SCHEMA_INDEX = pydantic_to_pyarrow(IndexEvent)
+
+# キーベースのレジストリ (hf_storage / delta_manager が参照)
+ARIA_SCHEMAS = {
+    "catalog": SCHEMA_CATALOG,
+    "master": SCHEMA_MASTER,
+    "listing": SCHEMA_LISTING,
+    "index": SCHEMA_INDEX,
+}
