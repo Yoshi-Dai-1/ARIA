@@ -106,6 +106,10 @@ class CatalogManager:
     def push_commit(self, message: str = "Batch update from ARIA") -> bool:
         return self.hf.push_commit(message)
 
+    def add_commit_operation(self, repo_path: str, local_path):
+        """コミットバッファに操作を追加（HfStorage に委譲）"""
+        return self.hf.add_commit_operation(repo_path, local_path)
+
     def get_sector(self, code: str) -> str:
         if self.master_df.empty:
             logger.info("マスタファイルが空です。初期構築を行います。")
