@@ -69,17 +69,26 @@ class FsaEngine:
 
             # --- 英文業種名のインデックス構築 ---
             en_industry_map = {}
-            en_code_col = "Edinet Code" if "Edinet Code" in df_en.columns else "ＥＤＩＮＥＴコード"
-            en_ind_col = (
-                "Submitter's industry"
-                if "Submitter's industry" in df_en.columns
-                else ("Industry" if "Industry" in df_en.columns else "提出者業種")
-            )
-            for _, row in df_en.iterrows():
-                e_code = str(row.get(en_code_col, "")).strip()
-                ind_en = str(row.get(en_ind_col, "")).strip()
-                if e_code and ind_en:
-                    en_industry_map[e_code] = ind_en
+            # カラム名を正規化して検索
+            cols_en = {c.strip().lower(): c for c in df_en.columns}
+
+            # Edinet Code カラムの特定
+            en_code_col = next((v for k, v in cols_en.items() if "edinet code" in k or "ｅｄｉｎｅｔコード" in k), None)
+
+            # Submitter's industry カラムの特定
+            en_ind_col = next((v for k, v in cols_en.items() if "industry" in k or "提出者業種" in k), None)
+
+            if en_code_col and en_ind_col:
+                for _, row in df_en.iterrows():
+                    e_code = str(row.get(en_code_col, "")).strip()
+                    ind_en = str(row.get(en_ind_col, "")).strip()
+                    if e_code and ind_en:
+                        en_industry_map[e_code] = ind_en
+            else:
+                logger.warning(
+                    f"英語版コードリストの必須カラムが見つかりません。探索結果: code={en_code_col}, "
+                    f"industry={en_ind_col}"
+                )
 
             # --- 名寄せ: EDINETコードをキーにマスタベースを構築 ---
             for _, row in df_jp.iterrows():

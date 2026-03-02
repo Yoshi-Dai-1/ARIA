@@ -14,7 +14,6 @@ import unicodedata
 from typing import Optional, Tuple
 
 import pandas as pd
-import requests
 from loguru import logger
 
 from data_engine.core.models import StockMasterRecord
@@ -60,12 +59,13 @@ class ReconciliationEngine:
         return n.strip()
 
     def discover_edinet_code(self, sec_code: str, name: Optional[str] = None) -> Optional[Tuple[str, str]]:
-        """EDINET書類一覧APIをスキャニングし、証券コードからEDINETコード/JCNを特定する"""
+        """EDINET書類一覧API (V2) をスキャニングし、証券コードからEDINETコード/JCNを特定する"""
         display_name = f" ({name})" if name else ""
-        logger.debug(f"証券コード {sec_code}{display_name} の EDINET情報を書類一覧APIから探索中...")
+        logger.debug(f"証券コード {sec_code}{display_name} の EDINET情報を書類一覧API (V2) から探索中...")
 
         sec_code_5 = sec_code if len(sec_code) == 5 else sec_code + "0"
 
+        # 優先株などの場合は親銘柄から継承を試みる
         if sec_code_5[4] != "0" and not self.cm.master_df.empty:
             parent_code = sec_code_5[:4] + "0"
             parent_row = self.cm.master_df[self.cm.master_df["code"] == parent_code]
@@ -73,22 +73,27 @@ class ReconciliationEngine:
                 logger.debug(f"優先株 {sec_code_5} の EDINETコードを親銘柄 {parent_code} から継承します。")
                 return parent_row.iloc[0]["edinet_code"], parent_row.iloc[0].get("jcn")
 
-        for i in range(30):
-            date = (datetime.datetime.now() - datetime.timedelta(days=i)).strftime("%Y-%m-%d")
-            url = f"https://disclosure.edinet-fsa.go.jp/api/v1/documents.json?date={date}&type=2"
-            try:
-                res = requests.get(url, timeout=10)
-                if res.status_code == 200:
-                    data = res.json()
-                    for doc in data.get("results", []):
-                        if doc.get("secCode") == sec_code_5:
-                            e_code = doc.get("edinetCode")
-                            jcn = doc.get("JCN")
-                            logger.success(f"発見: {sec_code_5} -> {e_code} (JCN: {jcn})")
-                            return e_code, jcn
-            except Exception as e:
-                logger.debug(f"書類API探索中のエラー ({date}): {e}")
-                continue
+        # 直近30日間をスキャン
+        end_date = datetime.datetime.now()
+        start_date = end_date - datetime.timedelta(days=30)
+
+        try:
+            # EdinetEngine経由でAPI V2を叩く
+            meta_list = self.cm.edinet.fetch_metadata(
+                start_date=start_date.strftime("%Y-%m-%d"), end_date=end_date.strftime("%Y-%m-%d")
+            )
+
+            for doc in meta_list:
+                doc_sec = str(doc.get("secCode", "")).strip()
+                if doc_sec == sec_code_5:
+                    e_code = doc.get("edinetCode")
+                    jcn = doc.get("JCN")
+                    if e_code:
+                        logger.success(f"発見 (V2): {sec_code_5} -> {e_code} (JCN: {jcn})")
+                        return e_code, jcn
+        except Exception as e:
+            logger.error(f"書類API (V2) 探索中のエラー: {e}")
+
         return None
 
     def update_master_from_edinet_codes(self):
@@ -458,26 +463,45 @@ class ReconciliationEngine:
         if len(docs) < 2:
             return pd.DataFrame()
 
+        # 現在のマスタ情報を取得 (カナ・英語名の補完用)
+        master_info = {}
+        if not self.cm.master_df.empty:
+            m_row = self.cm.master_df[self.cm.master_df["code"] == code]
+            if not m_row.empty:
+                master_info = m_row.iloc[0].to_dict()
+
         events = []
-        # 初代（暫定基準）
         prev_row = docs.iloc[0]
 
         for _, row in docs.iloc[1:].iterrows():
-            # 比較対象: 漢字名, カナ名(if exists), 英語名(if exists)
-            # ※カナ・英語名は書類メタデータにない場合が多いため、マスタやコードリストから補完された情報を使用
             curr_name = str(row.get("company_name") or row.get("filerName") or "").strip()
             prev_name = str(prev_row.get("company_name") or prev_row.get("filerName") or "").strip()
 
             # 正規化して比較 (株式会社 などの揺れを排除)
             if self.normalize_company_name(curr_name) != self.normalize_company_name(prev_name):
+                # 基本イベント
                 event = {
                     "code": code,
                     "old_name": prev_name,
                     "new_name": curr_name,
-                    "change_date": str(row["submit_at"])[:10],  # YYYY-MM-DD
+                    "change_date": str(row["submit_at"])[:10],
+                    "old_name_kana": None,
+                    "new_name_kana": master_info.get("submitter_name_kana")
+                    if curr_name == master_info.get("company_name")
+                    else None,
+                    "old_name_en": None,
+                    "new_name_en": master_info.get("company_name_en")
+                    if curr_name == master_info.get("company_name")
+                    else None,
                 }
-                # カナ・英語名の変化も将来的に特定書類から抽出可能なら here でセットする
-                # 現状は漢字名の変化点に追従
+
+                # 過去のイベントがあればカナ・英語を引き継ぐ
+                if events:
+                    last_event = events[-1]
+                    if last_event["new_name"] == prev_name:
+                        event["old_name_kana"] = last_event["new_name_kana"]
+                        event["old_name_en"] = last_event["new_name_en"]
+
                 events.append(event)
                 prev_row = row
 

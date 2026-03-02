@@ -21,7 +21,14 @@ from data_engine.storage.hf_storage import HfStorage
 
 
 class CatalogManager:
-    def __init__(self, hf_repo: str = None, hf_token: str = None, data_path: Path = None, scope: str = None):
+    def __init__(
+        self,
+        hf_repo: str = None,
+        hf_token: str = None,
+        data_path: Path = None,
+        scope: str = None,
+        edinet: bool = True,
+    ):
         # 1. SSHT (Single Source of Truth) からの読み込みとオーバーライド
         self.hf_repo = hf_repo or CONFIG.HF_REPO
         self.hf_token = hf_token or CONFIG.HF_TOKEN
@@ -49,12 +56,17 @@ class CatalogManager:
 
         # 4. Logic Layer (Engines)
         self.reconciliation = ReconciliationEngine(self)
-        self.edinet = EdinetEngine(
-            api_key=CONFIG.EDINET_API_KEY,
-            data_path=self.data_path,
-            taxonomy_urls=CONFIG.TAXONOMY_URLS,
-        )
-        self.fsa = FsaEngine()  # プロパティ名を簡略化
+        if edinet:
+            self.edinet = EdinetEngine(
+                api_key=CONFIG.EDINET_API_KEY,
+                data_path=self.data_path,
+                taxonomy_urls=CONFIG.TAXONOMY_URLS,
+            )
+        else:
+            self.edinet = None
+            logger.info("EdinetEngine はスキップされました (Market-only mode)。")
+
+        self.fsa = FsaEngine()
 
         # 5. Runtime State
         self._snapshots = {}
