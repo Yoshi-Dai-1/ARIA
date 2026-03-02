@@ -16,7 +16,8 @@ from typing import Optional, Tuple
 import pandas as pd
 import requests
 from loguru import logger
-from models import StockMasterRecord
+
+from data_engine.core.models import StockMasterRecord
 
 
 class ReconciliationEngine:
@@ -263,9 +264,7 @@ class ReconciliationEngine:
                 logger.success(
                     f"マスタ同期完了: {updated_count} 件のレコードを更新/追加し、スコープ強制を適用しました。"
                 )
-                self.cm.storage.save_and_upload(
-                    "master", self.cm.master_df, clean_fn=self.cm._clean_dataframe, defer=True
-                )
+                self.cm.hf.save_and_upload("master", self.cm.master_df, clean_fn=self.cm._clean_dataframe, defer=True)
 
         if listing_events:
             events_df = pd.DataFrame(listing_events).drop_duplicates(subset=["code", "type"])
@@ -443,6 +442,4 @@ class ReconciliationEngine:
         if listing_events:
             self.cm.update_listing_history(pd.DataFrame(listing_events))
 
-        return self.cm.storage.save_and_upload(
-            "master", self.cm.master_df, clean_fn=self.cm._clean_dataframe, defer=True
-        )
+        return self.cm.hf.save_and_upload("master", self.cm.master_df, clean_fn=self.cm._clean_dataframe, defer=True)

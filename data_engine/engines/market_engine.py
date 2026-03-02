@@ -6,8 +6,9 @@ from typing import Dict
 
 import pandas as pd
 from loguru import logger
-from network_utils import get_robust_session
-from utils import normalize_code
+
+from data_engine.core.network_utils import get_robust_session
+from data_engine.core.utils import normalize_code
 
 # normalize_code is now imported from utils
 
@@ -168,7 +169,9 @@ class MarketDataEngine:
         self.strategies["JPXNikkei400"].index_name = "JPX日経400"
         self.strategies["JPXNikkeiMidSmall"].index_name = "JPX日経中小型"
 
-        self.jpx_url = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
+        from data_engine.core.config import CONFIG
+
+        self.jpx_url = CONFIG.TSE_URL
 
     def fetch_jpx_master(self) -> pd.DataFrame:
         """JPXから最新の銘柄一覧を取得 (Retry付き)"""
@@ -178,8 +181,9 @@ class MarketDataEngine:
         r.raise_for_status()
 
         # 保存して読み込む (Excel形式のため)
-        self.data_path.mkdir(parents=True, exist_ok=True)
-        xls_path = self.data_path / "jpx_master.xls"
+        from data_engine.core.config import CONFIG
+
+        xls_path = CONFIG.TEMP_DIR / "jpx_master.xls"
         with xls_path.open("wb") as f:
             for chunk in r.iter_content(1024):
                 f.write(chunk)

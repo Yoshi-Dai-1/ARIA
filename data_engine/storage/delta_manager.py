@@ -16,7 +16,8 @@ import pandas as pd
 from huggingface_hub import CommitOperationDelete, hf_hub_download
 from huggingface_hub.utils import HfHubHTTPError
 from loguru import logger
-from models import ARIA_SCHEMAS
+
+from data_engine.core.models import ARIA_SCHEMAS
 
 
 class DeltaManager:

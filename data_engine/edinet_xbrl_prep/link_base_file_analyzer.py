@@ -13,14 +13,15 @@ from pandera.typing import DataFrame, Series
 from datetime import datetime, timedelta, date
 from pydantic import BaseModel, Field
 from time import sleep
-from typing import Literal
+from typing import Optional, Dict, Literal
 import json
 from typing import Annotated
 from pydantic.functional_validators import BeforeValidator
 
 from pathlib import Path
 import requests
-from .xbrl_parser_rapper import *
+from loguru import logger
+from .xbrl_parser_wrapper import *
 from .utils import *
 # %%
 StrOrNone = Annotated[str, BeforeValidator(lambda x: x or "")]
@@ -183,7 +184,6 @@ class Resource(BaseModel):
 
 class account_link_tracer():
     """
-        TODO: get_child_itemsのorder 0.01倍ではもともと実数が入っている場合に対応できていない
     """
     def __init__(self, tbl:ParentChildLink):
         self.parent_child_tbl = tbl.copy()
@@ -321,15 +321,12 @@ class get_presentation_account_list():
             self.log_dict['get_pre_status'] = 'success'
             
         except Exception as e:
-            print(e)
+            logger.error(f"Error extracting pre file: {e}")
             self.log_dict['is_pre_file_flg'] = 0
             self.log_dict['get_pre_status'] = 'failure'
             self.log_dict['get_pre_error_message'] = str(e)
     
     def parse_pre_file(self):
-        """
-        TODO: preferedLabelの取得を追加
-        """
         files = list(self.xml_def_path.glob(f"*{self.doc_type_str}*pre.xml"))
         if not files:
             self.locators = []
@@ -425,6 +422,7 @@ class get_calc_edge_list():
                     zf.extract(fn[0], self.temp_path)
 
         except Exception as e:
+            logger.error(f"Error extracting cal file: {e}")
             self.log_dict['is_cal_file_flg'] = 0
             self.log_dict['get_cal_status'] = 'failure'
             self.log_dict['get_cal_error_message'] = str(e)
@@ -532,7 +530,7 @@ class get_label():
                     if len(fn)>0:
                         zf.extract(fn[0], self.temp_path)
         except Exception as e:
-            print(e)
+            logger.error(f"Error extracting lab file: {e}")
             self.log_dict['is_lab_file_flg'] = 0
             self.log_dict['get_lab_status'] = 'failure'
             self.log_dict['get_lab_error_message'] = str(e)
@@ -544,7 +542,7 @@ class get_label():
             self.arcs = []
             return
 
-        tree = ET.parse(str(files[0])) # TODO check iregular file name
+        tree = ET.parse(str(files[0]))
         root = tree.getroot()
 
         resources=[]
@@ -635,13 +633,18 @@ class get_label_common():
     #                if len(fn)>0:
     #                    zf.extract(fn[0], self.temp_path)
     #    except Exception as e:
-    #        print(e)
+    #        logger.error(f"Error extracting lab file: {e}")
     #        self.log_dict['is_lab_file_flg'] = 0
     #        self.log_dict['get_lab_status'] = 'failure'
     #        self.log_dict['get_lab_error_message'] = str(e)
 
     def parse_lab_file(self):
-        tree = ET.parse(self.file_path) # TODO check iregular file name
+        if not self.file_path.exists():
+            self.resources = []
+            self.arcs = []
+            return
+
+        tree = ET.parse(self.file_path)
         root = tree.getroot()
 
         resources=[]
@@ -709,11 +712,6 @@ class get_label_common():
         return label_tbl
     
     def export_label_tbl(self,label_to_taxonomi_dict:dict)->pd.DataFrame:
-        """
-        TODO: change label to taxonomi
-        """
-        label_tbl=self.label_tbl.query("key_all in @label_to_taxonomi_dict.keys()")
-        #print("label: ",len(label_tbl))
         label_tbl=AccountLabel(
             label_tbl.assign(
                 label=label_tbl.label_lab.str.replace('label_',''),
@@ -727,7 +725,7 @@ class account_list_common():
     """
     共通タクソノミの取得。主にリンクベースファイルでimportされているlabel情報を取得する。
     """
-    def __init__(self,data_path:str,account_list_year:str):
+    def __init__(self, data_path: Path, account_list_year: str, session: Optional[requests.Session] = None, taxonomy_urls: Dict[str, str] = None):
 
         linkfiles_dict={
             'pre.xml':"jpcrp030000-asr",
@@ -735,11 +733,13 @@ class account_list_common():
             'lab-en.xml':"jpcrp"}
         schima_word_list=['jppfs','jpcrp']
         self.taxonomy_file = data_path / "taxonomy_{}.zip".format(account_list_year)
-        self.account_list_year = account_list_year
+        self.account_list_year = str(account_list_year)
         self.temp_path = data_path / "tmp/taxonomy"
         self.temp_path.mkdir(parents=True, exist_ok=True)
         self.taxonomy_path = data_path / ("taxonomy_" + str(account_list_year))
         self.taxonomy_path.mkdir(parents=True, exist_ok=True)
+        self.session = session or requests.Session()
+        self.taxonomy_urls = taxonomy_urls or {}
         self._download_taxonomy()
         self.path_jpcrp_lab = self._download_jpcrp_lab()
         self.path_jpcrp_lab_en = self._download_jpcrp_lab_en()
@@ -750,23 +750,34 @@ class account_list_common():
         self._build()
 
     def _download_taxonomy(self):
-        download_link_dict = {
-            '2024':"https://www.fsa.go.jp/search/20231211/1c_Taxonomy.zip",
-            "2023":"https://www.fsa.go.jp/search/20221108/1c_Taxonomy.zip",
-            "2022":"https://www.fsa.go.jp/search/20211109/1c_Taxonomy.zip",
-            "2021":"https://www.fsa.go.jp/search/20201110/1c_Taxonomy.zip",
-            "2020":"https://www.fsa.go.jp/search/20191101/1c_Taxonomy.zip",
-            "2019":"https://www.fsa.go.jp/search/20190228/1c_Taxonomy.zip",
-            "2018":"https://www.fsa.go.jp/search/20180228/1c_Taxonomy.zip",
-            "2017":"https://www.fsa.go.jp/search/20170228/1c.zip",
-            "2016":"https://www.fsa.go.jp/search/20160314/1c.zip",
-            "2015":"https://www.fsa.go.jp/search/20150310/1c.zip",
-            "2014":"https://www.fsa.go.jp/search/20140310/1c.zip"
-        }
+        # 外部から提供された URL を優先する
+        url = self.taxonomy_urls.get(self.account_list_year)
         
-        r = requests.get(download_link_dict[self.account_list_year], stream=True)
+        if not url:
+            # フォールバック用のハードコード (後方互換性のため維持するが推奨されない)
+            download_link_dict = {
+                '2024':"https://www.fsa.go.jp/search/20231211/1c_Taxonomy.zip",
+                "2023":"https://www.fsa.go.jp/search/20221108/1c_Taxonomy.zip",
+                "2022":"https://www.fsa.go.jp/search/20211109/1c_Taxonomy.zip",
+                "2021":"https://www.fsa.go.jp/search/20201110/1c_Taxonomy.zip",
+                "2020":"https://www.fsa.go.jp/search/20191101/1c_Taxonomy.zip",
+                "2019":"https://www.fsa.go.jp/search/20190228/1c_Taxonomy.zip",
+                "2018":"https://www.fsa.go.jp/search/20180228/1c_Taxonomy.zip",
+                "2017":"https://www.fsa.go.jp/search/20170228/1c.zip",
+                "2016":"https://www.fsa.go.jp/search/20160314/1c.zip",
+                "2015":"https://www.fsa.go.jp/search/20150310/1c.zip",
+                "2014":"https://www.fsa.go.jp/search/20140310/1c.zip"
+            }
+            url = download_link_dict.get(self.account_list_year)
+
+        if not url:
+            raise ValueError(f"Taxonomy URL not found for year {self.account_list_year}")
+
+        # インジェクションされたセッションを使用してダウンロード
+        r = self.session.get(url, stream=True, timeout=(30, 300))
+        r.raise_for_status()
         with self.taxonomy_file.open(mode="wb") as f:
-            for chunk in r.iter_content(1024):
+            for chunk in r.iter_content(1024 * 64):
                 f.write(chunk)
 
     def _download_jpcrp_lab(self):
@@ -838,7 +849,6 @@ class account_list_common():
         already_download_list=list(self.taxonomy_path.glob("jppfs*_pre_*.xml"))
         
         if len(already_download_list)>500: # 652 files in 2024
-            #print("already_download_list: ",len(already_download_list))
             return already_download_list
         else:
             with ZipFile(str(self.taxonomy_file)) as zf:
@@ -850,7 +860,6 @@ class account_list_common():
             for f_path in list(self.temp_path.glob("**/*.xml")):
                 f_path_new = f_path.rename(self.taxonomy_path/f_path.name)
                 f_path_new_list.append(f_path_new)
-            #print("{} files are downloaded".format(len(f_path_new_list)))
             return f_path_new_list
     
     def _build(self):
@@ -883,14 +892,10 @@ class account_list_common():
             self.label_to_taxonomi_dict.update(get_presentation_common_obj.export_label_to_taxonomi_dict())
         
         self.assign_common_label(short_label_only=False)
-
     def get_assign_common_label(self):
         return self.assign_common_label_df
     
     def assign_common_label(self,short_label_only=True):
-        """
-            TODO: keyでユニークにしているため、同じkeyが複数ある場合は、最初のものが残る結果、別のLabelが紐づく可能性がある
-        """
         #label_to_taxonomi_dict = self.get_presentation_common_obj.export_label_to_taxonomi_dict()
         label_tbl_jpcrp_jp = self.get_label_common_obj_jpcrp_lab.export_label_tbl(
             label_to_taxonomi_dict=self.label_to_taxonomi_dict
@@ -1085,7 +1090,6 @@ def get_presentation_account_list_aud(docid:str,identifier:str,out_path)->(Paren
             #dict_t['org_taxonomi_cnt'] = len(pre_detail_list.query("schima_taxonomi.str.contains(@identifier)"))
             #dict_t['org_taxonomi_list'] = pre_detail_list.query("schima_taxonomi.str.contains(@identifier)").schima_taxonomi.to_list()
     except Exception as e:
-        #print(e)
         label_to_taxonomi_dict = {}
         dict_t['status'] = 'error'
         dict_t['error_message'] = e

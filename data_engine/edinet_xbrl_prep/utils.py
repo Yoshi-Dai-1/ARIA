@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from time import sleep
 import time
 import contextlib
+from loguru import logger
 
 from typing import Literal
 import json
@@ -71,5 +72,5 @@ def format_taxonomi(taxonomi_str: str) -> str:
 def timer(name):
     t0=time.time()
     yield
-    print(f'[{name}] done in {time.time()-t0:.2f} s ')
+    logger.info(f'[{name}] done in {time.time()-t0:.2f} s ')
 

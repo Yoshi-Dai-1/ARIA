@@ -29,18 +29,13 @@
 本プロジェクトは **Monorepo** 構成を採用しており、データ収集エンジンと Web フロントエンドが分かれています。
 
 ### 1. Data Engine (`data_engine/`)
-Python による堅牢なデータ処理基盤。Facade パターンと単一責任原則に基づくモジュール構成。
-- **Unified Harvester (`edinet_harvester.yml`)**: 開示書類の並列収集・解析 (Worker/Merger)。本日分と歴史分を同時に走査。
-- **Pipeline (`pipeline.py`)**: Worker/Merger パイプラインの実行エンジン。`main.py` (CLIエントリーポイント) から呼び出される。
-- **Catalog Manager (`catalog_manager.py`)**: Facade として以下の専門モジュールをオーケストレーション:
-  - `hf_storage.py`: Hugging Face I/O 層（Parquet 読み書き、バッチコミット）
-  - `delta_manager.py`: Worker/Merger 間のデルタファイル管理
-  - `reconciliation_engine.py`: EDINET コード名寄せ、IPO 自動発見、スコープフィルタリング
-- **Data Reconciliation (`data_reconciliation.py`)**: モデル駆動型 4 層 11 項目の自動監査エンジン (スキーマ / 物理ファイル / 分析マスタ / API カタログ)
-- **Backfill Manager (`backfill_manager.py`)**: 2016年2月15日からの過去データ取得管理。7日単位の増分管理。
-- **Market Data Pipeline (`market_main.py`)**: 市場データと銘柄属性の同期。
-- **Master Merger (`master_merger.py`)**: JCN 主導不変分割による物理データ配置。
-- **PyArrow Schema Enforcement**: `models.py` の Pydantic モデルから PyArrow スキーマを自動導出 (`pydantic_to_pyarrow()`) し、全 Parquet 書き出しに適用。10年間の無人運転でも型ブレ (Schema Drift) が物理的に発生しない SSOT 設計。
+Python による堅牢なデータ処理基盤。直感的で拡張性の高いパッケージ構成を採用しています。
+- **`core/`**: 基盤ロジック（`models.py` (SSOTスキーマ), `config.py`, `utils.py`, `network_utils.py`, `taxonomy_urls.json`）
+- **`storage/`**: データ永続化層（`hf_storage.py` (Hugging Face), `delta_manager.py` (デルタ管理)）
+- **`engines/`**: 専門データ取得・処理エンジン（`edinet_engine.py`, `market_engine.py`, `reconciliation_engine.py`, `master_merger.py`）
+- **`services/`**: 自律管理・監査サービス（`data_reconciliation.py` (4層監査)）
+- **`executors/`**: パイプライン実行エントリーポイント（`main.py`, `pipeline.py`, `market_main.py`, `backfill_manager.py`）
+- **`edinet_xbrl_prep/`**: XBRL解析・正規化を行う内包サブモジュール
 
 ### 2. Web Frontend (`web_frontend/`)
 Vite + React による投資分析ダッシュボード（開発中）。
@@ -94,10 +89,10 @@ HF_TOKEN=your_huggingface_token
 
 ```bash
 # Workerモード (解析とDelta作成)
-PYTHONPATH=data_engine python data_engine/main.py --mode worker --run-id <RUN_ID> --chunk-id <CHUNK_ID> --start 2024-06-01 --end 2024-06-01
+python -m data_engine.executors.main --mode worker --run-id <RUN_ID> --chunk-id <CHUNK_ID> --start 2024-06-01 --end 2024-06-01
 
 # Mergerモード (統合とMaster更新)
-PYTHONPATH=data_engine python data_engine/main.py --mode merger --run-id <RUN_ID>
+python -m data_engine.executors.main --mode merger --run-id <RUN_ID>
 ```
 
 ### 2. 統合データ収集 (2016年2月15日〜現在)
@@ -114,7 +109,7 @@ PYTHONPATH=data_engine python data_engine/main.py --mode merger --run-id <RUN_ID
 毎日 06:30 JST に自動実行され、前日分のデータを取得します。
 
 ```bash
-PYTHONPATH=data_engine python data_engine/market_main.py --mode all
+python -m data_engine.executors.market_main --mode all
 ```
 
 ## Licensing & Compliance

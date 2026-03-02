@@ -23,8 +23,9 @@ from pydantic import validate_call
 from datetime import datetime, timedelta, date
 from pydantic import BaseModel, Field,SecretStr
 from time import sleep
-from typing import Literal, Annotated, Optional, List, Dict, Union
+from typing import Literal, Annotated, Optional, List, Dict, Union, Any
 from pydantic.functional_validators import BeforeValidator
+from loguru import logger
 
 
 
@@ -160,24 +161,44 @@ class RequestResponse(BaseModel):
     message: StrOrNone = Field(default="", title="message", description="message")
 
 
+def normalize_date(v: Any) -> datetime:
+    if v is None:
+        return datetime.now()
+    if isinstance(v, datetime):
+        return v
+    if isinstance(v, date):
+        return datetime.combine(v, datetime.min.time())
+    if isinstance(v, str):
+        s_v = v.strip()
+        if not s_v or s_v.lower() in ["nan", "none"]:
+            return datetime.now()
+        # カンマやスラッシュ、ハイフンなどの区切りに対応
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y%m%d"):
+            try:
+                return datetime.strptime(s_v[:10].replace("/", "-"), "%Y-%m-%d")
+            except Exception:
+                continue
+    return datetime.now()
+
 class DateNormalizer(BaseModel):
-    date_norm: datetime
+    date_norm: Annotated[Optional[datetime], BeforeValidator(normalize_date)] = Field(default_factory=datetime.now)
     def export_date(self):
-        return self.date_norm#.strftime('%Y/%m/%d')
+        return self.date_norm
 
 
-@validate_call(validate_return=True)
-def get_edinet_metadata(params: EdinetMetadataInputV2) -> RequestResponse:
+@validate_call(config=ConfigDict(arbitrary_types_allowed=True), validate_return=True)
+def get_edinet_metadata(params: EdinetMetadataInputV2, session: Optional[requests.Session] = None) -> RequestResponse:
     """
     EDINET APIの書類一覧APIを利用して書類一覧を取得する
     """
     EDINET_API_url = "https://api.edinet-fsa.go.jp/api/v2/documents.json"
     
-    retry = requests.adapters.Retry(connect=5, read=3)
-    session = requests.Session()
-    session.mount("http://", requests.adapters.HTTPAdapter(max_retries=retry))
+    if session is None:
+        from data_engine.core.network_utils import GLOBAL_ROBUST_SESSION
+        session = GLOBAL_ROBUST_SESSION
 
-    res = session.get(EDINET_API_url, params=params.export(), verify=False, timeout=(20, 30))
+    # verify は Session 側の設定に従い、個別の get では True (デフォルト) を尊重する
+    res = session.get(EDINET_API_url, params=params.export(), timeout=(20, 30))
     result_temp = {"date_res": params.date_api_param,"status": "success","data": [],"message":None}
     
     if res.status_code == 200:
@@ -195,7 +216,7 @@ def get_edinet_metadata(params: EdinetMetadataInputV2) -> RequestResponse:
             result_temp["message"] = f"JSON Decoding Error: {str(e)}"
             pass
         except Exception as e:
-            print(e)
+            logger.error(f"EDINET metadata parsing error: {e}")
             result_temp["status"] = "failure"
             result_temp["message"] = f"Error: {str(e)}"
             pass
@@ -305,7 +326,7 @@ class edinet_response_metadata():
                 if line_json["status"]=="success":
                     response_metadata.append(RequestResponse(**line_json))
                 else:
-                    print(line_json["message"])
+                    logger.info(line_json["message"])
         self.data: list[EdinetResponse]= response_metadata
     
     #def load(self,filename):
@@ -347,30 +368,36 @@ class edinet_response_metadata():
     #    df = self.get_metadata_pandas_df()
     #    return df.query("docTypeCode=='130' and ordinanceCode == '010' and formCode == '030001' and docInfoEditStatus !='2'")
 
-def request_term(api_key:str, start_date_str:str,end_date_str:str, ope_date_time_str:str=None)->EdinetResponseList:
+def request_term(api_key:str, start_date_str:str,end_date_str:str, ope_date_time_str:str=None, session: Optional[requests.Session] = None)->list[RequestResponse]:
     """
     書類一覧APIを利用して開始日と終了日を含む期間の書類一覧を取得します。
         start_date_str: 開始日(YYYY-MM-DD)
         end_date_str: 終了日(YYYY-MM-DD)
-        ope_date_time_str: 前回取得した最後の操作日時(HH:MM:SS) 指定すると、それ以降に更新されたもののみ取得
+        ope_date_time_str: 前回取得した最後の操作日時(HH:MM:SS) 
+                           原則として開始日(start_date)に対して適用される。
+        session: 外部注入された requests.Session オブジェクト
     """
 
     start_date = DateNormalizer(date_norm=start_date_str).export_date()
     end_date = DateNormalizer(date_norm=end_date_str).export_date()
 
     res_results = []
-    for itr in tqdm(range(0,(end_date-start_date).days+1)):
-
+    days_to_fetch = (end_date - start_date).days + 1
+    
+    for itr in tqdm(range(0, days_to_fetch)):
         target_date = start_date + timedelta(days=itr)
         input_dict = {
             "date_api_param" : target_date.strftime("%Y-%m-%d"),
             "type_api_param" : 2,
             "api_key":api_key,
-            "ope_date_time_api_param": ope_date_time_str if itr == 0 else None
+            # ope_date_time は指定された場合、全日程に適用するか初日のみにするかは呼び出し側の意図に依存するが、
+            # 一般的な増分同期では「指定日時以降」を全検索期間に対して求めるため、全日程に適用可能とする設計に変更
+            "ope_date_time_api_param": ope_date_time_str
         }
         params = EdinetMetadataInputV2(**input_dict)
-        res_results.append(get_edinet_metadata(params))
-        sleep(0.5)
+        res_results.append(get_edinet_metadata(params, session=session))
+        # 1秒間に1回のリクエスト制限を遵守 (0.5s -> 1.1s に微調整して余裕を持たせる)
+        sleep(1.1)
     return res_results
 # %% doc
 
@@ -386,14 +413,16 @@ class RequestResponseDoc(BaseModel):
     status: Literal['success','failure'] = Field('succsess', title="result", description="Success or Failure")
     message: StrOrNone = Field(default="", title="message", description="message")
 
-@validate_call(validate_return=True)
-def request_doc(api_key,docid:str,out_filename_str:str)->RequestResponseDoc:
+@validate_call(config=ConfigDict(arbitrary_types_allowed=True), validate_return=True)
+def request_doc(api_key: str, docid: str, out_filename_str: str, session: Optional[requests.Session] = None) -> RequestResponseDoc:
     # EDINET API version 2
     out_filename_path = Path(out_filename_str)
     EDINET_API_url = "https://api.edinet-fsa.go.jp/api/v2/documents/" + docid
-    retry = requests.adapters.Retry(connect=5, read=3)
-    session = requests.Session()
-    session.mount("http://", requests.adapters.HTTPAdapter(max_retries=retry))
+    
+    if session is None:
+        from data_engine.core.network_utils import GLOBAL_ROBUST_SESSION
+        session = GLOBAL_ROBUST_SESSION
+
     input_dict = {
         "type_api_param": 1, # 1:xbrl # 2: PDF 5:csv,
         "api_key": api_key
@@ -401,11 +430,11 @@ def request_doc(api_key,docid:str,out_filename_str:str)->RequestResponseDoc:
     params = EdinetDocInputV2(**input_dict)
     result_temp = {"docid": docid, "status": "success", "data_path": None, "message": None}
     try:
-        res = session.get(EDINET_API_url, params=params.export(), verify=False, timeout=(20, 90))
+        res = session.get(EDINET_API_url, params=params.export(), timeout=(20, 90))
         if res.status_code == 200:
             result_temp["status"] = "success"
             with open(out_filename_path, 'wb') as f:
-                for chunk in res.iter_content(chunk_size=1024):
+                for chunk in res.iter_content(chunk_size=1024 * 64):
                     f.write(chunk)
             result_temp["data_path"] = str(out_filename_path)
         else:

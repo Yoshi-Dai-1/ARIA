@@ -20,9 +20,8 @@ import json
 from typing import Annotated
 from pydantic.functional_validators import BeforeValidator
 
-from pathlib import Path
-import requests
-from .xbrl_parser_rapper import *
+from loguru import logger
+from .xbrl_parser_wrapper import *
 from .link_base_file_analyzer import *
 from .utils import *
 
@@ -95,7 +94,7 @@ def get_fs_tbl(account_list_common_obj,docid:str,zip_file_str:str,temp_path_str:
     linkbasefile_obj.read_linkbase_file()
     linkbasefile_obj.check()
     linkbasefile_obj.make_account_label(account_list_common_obj,role_keyward_list)
-    xbrl_data_df,log_dict = get_xbrl_rapper(
+    xbrl_data_df,log_dict = get_xbrl_wrapper(
         docid=docid,
         zip_file=zip_file_str,
         temp_dir=Path(temp_path_str),
@@ -168,17 +167,14 @@ class linkbasefile():
 
     def check(self):
         p_key_set = set(self.parent_child_df.parent_key)
-        #print(len(p_key_set))
         c_key_set = set(self.parent_child_df.child_key)
-        #print(len(c_key_set))
         all_key_set = set(self.account_list.key)
         if len(p_key_set-all_key_set) != 0:
-            print("parent key in arc-link that is not included in locator: \n{}".format(str(p_key_set-all_key_set)))
+            logger.warning(f"parent key in arc-link that is not included in locator: \n{p_key_set-all_key_set}")
         if len(c_key_set-all_key_set) != 0:
-            print("child key in arc-link that is not included in locator: \n{}".format(str(p_key_set-all_key_set)))
-        #print(len(set(self.account_list.label)))
+            logger.warning(f"child key in arc-link that is not included in locator: \n{p_key_set-all_key_set}")
         if len(set(self.label_tbl_jp.key) - all_key_set) != 0:
-            print("key in label that is not included in locator: \n{}".format(str(set(self.label_tbl_jp.key) - all_key_set)))
+            logger.warning(f"key in label that is not included in locator: \n{set(self.label_tbl_jp.key) - all_key_set}")
 
     def make_account_label(self,account_list_common_obj,role_list,role_label_list=[]):
         account_label_org = self.make_account_label_org()
@@ -226,7 +222,6 @@ class linkbasefile():
             self.label_tbl_eng.query("role == 'label'").set_index("key")[['text']].rename(columns={"text":"label_en"}),
             self.label_tbl_eng.query("role == 'verboseLabel'").set_index("key")[['text']].rename(columns={"text":"label_en_long"})
         ],how="left")
-        #print("org",len(df))
         return df
     
     def make_summary_tbl(self):
@@ -292,6 +287,4 @@ class linkbasefile():
         #label_to_taxonomi_dict=self.get_presentation_account_list_obj.export_label_to_taxonomi_dict()
         
         account_label_common = account_list_common_obj.get_assign_common_label()
-        #print("common:",len(account_label_common))
         return account_label_common
-        

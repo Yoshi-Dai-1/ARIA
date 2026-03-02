@@ -15,9 +15,21 @@ class MasterMerger:
         self.data_path.mkdir(parents=True, exist_ok=True)
         self.api = HfApi() if hf_repo and hf_token else None
 
+    def get_bin_id(self, row: dict) -> str:
+        """物理的事実に基き、不変の分散キー (JCN or EDINET Code) を導出する"""
+        jcn_val = str(row.get("jcn") or "")
+        if jcn_val and len(jcn_val) >= 2 and jcn_val != "None" and jcn_val != "nan":
+            return f"J{jcn_val[-2:]}"
+
+        e_code = str(row.get("edinet_code") or "")
+        if e_code and len(e_code) >= 2 and e_code != "None" and e_code != "nan":
+            return f"E{e_code[-2:]}"
+
+        return "No"
+
     def merge_and_upload(
         self,
-        sector: str,
+        bin_id: str,
         master_type: str,
         new_data: pd.DataFrame,
         worker_mode: bool = False,
@@ -30,19 +42,12 @@ class MasterMerger:
         if new_data.empty:
             return True
 
+        # bin_id が指定されていない場合は先頭レコードから導出
+        if not bin_id:
+            bin_id = self.get_bin_id(new_data.iloc[0].to_dict())
+
         if worker_mode:
-            # 【統一】JCN 主導の不変ビン分割 (通常モードと同一ロジック)
-            row0 = new_data.iloc[0]
-            jcn_val = str(row0.get("jcn", ""))
-            if jcn_val and len(jcn_val) >= 2 and jcn_val != "None":
-                bin_val = f"J{jcn_val[-2:]}"
-            else:
-                e_code = str(row0.get("edinet_code", ""))
-                if e_code and len(e_code) >= 2 and e_code != "None":
-                    bin_val = f"E{e_code[-2:]}"
-                else:
-                    bin_val = "No"
-            filename = f"{master_type}_bin{bin_val}.parquet"
+            filename = f"{master_type}_bin{bin_id}.parquet"
 
             return catalog_manager.save_delta(
                 key="master",
@@ -54,31 +59,16 @@ class MasterMerger:
                 local_only=True,
             )
 
-        # 物理パスの構成を bin=XX に変更
-        # 【極限刷新】JCN（法人番号）を主軸とした完全統一ビン分割 (Unified Binning)
-        # 証券コードは変動・欠落の可能性があるため、国家IDである JCN の末尾を分散キーに使用。
-        # JCNがない場合のみ、不変の EDINETコード末尾を使用。
-        row0 = new_data.iloc[0]
-        jcn_val = str(row0.get("jcn", ""))
-        if jcn_val and len(jcn_val) >= 2 and jcn_val != "None":
-            bin_val = f"J{jcn_val[-2:]}"  # JCN末尾2桁 (e.g., J01)
-        else:
-            e_code = str(row0.get("edinet_code", ""))
-            if e_code and len(e_code) >= 2 and e_code != "None":
-                bin_val = f"E{e_code[-2:]}"  # EDINETコード末尾2桁 (e.g., E01)
-            else:
-                bin_val = "No"
-
-        repo_path = f"master/{master_type}/bin={bin_val}/data.parquet"
+        repo_path = f"master/{master_type}/bin={bin_id}/data.parquet"
 
         # 1. 既存データのロード
         try:
             m_path = hf_hub_download(repo_id=self.hf_repo, filename=repo_path, repo_type="dataset", token=self.hf_token)
             master_df = pd.read_parquet(m_path)
-            logger.debug(f"既存Master読み込み: bin={bin_val} ({len(master_df)} rows)")
+            logger.debug(f"既存Master読み込み: bin={bin_id} ({len(master_df)} rows)")
             combined_df = pd.concat([master_df, new_data], ignore_index=True)
         except Exception:
-            logger.info(f"新規Master作成: bin={bin_val} ({master_type})")
+            logger.info(f"新規Master作成: bin={bin_id} ({master_type})")
             combined_df = new_data
 
         # 2. 重複排除 (最新優先)
@@ -90,7 +80,7 @@ class MasterMerger:
         combined_df = combined_df.drop_duplicates(subset=subset, keep="first")
 
         # 3. 保存とアップロード
-        local_file = self.data_path / f"master_bin{bin_val}_{master_type}.parquet"
+        local_file = self.data_path / f"master_bin{bin_id}_{master_type}.parquet"
 
         for col in combined_df.columns:
             if combined_df[col].dtype == "object":
@@ -114,7 +104,7 @@ class MasterMerger:
             # 【重要】defer=True の場合は、モードに関わらずコミットバッファに積む
             if defer and catalog_manager:
                 catalog_manager.add_commit_operation(repo_path, local_file)
-                logger.debug(f"Master更新をバッファに追加: bin={bin_val} ({master_type})")
+                logger.debug(f"Master更新をバッファに追加: bin={bin_id} ({master_type})")
                 return True
 
             max_retries = 5  # 3回から5回に強化
@@ -127,7 +117,7 @@ class MasterMerger:
                         repo_type="dataset",
                         token=self.hf_token,
                     )
-                    logger.success(f"Master更新成功: bin={bin_val} ({master_type})")
+                    logger.success(f"Master更新成功: bin={bin_id} ({master_type})")
                     return True
                 except Exception as e:
                     if isinstance(e, HfHubHTTPError) and e.response.status_code == 429:
@@ -146,7 +136,7 @@ class MasterMerger:
                         time.sleep(wait_time)
                         continue
 
-                    logger.error(f"Masterアップロード失敗: bin={bin_val} - {e}")
+                    logger.error(f"Masterアップロード失敗: bin={bin_id} - {e}")
                     return False
             return False
         return True

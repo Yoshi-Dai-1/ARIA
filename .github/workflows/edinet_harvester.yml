@@ -49,10 +49,10 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO: ${{ vars.HF_REPO }}
-          PYTHONPATH: data_engine
+          PYTHONPATH: .
         run: |
           # 1. バックフィル期間の取得
-          OUTPUT=$(python data_engine/backfill_manager.py)
+          OUTPUT=$(python -m data_engine.executors.backfill_manager)
           
           # 2. 本日の日付の取得 (JST)
           TODAY_JST=$(python -c 'from zoneinfo import ZoneInfo; from datetime import datetime; print(datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d"))')
@@ -84,19 +84,19 @@ jobs:
           EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
           HF_REPO: ${{ vars.HF_REPO }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          PYTHONPATH: data_engine
+          PYTHONPATH: .
         run: |
           mkdir -p data/meta
           # 3段階のリストアップ
-          python data_engine/main.py --list-only --start "${{ steps.set-dates.outputs.start_date }}" --end "${{ steps.set-dates.outputs.end_date }}" | grep "^JSON_MATRIX_DATA:" | cut -d':' -f2- > data/meta/list_primary.json
+          python -m data_engine.executors.main --list-only --start "${{ steps.set-dates.outputs.start_date }}" --end "${{ steps.set-dates.outputs.end_date }}" | grep "^JSON_MATRIX_DATA:" | cut -d':' -f2- > data/meta/list_primary.json
           mv data/meta/discovery_metadata.json data/meta/disc_primary.json || echo "[]" > data/meta/disc_primary.json
 
-          python data_engine/main.py --list-only --start "${{ steps.set-dates.outputs.today }}" --end "${{ steps.set-dates.outputs.today }}" | grep "^JSON_MATRIX_DATA:" | cut -d':' -f2- > data/meta/list_today.json
+          python -m data_engine.executors.main --list-only --start "${{ steps.set-dates.outputs.today }}" --end "${{ steps.set-dates.outputs.today }}" | grep "^JSON_MATRIX_DATA:" | cut -d':' -f2- > data/meta/list_today.json
           mv data/meta/discovery_metadata.json data/meta/disc_today.json || echo "[]" > data/meta/disc_today.json
 
           RETRY_START="${{ steps.set-dates.outputs.retry_start }}"
           if [[ -n "$RETRY_START" ]]; then
-            python data_engine/main.py --list-only --start "$RETRY_START" --end "${{ steps.set-dates.outputs.retry_end }}" | grep "^JSON_MATRIX_DATA:" | cut -d':' -f2- > data/meta/list_retry.json
+            python -m data_engine.executors.main --list-only --start "$RETRY_START" --end "${{ steps.set-dates.outputs.retry_end }}" | grep "^JSON_MATRIX_DATA:" | cut -d':' -f2- > data/meta/list_retry.json
             mv data/meta/discovery_metadata.json data/meta/disc_retry.json || echo "[]" > data/meta/disc_retry.json
           else
             echo "[]" > data/meta/list_retry.json
@@ -194,10 +194,10 @@ jobs:
           EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO: ${{ vars.HF_REPO }}
-          PYTHONPATH: data_engine
+          PYTHONPATH: .
         run: |
           RUN_ID="harvest-${{ needs.discovery.outputs.today }}-${{ github.run_id }}"
-          python data_engine/main.py --mode worker --run-id "$RUN_ID" --chunk-id "primary-${{ matrix.idx }}" --id_list "${{ matrix.ids }}"
+          python -m data_engine.executors.main --mode worker --run-id "$RUN_ID" --chunk-id "primary-${{ matrix.idx }}" --id_list "${{ matrix.ids }}"
       - name: Upload Job Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -235,10 +235,10 @@ jobs:
           EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO: ${{ vars.HF_REPO }}
-          PYTHONPATH: data_engine
+          PYTHONPATH: .
         run: |
           RUN_ID="harvest-${{ needs.discovery.outputs.today }}-${{ github.run_id }}"
-          python data_engine/main.py --mode worker --run-id "$RUN_ID" --chunk-id "retry-${{ matrix.idx }}" --id_list "${{ matrix.ids }}"
+          python -m data_engine.executors.main --mode worker --run-id "$RUN_ID" --chunk-id "retry-${{ matrix.idx }}" --id_list "${{ matrix.ids }}"
       - name: Upload Job Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -272,10 +272,10 @@ jobs:
           EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO: ${{ vars.HF_REPO }}
-          PYTHONPATH: data_engine
+          PYTHONPATH: .
         run: |
           RUN_ID="harvest-${{ needs.discovery.outputs.today }}-${{ github.run_id }}"
-          python data_engine/main.py --mode merger --run-id "$RUN_ID"
+          python -m data_engine.executors.main --mode merger --run-id "$RUN_ID"
       - name: Update History Cursor
         if: |
           needs.discovery.result == 'success' && 
@@ -283,5 +283,5 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO: ${{ vars.HF_REPO }}
-          PYTHONPATH: data_engine
-        run: python data_engine/backfill_manager.py --update-cursor "${{ needs.discovery.outputs.end_date }}"
+          PYTHONPATH: .
+        run: python -m data_engine.executors.backfill_manager --update-cursor "${{ needs.discovery.outputs.end_date }}"

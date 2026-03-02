@@ -9,21 +9,17 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from catalog_manager import CatalogManager
-from config import ARIA_SCOPE
-from dotenv import load_dotenv
-from edinet_engine import EdinetEngine
 from loguru import logger
-from master_merger import MasterMerger
-from pipeline import run_merger, run_worker_pipeline
 
-# 共通設定 (パイプラインへ引き継ぐ定数など)
-DATA_PATH = Path("data")
+from data_engine.catalog_manager import CatalogManager
+from data_engine.core.config import CONFIG
+from data_engine.executors.pipeline import run_merger, run_worker_pipeline
 
 
+# 共通設定 (SSOT 取得のため定数化不要)
 def main():
-    # .envファイルの読み込み
-    load_dotenv()
+    # グローバル設定の適用 (LOG_LEVEL 等)
+    log_level = os.environ.get("LOG_LEVEL", "INFO")
 
     # ログレベルの設定
     log_level = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -50,19 +46,11 @@ def main():
             logger.error(f"引数解析エラー (exit code {e.code}): 渡された引数が不正です。 sys.argv={sys.argv}")
         raise e
 
-    api_key = os.getenv("EDINET_API_KEY")
-    hf_token = os.getenv("HF_TOKEN")
-    hf_repo = os.getenv("HF_REPO")
+    # 4. Config 経由でのバリデーション (CatalogManager 内部で行われるが、Fail-Fast のため)
+    CONFIG.validate_env(production=(args.mode != "merger" and not args.list_only))
 
     run_id = args.run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
     chunk_id = args.chunk_id
-
-    if not api_key:
-        if args.mode != "merger" and not args.list_only:
-            logger.critical("EDINET_API_KEY が設定されていません。")
-            return
-        else:
-            logger.debug(f"EDINET_API_KEY 未設定ですが、{args.mode} モードのため続行します。")
 
     if args.start:
         args.start = args.start.strip()
@@ -78,28 +66,13 @@ def main():
     log_dir.mkdir(exist_ok=True)
     logger.add(log_dir / "pipeline_{time}.log", rotation="10 MB", level="INFO")
 
-    import json
-
-    taxonomy_urls_path = Path(__file__).parent / "taxonomy_urls.json"
-    taxonomy_urls = {}
-    if taxonomy_urls_path.exists():
-        try:
-            with open(taxonomy_urls_path, "r", encoding="utf-8") as f:
-                taxonomy_urls = json.load(f)
-            logger.info(f"タクソノミURL定義を読み込みました: {len(taxonomy_urls)} 件")
-        except Exception as e:
-            logger.error(f"タクソノミURL定義の読み込みに失敗しました: {e}")
-    else:
-        logger.warning(f"タクソノミURL定義が見つかりません: {taxonomy_urls_path}")
-
-    edinet = EdinetEngine(api_key, DATA_PATH, taxonomy_urls=taxonomy_urls)
-    catalog = CatalogManager(hf_repo, hf_token, DATA_PATH, scope=ARIA_SCOPE)
-    merger = MasterMerger(hf_repo, hf_token, DATA_PATH)
+    # CatalogManager が設定とタクソノミURLを自動ロードする
+    catalog = CatalogManager()
 
     if args.mode == "merger":
-        run_merger(catalog, merger, run_id)
+        run_merger(catalog, run_id)
     else:
-        run_worker_pipeline(args, edinet, catalog, merger, run_id, chunk_id)
+        run_worker_pipeline(args, catalog.edinet, catalog, run_id, chunk_id)
 
 
 if __name__ == "__main__":

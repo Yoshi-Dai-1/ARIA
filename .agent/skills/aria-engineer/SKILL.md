@@ -14,11 +14,11 @@ description: ARIA プロジェクトにおける技術的真実、データ整�
 ## 2. 物理的な掟 (Physical Facts)
 - **RaW-V (Read-after-Write Verification)**: 破壊的更新前には必ず CatalogManager のスナップショット機能を実行。
 - **NaN / Null Integrity**: pandas 由来の NaN が Pydantic モデルの文字列フィールドを破壊するのを防ぐため、`field_validator` による強制変換を必須とする。
-- **Network Stability**: 外部通信を伴う処理では [network_utils.patch_all_networking](file:///Users/yoshi_dai/repos/ARIA/data_engine/network_utils.py) の適用を必須とする。
+- **Network Stability**: 外部通信を伴う処理では [network_utils.patch_all_networking](file:///Users/yoshi_dai/repos/ARIA/data_engine/core/network_utils.py) の適用を必須とする。
 - **PyArrow Schema Enforcement (金型アーキテクチャ)**: 全 Parquet 書き出しは `models.py` の `ARIA_SCHEMAS` レジストリから導出した明示スキーマを適用すること。`to_parquet()` を無スキーマで呼ぶことは**永久に禁止**。動的スキーマ (Bin/指数) は例外として明記すること。
 
 ## 3. 監査手法 (Audit Methodology)
-- **モデル駆動型 4 層監査**: [data_reconciliation.py](file:///Users/yoshi_dai/repos/ARIA/data_engine/data_reconciliation.py) がスキーマ照合、物理ファイル照合、分析マスタ照合、API カタログ照合の 4 層 11 項目を自動実行。
+- **モデル駆動型 4 層 11 項目の自動監査エンジン (スキーマ / 物理ファイル / 分析マスタ / API カタログ) 入口点**: [data_reconciliation.py](file:///Users/yoshi_dai/repos/ARIA/data_engine/services/data_reconciliation.py) がスキーマ照合、物理ファイル照合、分析マスタ照合、API カタログ照合の 4 層 11 項目を自動実行。
 - **Mass-Scale Stress Test**: 1,000件規模の擬似レコードを用い、Parquet の物理的統合と bin への均等分散を検証する。
 - **Self-Healing Logic**: 履歴再構築時に `0000-00-00` シードを注入し、バックフィルによる情報の断絶を防止する。
 
@@ -28,5 +28,5 @@ description: ARIA プロジェクトにおける技術的真実、データ整�
 ## 参照リソース
 - [エンジニアリングパターン](references/patterns.md): FMEA、冪等性の具体例
 - [技術用語翻訳ガイド](references/PEDAGOGICAL_GUIDE.md): 投資家向けの分かりやすい説明指針
-- [SSOT 設定](file:///Users/yoshi_dai/repos/ARIA/data_engine/config.py): `aria_config.json` による一元管理モジュール
-- [PyArrow スキーマ定義](file:///Users/yoshi_dai/repos/ARIA/data_engine/models.py): `pydantic_to_pyarrow()` による SSOT スキーマ導出
+- [SSOT 設定](file:///Users/yoshi_dai/repos/ARIA/data_engine/core/config.py): `aria_config.json` による一元管理モジュール
+- [PyArrow スキーマ定義](file:///Users/yoshi_dai/repos/ARIA/data_engine/core/models.py): `pydantic_to_pyarrow()` による SSOT スキーマ導出

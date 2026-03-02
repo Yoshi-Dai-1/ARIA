@@ -17,7 +17,8 @@ import requests
 from huggingface_hub import CommitOperationAdd, HfApi, hf_hub_download
 from huggingface_hub.utils import EntryNotFoundError, HfHubHTTPError, RepositoryNotFoundError
 from loguru import logger
-from models import ARIA_SCHEMAS, CatalogRecord, IndexEvent, ListingEvent, StockMasterRecord
+
+from data_engine.core.models import ARIA_SCHEMAS, CatalogRecord, IndexEvent, ListingEvent, StockMasterRecord
 
 
 class HfStorage:

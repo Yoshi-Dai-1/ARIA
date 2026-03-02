@@ -80,11 +80,14 @@ def patch_all_networking():
         pass
 
     # 2. 外部ライブラリ edinet_xbrl_prep の通信を堅牢化
-    modules_to_patch = [
-        "edinet_xbrl_prep.edinet_xbrl_prep.edinet_api",
-        "edinet_xbrl_prep.edinet_xbrl_prep.link_base_file_analyzer",
-        "edinet_xbrl_prep.edinet_xbrl_prep.fs_tbl",
-    ]
+    modules_to_patch = []
+    modules_to_patch.extend(
+        [
+            "data_engine.edinet_xbrl_prep.edinet_api",
+            "data_engine.edinet_xbrl_prep.link_base_file_analyzer",
+            "data_engine.edinet_xbrl_prep.fs_tbl",
+        ]
+    )
 
     for mod_name in modules_to_patch:
         try:

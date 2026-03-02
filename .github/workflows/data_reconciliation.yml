@@ -36,6 +36,6 @@ jobs:
           EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO: ${{ vars.HF_REPO }}
-          PYTHONPATH: data_engine
+          PYTHONPATH: .
         run: |
-          python data_engine/data_reconciliation.py --save-report
+          python -m data_engine.services.data_reconciliation --save-report

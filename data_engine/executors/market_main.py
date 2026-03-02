@@ -1,33 +1,16 @@
-import os
-
-# CI環境でのプログレスバーを無効化 (ログの肥大化・視認性低下を防ぐため全ライブラリ前に設定)
-os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
-os.environ["TQDM_DISABLE"] = "1"
-
 import argparse
 import sys
 from datetime import datetime, timedelta
-from pathlib import Path
 
 import pandas as pd
-import tqdm as tqdm_mod
-from catalog_manager import CatalogManager
 from loguru import logger
-from market_engine import MarketDataEngine
-from network_utils import patch_all_networking
-from tqdm import tqdm
 
+from data_engine.catalog_manager import CatalogManager
+from data_engine.core.config import CONFIG
+from data_engine.core.network_utils import patch_all_networking
+from data_engine.engines.market_engine import MarketDataEngine
 
-def no_op_tqdm(*args, **kwargs):
-    kwargs.update({"disable": True})
-    return tqdm(*args, **kwargs)
-
-
-tqdm_mod.tqdm = no_op_tqdm
-
-# 設定
-DATA_PATH = Path("data").resolve()
-TEMP_DIR = DATA_PATH / "temp"
+# グローバル設定は CONFIG インスタンス化時に適用済み
 
 
 def run_market_pipeline(target_date: str, mode: str = "all"):
@@ -36,25 +19,17 @@ def run_market_pipeline(target_date: str, mode: str = "all"):
     # 全体的な通信の堅牢化を適用
     patch_all_networking()
 
-    hf_token = os.getenv("HF_TOKEN")
-    hf_repo = os.getenv("HF_REPO")
+    # 【究極の統合】システムの SSOT から初期化 (環境変数バリデーション含む)
+    catalog = CatalogManager()
+    logger.info(f"ARIA Execution Scope: {catalog.scope}")
 
-    if not hf_token or not hf_repo:
-        logger.critical("HF_TOKEN / HF_REPO が設定されていません。")
-        sys.exit(1)
+    # 初期化 (物理パスは CONFIG から取得)
+    data_path = CONFIG.DATA_PATH
+    temp_dir = CONFIG.TEMP_DIR
+    data_path.mkdir(parents=True, exist_ok=True)
+    temp_dir.mkdir(parents=True, exist_ok=True)
 
-    # 【追加】スコープの取得
-    from config import ARIA_SCOPE
-
-    aria_scope = ARIA_SCOPE
-    logger.info(f"ARIA Execution Scope: {aria_scope}")
-
-    # 初期化
-    DATA_PATH.mkdir(parents=True, exist_ok=True)
-    TEMP_DIR.mkdir(parents=True, exist_ok=True)
-
-    engine = MarketDataEngine(DATA_PATH)
-    catalog = CatalogManager(hf_repo, hf_token, DATA_PATH, scope=aria_scope)  # スコープを伝播
+    engine = MarketDataEngine(data_path)
 
     import shutil
 
@@ -101,11 +76,11 @@ def run_market_pipeline(target_date: str, mode: str = "all"):
                         f"master/indices/{index_name}/constituents/"
                         f"year={year}/data_{target_date.replace('-', '')}.parquet"
                     )
-                    local_snap = DATA_PATH / f"{index_name}_{target_date}.parquet"
+                    local_snap = data_path / f"{index_name}_{target_date}.parquet"
                     # 【Phase 3 注記】指数構成銘柄の動的カラム構成のため、固定スキーマ不適用
                     df_new.to_parquet(local_snap, index=False, compression="zstd")
 
-                    catalog.upload_raw(local_snap, snap_path, defer=True)
+                    catalog.hf.upload_raw(local_snap, snap_path, defer=True)
                     logger.info(f"Snapshot staged: {snap_path}")
 
                     # C. Update History (Events)
@@ -123,13 +98,13 @@ def run_market_pipeline(target_date: str, mode: str = "all"):
                             from huggingface_hub import hf_hub_download
 
                             hf_hub_download(
-                                repo_id=hf_repo,
+                                repo_id=CONFIG.HF_REPO,
                                 filename=prev_path,
-                                token=hf_token,
-                                local_dir=str(TEMP_DIR),  # ディレクトリ指定
+                                token=CONFIG.HF_TOKEN,
+                                local_dir=str(temp_dir),  # ディレクトリ指定
                                 local_dir_use_symlinks=False,
                             )
-                            downloaded_path = TEMP_DIR / prev_path
+                            downloaded_path = temp_dir / prev_path
                             if downloaded_path.exists():
                                 df_old = pd.read_parquet(downloaded_path)
                                 # 【重要】既存データからの汚染除去
@@ -151,18 +126,18 @@ def run_market_pipeline(target_date: str, mode: str = "all"):
                             # Historyファイルのロードと追記
                             # master/indices/{index_name}/history.parquet
                             hist_path = f"master/indices/{index_name}/history.parquet"
-                            local_hist = DATA_PATH / f"{index_name}_history.parquet"
+                            local_hist = data_path / f"{index_name}_history.parquet"
 
                             # 既存History取得
                             try:
                                 hf_hub_download(
-                                    repo_id=hf_repo,
+                                    repo_id=CONFIG.HF_REPO,
                                     filename=hist_path,
-                                    token=hf_token,
-                                    local_dir=str(TEMP_DIR),
+                                    token=CONFIG.HF_TOKEN,
+                                    local_dir=str(temp_dir),
                                     local_dir_use_symlinks=False,
                                 )
-                                dl_hist_path = TEMP_DIR / hist_path
+                                dl_hist_path = temp_dir / hist_path
                                 if dl_hist_path.exists():
                                     df_hist_current = pd.read_parquet(dl_hist_path)
                                     # 【重要】既存データからの汚染除去
@@ -182,14 +157,14 @@ def run_market_pipeline(target_date: str, mode: str = "all"):
                             # Save (Deferred)
                             # 【Phase 3 注記】指数イベント履歴は動的カラム構成のため、固定スキーマ不適用
                             df_hist_new.to_parquet(local_hist, index=False, compression="zstd")
-                            catalog.upload_raw(local_hist, hist_path, defer=True)
+                            catalog.hf.upload_raw(local_hist, hist_path, defer=True)
                             logger.info(f"History staged: {index_name}")
                         elif df_hist_current.empty:
                             # 初回実行時: 空でもファイルを作成してアップロード
-                            local_hist = DATA_PATH / f"{index_name}_history.parquet"
+                            local_hist = data_path / f"{index_name}_history.parquet"
                             # 【Phase 3 注記】初回作成時も動的カラム構成のため、固定スキーマ不適用
                             df_hist_current.to_parquet(local_hist, index=False, compression="zstd")
-                            catalog.upload_raw(local_hist, hist_path, defer=True)
+                            catalog.hf.upload_raw(local_hist, hist_path, defer=True)
                             logger.info(f"History initialized: {index_name}")
                         else:
                             logger.info(f"No changes detected for {index_name}")
@@ -209,9 +184,9 @@ def run_market_pipeline(target_date: str, mode: str = "all"):
 
     finally:
         # 一時ファイルの削除
-        if TEMP_DIR.exists():
+        if temp_dir.exists():
             try:
-                shutil.rmtree(TEMP_DIR)
+                shutil.rmtree(temp_dir)
                 logger.info("Temporary files cleaned up.")
             except Exception as e:
                 logger.warning(f"Failed to cleanup temp dir: {e}")

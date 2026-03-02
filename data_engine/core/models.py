@@ -134,6 +134,43 @@ class CatalogRecord(BaseModel):
     # 6. API V2 Lifecycle (増分同期・運用メタデータ)
     ope_date_time: Optional[str] = None  # 操作日時 (API V2 の核心項目)
 
+    @field_validator(
+        "jcn",
+        "edinet_code",
+        "issuer_edinet_code",
+        "subject_edinet_code",
+        "subsidiary_edinet_code",
+        "fund_code",
+        "period_start",
+        "period_end",
+        "accounting_standard",
+        "doc_type",
+        "title",
+        "form_code",
+        "ordinance_code",
+        "parent_doc_id",
+        "withdrawal_status",
+        "doc_info_edit_status",
+        "disclosure_status",
+        "current_report_reason",
+        "raw_zip_path",
+        "pdf_path",
+        "ope_date_time",
+        mode="before",
+    )
+    @classmethod
+    def nan_to_none(cls, v: Any) -> Any:
+        if v is None:
+            return None
+        if isinstance(v, float) and math.isnan(v):
+            return None
+        if isinstance(v, str):
+            s_v = v.strip()
+            if s_v.lower() in ["nan", "none", "", "-"]:
+                return None
+            return s_v
+        return v
+
 
 class StockMasterRecord(BaseModel):
     """
@@ -281,19 +318,29 @@ def pydantic_to_pyarrow(model_class) -> pa.Schema:
     fields = []
     for name, info in model_class.model_fields.items():
         py_type = info.annotation
-
-        # Optional[X] → X に展開
         nullable = False
+
+        # Pydantic v2: info.annotation に型情報が入っている
+        # Optional[X] や Union[X, None] を判定
         origin = get_origin(py_type)
         if origin is Union:
-            args = [a for a in get_args(py_type) if a is not type(None)]
-            if args:
-                py_type = args[0]
+            args = get_args(py_type)
+            # NoneType (type(None)) が含まれているか確認
+            none_type = type(None)
+            if none_type in args:
                 nullable = True
+                # None 以外の実際の型を抽出
+                real_types = [a for a in args if a is not none_type]
+                if real_types:
+                    py_type = real_types[0]
+            else:
+                py_type = args[0]
 
-        # デフォルト値が None なら nullable
-        if info.default is None:
-            nullable = True
+        # デフォルト値チェック (Nullable の補完)
+        if info.default is None or info.default_factory is None:
+            # 明示的にデフォルトが設定されていれば Nullable とみなす場合が多い
+            if not info.is_required():
+                nullable = True
 
         pa_type = _PYTHON_TO_PYARROW.get(py_type, pa.string())
         fields.append(pa.field(name, pa_type, nullable=nullable))

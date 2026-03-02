@@ -19,11 +19,12 @@ from pathlib import Path
 from typing import Any, Dict
 
 import pandas as pd
-import utils
-from catalog_manager import CatalogManager
+
+from data_engine.catalog_manager import CatalogManager
+from data_engine.core import utils
 
 # ARIA モジュール
-from models import CatalogRecord, IndexEvent, ListingEvent, StockMasterRecord
+from data_engine.core.models import CatalogRecord, IndexEvent, ListingEvent, StockMasterRecord
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ class DataReconciliationEngine:
 
         for key, filename, model_class in check_targets:
             try:
-                df = self.cm.storage.load_parquet(key)
+                df = self.cm.hf.load_parquet(key)
                 if df.empty:
                     logger.info(f"{filename} is empty. Skipping schema check.")
                     continue
@@ -110,7 +111,7 @@ class DataReconciliationEngine:
 
         try:
             # Hugging Face の raw ディレクトリ配下のファイルリストを取得
-            files = self.cm.storage.api.list_repo_files(repo_id=self.hf_repo, repo_type="dataset")
+            files = self.cm.hf.api.list_repo_files(repo_id=self.hf_repo, repo_type="dataset")
             raw_files = set([f for f in files if f.startswith("raw/edinet/")])
 
             # 存在すべきファイルの導出
@@ -198,7 +199,7 @@ class DataReconciliationEngine:
 
         try:
             # Binファイル群の取得
-            files = self.cm.storage.api.list_repo_files(repo_id=self.hf_repo, repo_type="dataset")
+            files = self.cm.hf.api.list_repo_files(repo_id=self.hf_repo, repo_type="dataset")
             bin_files = [
                 f
                 for f in files
@@ -216,7 +217,7 @@ class DataReconciliationEngine:
             # 各 Bin ファイルの監査
             for bf in bin_files:
                 try:
-                    df = self.cm.storage.load_parquet_lazy(bf)  # 実装次第でメモリに乗せる
+                    df = self.cm.hf.load_parquet_lazy(bf)  # 実装次第でメモリに乗せる
                     if df.empty:
                         continue
 
@@ -302,7 +303,7 @@ class DataReconciliationEngine:
             logger.error("EDINET_API_KEY environment variable is missing for Layer 4.")
             return
 
-        from edinet_engine import EdinetEngine
+        from data_engine.engines.edinet_engine import EdinetEngine
 
         edinet = EdinetEngine(api_key, self.data_path)
 

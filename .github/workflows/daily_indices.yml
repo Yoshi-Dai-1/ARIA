@@ -41,7 +41,7 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO: ${{ vars.HF_REPO }}
-          PYTHONPATH: data_engine
+          PYTHONPATH: .
         run: |
           # Target Date は内部で「昨日」に自動設定されるため引数不要
-          python data_engine/market_main.py --mode all
+          python -m data_engine.executors.market_main --mode all

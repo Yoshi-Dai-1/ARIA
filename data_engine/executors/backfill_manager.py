@@ -1,19 +1,19 @@
 import argparse
 import json
-import os
-import sys
 from datetime import date, datetime, timedelta
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from huggingface_hub import HfApi, hf_hub_download
+from loguru import logger
 
-# 設定
-DATA_PATH = Path("data").resolve()
+from data_engine.core.config import CONFIG
+
+# 設定 (SSOT から取得)
+DATA_PATH = CONFIG.DATA_PATH
 META_DIR = DATA_PATH / "meta"
 CURSOR_FILE = "backfill_cursor.json"
-HF_REPO = os.getenv("HF_REPO")
-HF_TOKEN = os.getenv("HF_TOKEN")
+HF_REPO = CONFIG.HF_REPO
+HF_TOKEN = CONFIG.HF_TOKEN
 # 1回の遡り期間（7日＝1週間）
 BACKFILL_DAYS = 7
 # 限界日（これより前はAPIリストからの取得が不可：2016-02-15が最古の取得可能日として検証済み）
@@ -38,7 +38,7 @@ def load_cursor():
         with open(local_path, "r") as f:
             return json.load(f)
     except Exception as e:
-        print(f"Cursor load failed (First run?): {e}", file=sys.stderr)
+        logger.warning(f"Cursor load failed (First run?): {e}")
         return None
 
 
@@ -60,9 +60,9 @@ def save_cursor(next_start_date_str):
             repo_type="dataset",
             commit_message=f"Update backfill cursor to {next_start_date_str}",
         )
-        print(f"Cursor updated: {next_start_date_str}", file=sys.stderr)
+        logger.info(f"Cursor updated: {next_start_date_str}")
     except Exception as e:
-        print(f"Failed to upload cursor: {e}", file=sys.stderr)
+        logger.error(f"Failed to upload cursor: {e}")
         # カーソル更新失敗は致命的ではない（再実行されるだけ）が、ログは残す
 
 
@@ -88,7 +88,7 @@ def calculate_next_period():
     yesterday = get_jst_today() - timedelta(days=1)
 
     if start_date >= yesterday:
-        print("FINISHED", file=sys.stderr)
+        logger.info("FINISHED")
         return None, None
 
     if end_date >= yesterday:
@@ -113,7 +113,7 @@ def main():
     start, end = calculate_next_period()
 
     if start is None:
-        print("FINISHED")  # GHA側で検知するためのキーワード
+        logger.info("FINISHED")  # GHA側で検知するためのキーワード
         return
 
     # 【追加】再試行期間の計算（カーソルの開始日から過去60日分）
@@ -122,12 +122,12 @@ def main():
         retry_start = LIMIT_DATE
     retry_end = start - timedelta(days=1)
 
-    print(f"START={start.strftime('%Y-%m-%d')}")
-    print(f"END={end.strftime('%Y-%m-%d')}")
+    logger.info(f"START={start.strftime('%Y-%m-%d')}")
+    logger.info(f"END={end.strftime('%Y-%m-%d')}")
 
     if retry_start < start:
-        print(f"RETRY_START={retry_start.strftime('%Y-%m-%d')}")
-        print(f"RETRY_END={retry_end.strftime('%Y-%m-%d')}")
+        logger.info(f"RETRY_START={retry_start.strftime('%Y-%m-%d')}")
+        logger.info(f"RETRY_END={retry_end.strftime('%Y-%m-%d')}")
 
 
 if __name__ == "__main__":
