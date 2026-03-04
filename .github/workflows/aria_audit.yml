@@ -1,4 +1,4 @@
-name: Extreme Integrity Audit
+name: ARIA | System Integrity Audit
 
 concurrency:
   group: aria-global-lock

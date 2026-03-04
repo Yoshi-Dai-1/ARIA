@@ -96,7 +96,7 @@ python -m data_engine.executors.main --mode merger --run-id <RUN_ID>
 
 ### 2. 統合データ収集 (2016年2月15日〜現在)
 
-`edinet_harvester.yml` により、2時間おき（JST偶数時、06時を除く）に自動実行されます。本日の新着書類と、過去の歴史データ（7日刻み）を並列で取得します。
+`aria_harvester.yml` により、2時間おき（JST偶数時、06時を除く）に自動実行されます。本日の新着書類と、過去の歴史データ（7日刻み）を並列で取得します。
 - **Hybrid Ingestion**: 「今」のポーリングと「過去」の遡及を一つのパイプラインで両立。
 - **ARIA_SCOPE**: `data_engine/aria_config.json` の `aria_scope` フィールドで制御。`Listed` (上場企業のみ), `Unlisted` (非上場企業のみ), `All` (全量) の切り替えに対応。設定ファイルによる一元管理（SSOT）のため、1箇所の変更で全ワークフロー・全スクリプトに適用されます。
 - **Zero Drift Architecture**: Discovery ジョブが取得したメタデータを Artifact として共有し、全 Worker が同一のメタデータを使用。
