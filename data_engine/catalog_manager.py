@@ -28,6 +28,7 @@ class CatalogManager:
         data_path: Path = None,
         scope: str = None,
         edinet: bool = True,
+        sync_master: bool = False,
     ):
         # 1. SSHT (Single Source of Truth) からの読み込みとオーバーライド
         self.hf_repo = hf_repo or CONFIG.HF_REPO
@@ -77,18 +78,21 @@ class CatalogManager:
         self.catalog_df = self.hf.load_parquet("catalog", clean_fn=self._clean_dataframe)
         self.master_df = self.hf.load_parquet("master", clean_fn=self._clean_dataframe)
 
-        logger.info(f"CatalogManager Initialized (Scope: {self.scope})")
+        logger.info(f"CatalogManager Initialized (Scope: {self.scope}, SyncMaster: {sync_master})")
 
-        # 整合性チェックと最新スキーマへのアップグレード
-        self._retrospective_cleanse()
+        if sync_master:
+            # 整合性チェックと最新スキーマへのアップグレード
+            self._retrospective_cleanse()
 
-        # 起動時にEDINETコードリストを同期しマスタに反映
-        self.edinet_codes, self.aggregation_map = self.sync_edinet_code_lists()
-        if self.edinet_codes:
-            self.reconciliation.update_master_from_edinet_codes()
-            if self.hf.has_pending_operations:
-                logger.info("初期マスター構築を検知しました。直ちに Hugging Face に保存します。")
-                self.hf.push_commit("Initial Master Build from EDINET")
+            # 起動時にEDINETコードリストを同期しマスタに反映
+            self.edinet_codes, self.aggregation_map = self.sync_edinet_code_lists()
+            if self.edinet_codes:
+                self.reconciliation.update_master_from_edinet_codes()
+                if self.hf.has_pending_operations:
+                    logger.info("初期マスター構築を検知しました。直ちに Hugging Face に保存します。")
+                    self.hf.push_commit("Initial Master Build from EDINET")
+        else:
+            logger.info("マスタ同期をスキップしました (sync_master=False)。HF上の既存データを使用します。")
 
     # ──────────────────────────────────────────────
     # 委譲 (Delegations)

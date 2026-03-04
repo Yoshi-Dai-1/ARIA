@@ -107,11 +107,20 @@ class WorkerEngine:
         self.chunk_id = chunk_id
         self.is_shutting_down = False
 
+        # 1. 起動時に Listed 銘柄の EDINET コードをセット化 (高速判定用)
+        self.listed_edinet_codes = set()
+        if not self.catalog.master_df.empty:
+            self.listed_edinet_codes = set(
+                self.catalog.master_df[self.catalog.master_df["is_listed_edinet"].fillna(False)]["edinet_code"]
+                .dropna()
+                .unique()
+            )
+
     def run(self):
         """Workerモード (デフォルト): データの取得・解析・保存のパイプラインを実行する"""
         logger.info("=== Worker Pipeline Started ===")
 
-        # 1. 増分同期のためのチェックポイント取得
+        # 2. 増分同期のためのチェックポイント取得
         last_ope_time = None
         if not self.catalog.catalog_df.empty and "ope_date_time" in self.catalog.catalog_df.columns:
             # カタログ内の最新の操作日時を取得
@@ -241,14 +250,13 @@ class WorkerEngine:
             edinet_code = row.get("edinetCode")
             title = row.get("docDescription", "名称不明")
 
-            is_listed_meta = False
-            if edinet_code:
-                m_rec = self.catalog.master_df[self.catalog.master_df["edinet_code"] == edinet_code]
-                if not m_rec.empty:
-                    is_listed_meta = bool(m_rec.iloc[0].get("is_listed_edinet", False))
-
-            if is_listed_meta != (ARIA_SCOPE == "Listed"):
-                continue
+            # 3. 第2段階フィルタ (手動実行時の安全網 & 高速化)
+            # 【工学的主権】ARIA_SCOPE="All" の場合は全ての銘柄を許可する
+            if ARIA_SCOPE != "All":
+                is_listed_master = edinet_code in self.listed_edinet_codes
+                # Listed モードなのに非上場、または Unlisted モードなのに上場企業ならスキップ
+                if is_listed_master != (ARIA_SCOPE == "Listed"):
+                    continue
 
             if target_ids and doc_id not in target_ids:
                 continue

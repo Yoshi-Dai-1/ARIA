@@ -21,7 +21,8 @@ def run_market_pipeline(target_date: str, mode: str = "all"):
 
     # 【究極の統合】システムの SSOT から初期化 (環境変数バリデーション含む)
     # Market Data 更新時は EDINET API を使用しないため、edinet=False で初期化して API KEY 依存を排除
-    catalog = CatalogManager(edinet=False)
+    # Harvester-Merger が 2時間ごとにマスタを最新化するため、ここでの同期は不要 (sync_master=False)
+    catalog = CatalogManager(edinet=False, sync_master=False)
     logger.info(f"ARIA Execution Scope: {catalog.scope}")
 
     # 初期化 (物理パスは CONFIG から取得)

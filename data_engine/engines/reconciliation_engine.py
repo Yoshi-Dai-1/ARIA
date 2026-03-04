@@ -125,23 +125,6 @@ class ReconciliationEngine:
                 old_is_active = bool(m_rec.get("is_active", False))
                 sec_code = ed_rec.sec_code or m_rec.get("code")
 
-                has_code_now = sec_code is not None and len(str(sec_code)) >= 4
-                historical_code = m_rec.get("code") is not None and len(str(m_rec.get("code"))) >= 4
-                is_agg_target = e_code in self.cm.aggregation_map.values()
-
-                if self.cm.scope == "Listed" and not (has_code_now or historical_code or is_agg_target):
-                    master_dict.pop(e_code, None)
-                    continue
-
-                if self.cm.scope == "Listed" and not is_listed_official:
-                    if has_code_now:
-                        logger.info(f"💡 非上場銘柄を保護 (証券コード保有): {sec_code} ({ed_rec.submitter_name})")
-                    elif is_agg_target:
-                        logger.info(f"💡 非上場銘柄を保護 (集約の継続先): {e_code} ({ed_rec.submitter_name})")
-                if self.cm.scope == "Unlisted" and has_code_now:
-                    master_dict.pop(e_code, None)
-                    continue
-
                 if sec_code:
                     if old_is_active is False and is_listed_official is True:
                         listing_events.append({"code": sec_code, "type": "LISTING", "event_date": today})
@@ -178,13 +161,6 @@ class ReconciliationEngine:
                     updated_count += 1
             else:
                 sec_code = ed_rec.sec_code
-
-                has_code = sec_code is not None and len(str(sec_code)) >= 4
-                is_agg_target = e_code in self.cm.aggregation_map.values()
-                if self.cm.scope == "Listed" and not (has_code or is_agg_target):
-                    continue
-                if self.cm.scope == "Unlisted" and has_code:
-                    continue
 
                 if sec_code and is_listed_official:
                     listing_events.append({"code": sec_code, "type": "LISTING", "event_date": today})
@@ -250,14 +226,6 @@ class ReconciliationEngine:
 
         if updated_count > 0 or aggregation_applied_count > 0 or not self.cm.master_df.empty:
             new_df = pd.DataFrame(list(master_dict.values()))
-
-            if self.cm.scope == "Listed":
-                is_agg_targets = new_df["edinet_code"].isin(self.cm.aggregation_map.values())
-                new_df = new_df[
-                    ~((new_df["code"].isna() | (new_df["code"] == "")) & ~new_df["is_listed_edinet"] & ~is_agg_targets)
-                ]
-            elif self.cm.scope == "Unlisted":
-                new_df = new_df[new_df["code"].isna() | (new_df["code"] == "")]
 
             self.cm.master_df = self.cm._clean_dataframe("master", new_df)
 
@@ -389,16 +357,6 @@ class ReconciliationEngine:
         for _, group in all_states.groupby(group_cols, dropna=False):
             code_vals = group["code"].dropna().unique()
             code = code_vals[0] if len(code_vals) > 0 else None
-
-            has_code = code is not None and len(str(code)) >= 4
-            is_agg_target = group["former_edinet_codes"].notna().any()
-
-            if self.cm.scope == "Listed":
-                if not has_code and not is_agg_target:
-                    continue
-            elif self.cm.scope == "Unlisted":
-                if has_code:
-                    continue
 
             sorted_group = group.sort_index(ascending=False).sort_values(
                 "last_submitted_at", ascending=False, na_position="last"

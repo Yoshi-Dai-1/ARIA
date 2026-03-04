@@ -37,7 +37,8 @@ class DataReconciliationEngine:
         self.data_path = data_path
 
         # 内部状態として CatalogManager を持つが、スコープは 'All' にして全量監査を行う
-        self.cm = CatalogManager(hf_repo, hf_token, data_path, scope="All")
+        # 完全リコンシリエーションでは最新のマスタ同期が必要 (sync_master=True)
+        self.cm = CatalogManager(hf_repo, hf_token, data_path, scope="All", sync_master=True)
 
         # 検証エラーの集計
         self.anomalies = {"Layer1_Schema": [], "Layer2_Physical": [], "Layer3_Analytical": [], "Layer4_Catalog": []}

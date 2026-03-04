@@ -67,7 +67,10 @@ def main():
     logger.add(log_dir / "pipeline_{time}.log", rotation="10 MB", level="INFO")
 
     # CatalogManager が設定とタクソノミURLを自動ロードする
-    catalog = CatalogManager()
+    # Merger モードのみが唯一のマスタ同期ポイント (sync_master=True)
+    # Worker / list-only モードは HF 上の既存マスタを使用する
+    is_merger = args.mode == "merger"
+    catalog = CatalogManager(sync_master=is_merger)
 
     if args.mode == "merger":
         run_merger(catalog, run_id)
