@@ -7,6 +7,7 @@ from loguru import logger
 
 from data_engine.catalog_manager import CatalogManager
 from data_engine.core.config import CONFIG
+from data_engine.core.models import SCHEMA_INDEX
 from data_engine.core.network_utils import patch_all_networking
 from data_engine.engines.market_engine import MarketDataEngine
 
@@ -21,9 +22,8 @@ def run_market_pipeline(target_date: str, mode: str = "all"):
 
     # 【究極の統合】システムの SSOT から初期化 (環境変数バリデーション含む)
     # Market Data 更新時は EDINET API を使用しないため、edinet=False で初期化して API KEY 依存を排除
-    # Harvester-Merger が 2時間ごとにマスタを最新化するため、ここでの同期は不要 (sync_master=False)
-    catalog = CatalogManager(edinet=False, sync_master=False)
-    logger.info(f"ARIA Execution Scope: {catalog.scope}")
+    # 指数は全上場銘柄を対象とするため、内部スコープは "All" に固定 (ユーザー設定を汚染しない)
+    catalog = CatalogManager(edinet=False, sync_master=False, scope="All")
 
     # 初期化 (物理パスは CONFIG から取得)
     data_path = CONFIG.DATA_PATH
@@ -59,8 +59,9 @@ def run_market_pipeline(target_date: str, mode: str = "all"):
 
             for index_name in indices:
                 logger.info(f"--- Processing {index_name} ---")
-                # 変数未定義 (NameError) 防止のための初期化
-                df_hist_current = pd.DataFrame()
+                # 名前解決の便宜上の初期化 (破損防止のためカラムを明示)
+                history_cols = ["date", "index_name", "code", "type", "old_value", "new_value"]
+                df_hist_current = pd.DataFrame(columns=history_cols)
                 hist_path = f"master/indices/{index_name}/history.parquet"
                 local_hist = data_path / f"{index_name}_history.parquet"
                 try:
@@ -152,9 +153,9 @@ def run_market_pipeline(target_date: str, mode: str = "all"):
                                     if "rec" in df_hist_current.columns:
                                         df_hist_current.drop(columns=["rec"], inplace=True)
                                 else:
-                                    df_hist_current = pd.DataFrame()
+                                    df_hist_current = pd.DataFrame(columns=history_cols)
                             except Exception:
-                                df_hist_current = pd.DataFrame()
+                                df_hist_current = pd.DataFrame(columns=history_cols)
 
                             # Merge
                             df_hist_new = pd.concat([df_hist_current, diff_events], ignore_index=True).drop_duplicates()
@@ -163,15 +164,12 @@ def run_market_pipeline(target_date: str, mode: str = "all"):
                                 df_hist_new.drop(columns=["rec"], inplace=True)
 
                             # Save (Deferred)
-                            # 【Phase 3 注記】指数イベント履歴は動的カラム構成のため、固定スキーマ不適用
-                            df_hist_new.to_parquet(local_hist, index=False, compression="zstd")
+                            df_hist_new.to_parquet(local_hist, index=False, compression="zstd", schema=SCHEMA_INDEX)
                             catalog.hf.upload_raw(local_hist, hist_path, defer=True)
                             logger.info(f"History staged: {index_name}")
                         elif df_hist_current.empty:
-                            # 初回実行時: 空でもファイルを作成してアップロード
-                            local_hist = data_path / f"{index_name}_history.parquet"
-                            # 【Phase 3 注記】初回作成時も動的カラム構成のため、固定スキーマ不適用
-                            df_hist_current.to_parquet(local_hist, index=False, compression="zstd")
+                            # Save (Deferred)
+                            df_hist_current.to_parquet(local_hist, index=False, compression="zstd", schema=SCHEMA_INDEX)
                             catalog.hf.upload_raw(local_hist, hist_path, defer=True)
                             logger.info(f"History initialized: {index_name}")
                         else:

@@ -266,4 +266,4 @@ class MarketDataEngine:
                     }
                 )
 
-        return pd.DataFrame(events)
+        return pd.DataFrame(events, columns=["date", "index_name", "code", "type", "old_value", "new_value"])

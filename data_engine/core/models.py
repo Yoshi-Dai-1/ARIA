@@ -301,6 +301,17 @@ class NameEvent(BaseModel):
     change_date: str
 
 
+class IndexEvent(BaseModel):
+    """指数構成銘柄の変更イベント記録モデル"""
+
+    date: str
+    index_name: str
+    code: str
+    type: str  # ADD, REMOVE, UPDATE
+    old_value: Optional[float] = None
+    new_value: Optional[float] = None
+
+
 # =============================================================================
 # PyArrow Schema 自動導出 (Phase 3: 金型アーキテクチャ)
 # =============================================================================
@@ -357,6 +368,7 @@ SCHEMA_CATALOG = pydantic_to_pyarrow(CatalogRecord)
 SCHEMA_MASTER = pydantic_to_pyarrow(StockMasterRecord)
 SCHEMA_LISTING = pydantic_to_pyarrow(ListingEvent)
 SCHEMA_NAME = pydantic_to_pyarrow(NameEvent)
+SCHEMA_INDEX = pydantic_to_pyarrow(IndexEvent)
 
 # キーベースのレジストリ (hf_storage / delta_manager が参照)
 ARIA_SCHEMAS = {
@@ -364,4 +376,5 @@ ARIA_SCHEMAS = {
     "master": SCHEMA_MASTER,
     "listing": SCHEMA_LISTING,
     "name": SCHEMA_NAME,
+    "indices": SCHEMA_INDEX,
 }
