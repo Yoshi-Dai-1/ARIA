@@ -1,4 +1,4 @@
-name: ARIA | Daily Market Indices
+name: Market Indices Update
 
 concurrency:
   group: aria-global-lock

@@ -1,4 +1,4 @@
-name: ARIA | Universal Data Harvester
+name: EDINET Data Harvester
 
 concurrency:
   group: aria-global-lock
