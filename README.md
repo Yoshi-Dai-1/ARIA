@@ -103,13 +103,28 @@ python -m data_engine.executors.main --mode merger --run-id <RUN_ID>
 - **Status Sync (取下検知)**: 最新 API で「取下」が検知された場合、カタログを遡及的に更新。
 - **Self-healing (Auto-retry)**: 過去の失敗・未完了書類を自動救済。
 
-### 3. 市場データ収集
 
-毎日 06:30 JST に自動実行され、前日分のデータを取得します。
+### 3. 市場データ収集 (Daily Indices Update)
+
+毎日 06:30 JST に自動実行されます。本ワークフローは指数の取得に専念します。
 
 ```bash
+# 全モード (Master 更新 + 指数取得)
 python -m data_engine.executors.market_main --mode all
+
+# 指数取得のみ (GitHub Actions デフォルト)
+python -m data_engine.executors.market_main --mode indices
+
+# JPX 銘柄マスタ属性 (業種・市場) の更新のみ
+python -m data_engine.executors.market_main --mode master
 ```
+
+### 4. 高度な最適化: `sync_master` カテゴリ制御
+
+ARIA は並列実行時の API コールを最小化するため、`CatalogManager` に `sync_master` フラグを導入しています。
+
+- **`sync_master=True`**: 金融庁の EDINET コードリストおよび集約名簿を取得し、マスタと同期します（Merger/監査モードで使用）。
+- **`sync_master=False`**: 外部同期をスキップし、HF 上の既存マスタのみを使用します（Worker/Market モードで使用）。これにより、並列 24 台環境でも API 負荷を 95.8% 削減します。
 
 ## Licensing & Compliance
 

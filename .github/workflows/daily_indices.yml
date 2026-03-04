@@ -44,4 +44,5 @@ jobs:
           PYTHONPATH: .
         run: |
           # Target Date は内部で「昨日」に自動設定されるため引数不要
-          python -m data_engine.executors.market_main --mode all
+          # 指数の取得に専念するため --mode indices を使用
+          python -m data_engine.executors.market_main --mode indices

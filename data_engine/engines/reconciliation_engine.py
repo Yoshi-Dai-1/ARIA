@@ -77,6 +77,11 @@ class ReconciliationEngine:
         end_date = datetime.datetime.now()
         start_date = end_date - datetime.timedelta(days=30)
 
+        # EdinetEngine が無効化されている場合は探索不可
+        if not self.cm.edinet:
+            logger.warning(f"EdinetEngine が無効なため、{sec_code_5} の EDINET 探索をスキップします。")
+            return None
+
         try:
             # EdinetEngine経由でAPI V2を叩く
             meta_list = self.cm.edinet.fetch_metadata(

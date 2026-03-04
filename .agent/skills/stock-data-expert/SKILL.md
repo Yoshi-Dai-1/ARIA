@@ -13,6 +13,10 @@ ARIA における「証券データの真実」を管理するためのドメイ
     - 5 桁目が `0` 以外（5, 6, 7, 8, 3, 4）の銘柄は「種類株」と判定。
     - 上 4 桁が共通する `0` 銘柄（普通株）を `parent_code` として自動的にリンク。
     - 種類株は親銘柄から `edinet_code` や `jcn` を継承することを許可する。
+- **Decoupled Master Architecture (生殺与奪権の分離)**:
+    - **EDINET**: 銘柄の「存続 (is_active)」に関する唯一の主権者。Harvester-Merger がこの同期を司る。
+    - **JPX**: 銘柄の「属性 (sector/market)」の補完ソース。Market Pipeline がこの更新を司る。
+    - 両者は `sync_master` フラグおよびモードにより疎結合に保たれ、EdinetEngine が無効な環境でも JPX 属性の更新（既存銘柄への適用）は安全に行われるべきである（`discover_edinet_code` の Null ガードを遵守）。
 
 ## 2. 属性解決とリコンシリエーション (Hierarchy of Truth)
 [ReconciliationEngine.update_stocks_master](file:///Users/yoshi_dai/repos/ARIA/data_engine/reconciliation_engine.py) の実装に基づき、以下の優先順位を遵守します。
