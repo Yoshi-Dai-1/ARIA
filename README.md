@@ -88,15 +88,15 @@ HF_TOKEN=your_huggingface_token
 
 ```bash
 # Workerモード (解析とDelta作成)
-python -m data_engine.executors.main --mode worker --run-id <RUN_ID> --chunk-id <CHUNK_ID> --start 2024-06-01 --end 2024-06-01
+python -m data_engine.executors.harvester_main --mode worker --run-id <RUN_ID> --chunk-id <CHUNK_ID> --start 2024-06-01 --end 2024-06-01
 
 # Mergerモード (統合とMaster更新)
-python -m data_engine.executors.main --mode merger --run-id <RUN_ID>
+python -m data_engine.executors.harvester_main --mode merger --run-id <RUN_ID>
 ```
 
 ### 2. 統合データ収集 (2016年2月15日〜現在)
 
-`aria_harvester.yml` により、2時間おき（JST偶数時、06時を除く）に自動実行されます。本日の新着書類と、過去の歴史データ（7日刻み）を並列で取得します。
+`edinet_harvester.yml` により、2時間おき（JST偶数時、06時を除く）に自動実行されます。本日の新着書類と、過去の歴史データ（7日刻み）を並列で取得します。
 - **Hybrid Ingestion**: 「今」のポーリングと「過去」の遡及を一つのパイプラインで両立。
 - **ARIA_SCOPE**: `data_engine/aria_config.json` の `aria_scope` フィールドで制御。`Listed` (上場企業のみ), `Unlisted` (非上場企業のみ), `All` (全量) の切り替えに対応。設定ファイルによる一元管理（SSOT）のため、1箇所の変更で全ワークフロー・全スクリプトに適用されます。
 - **Zero Drift Architecture**: Discovery ジョブが取得したメタデータを Artifact として共有し、全 Worker が同一のメタデータを使用。
@@ -110,13 +110,13 @@ python -m data_engine.executors.main --mode merger --run-id <RUN_ID>
 
 ```bash
 # 全モード (Master 更新 + 指数取得)
-python -m data_engine.executors.market_main --mode all
+python -m data_engine.executors.indices_main --mode all
 
 # 指数取得のみ (GitHub Actions デフォルト)
-python -m data_engine.executors.market_main --mode indices
+python -m data_engine.executors.indices_main --mode indices
 
 # JPX 銘柄マスタ属性 (業種・市場) の更新のみ
-python -m data_engine.executors.market_main --mode master
+python -m data_engine.executors.indices_main --mode master
 ```
 
 ### 4. 高度な最適化: `sync_master` カテゴリ制御
