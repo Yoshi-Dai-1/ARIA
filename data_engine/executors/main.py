@@ -47,7 +47,7 @@ def main():
         raise e
 
     # 4. Config 経由でのバリデーション (CatalogManager 内部で行われるが、Fail-Fast のため)
-    CONFIG.validate_env(production=(args.mode != "merger" and not args.list_only))
+    CONFIG.validate_env(production=(args.mode != "merger" and not args.list_only), edinet=True)
 
     run_id = args.run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
     chunk_id = args.chunk_id

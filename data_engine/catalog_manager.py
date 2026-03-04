@@ -37,7 +37,7 @@ class CatalogManager:
         self.scope = (scope or CONFIG.ARIA_SCOPE).capitalize()
 
         # 0. 環境変数のバリデーション (Fail-Fast / Warning)
-        CONFIG.validate_env(production=True)
+        CONFIG.validate_env(production=True, edinet=edinet)
 
         if not self.hf_repo or not self.hf_token:
             logger.warning("HF_REPO または HF_TOKEN が設定されていません。Hugging Face 操作はスキップされます。")

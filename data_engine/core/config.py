@@ -76,10 +76,10 @@ class AriaConfig:
             raise ValueError(f"無効な ARIA_SCOPE です: {scope}")
         return norm
 
-    def validate_env(self, production: bool = True):
+    def validate_env(self, production: bool = True, edinet: bool = True):
         """環境変数の存否をチェックし、不足があれば警告またはエラーを出す"""
         missing = []
-        if not self.EDINET_API_KEY:
+        if edinet and not self.EDINET_API_KEY:
             missing.append("EDINET_API_KEY")
         if not self.HF_REPO:
             missing.append("HF_REPO")
