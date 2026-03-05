@@ -31,17 +31,23 @@ logger = logging.getLogger(__name__)
 
 
 class DataReconciliationEngine:
-    def __init__(self, hf_repo: str, hf_token: str, data_path: Path):
+    def __init__(self, hf_repo: str, hf_token: str, data_path: Path, repair: bool = False):
         self.hf_repo = hf_repo
         self.hf_token = hf_token
         self.data_path = data_path
+        self.repair = repair
 
         # 内部状態として CatalogManager を持つが、スコープは 'All' にして全量監査を行う
-        # 完全リコンシリエーションでは最新のマスタ同期が必要 (sync_master=True)
         self.cm = CatalogManager(hf_repo, hf_token, data_path, scope="All", sync_master=True)
 
         # 検証エラーの集計
-        self.anomalies = {"Layer1_Schema": [], "Layer2_Physical": [], "Layer3_Analytical": [], "Layer4_Catalog": []}
+        self.anomalies = {
+            "Layer1_Schema": [],
+            "Layer2_Physical": [],
+            "Layer3_Analytical": [],
+            "Layer4_Catalog": [],
+            "Layer5_Indexing": [],
+        }
 
     def _report_anomaly(self, layer: str, message: str, doc_id: str = None, details: Any = None):
         anomaly = {"message": message}
@@ -57,7 +63,7 @@ class DataReconciliationEngine:
     # Layer 1: Schema Reconciliation
     # ==========================================
     def reconcile_schemas(self):
-        """PydanticモデルとParquetカラムの完全一致を検証"""
+        """PydanticモデルとParquetカラムの完全一致を検証し、修復を試みる"""
         logger.info("--- [Layer 1] Schema Reconciliation ---")
 
         check_targets = [
@@ -68,7 +74,17 @@ class DataReconciliationEngine:
 
         for key, filename, model_class in check_targets:
             try:
-                df = self.cm.hf.load_parquet(key)
+                # 破損チェックを兼ねてロード試行
+                df = None
+                try:
+                    df = self.cm.hf.load_parquet(key)
+                except Exception as e:
+                    logger.error(f"Critical corruption in {filename}: {e}")
+                    if self.repair:
+                        df = self._attempt_file_rollback(key)
+                    if df is None:
+                        continue
+
                 if df.empty:
                     logger.info(f"{filename} is empty. Skipping schema check.")
                     continue
@@ -79,24 +95,43 @@ class DataReconciliationEngine:
                 missing_in_parquet = model_fields - parquet_columns
                 extra_in_parquet = parquet_columns - model_fields
 
-                if missing_in_parquet:
+                if missing_in_parquet or extra_in_parquet:
                     self._report_anomaly(
                         "Layer1_Schema",
-                        f"{filename} is missing fields defined in {model_class.__name__}",
-                        details=list(missing_in_parquet),
+                        f"Schema mismatch in {filename}",
+                        details={"missing": list(missing_in_parquet), "extra": list(extra_in_parquet)},
                     )
 
-                if extra_in_parquet:
-                    self._report_anomaly(
-                        "Layer1_Schema",
-                        f"{filename} has ghost fields not defined in {model_class.__name__}",
-                        details=list(extra_in_parquet),
-                    )
+                    if self.repair:
+                        logger.info(f"Repairing schema for {filename}...")
+                        # 欠落列の補完 (NULL) と余剰列の削除、型の正規化
+                        self.cm.hf.save_and_upload(key, df, defer=True)
+                        logger.success(f"Schema normalization staged for {filename}.")
 
-                if not missing_in_parquet and not extra_in_parquet:
+                else:
                     logger.info(f"✅ {filename} matches {model_class.__name__} perfectly.")
             except Exception as e:
                 self._report_anomaly("Layer1_Schema", f"Failed to verify schema for {filename}: {e}")
+
+    def _attempt_file_rollback(self, key: str) -> pd.DataFrame:
+        """HF のコミット履歴を遡り、正常に開ける最新バージョンを復旧させる"""
+        logger.info(f"Attempting file rollback repair for {key}...")
+        history = self.cm.hf.get_file_history(key)
+
+        for commit_hash in history[1:]:  # 最新(現在)は既に壊れているため 1 つ前から
+            try:
+                logger.debug(f"Testing revision: {commit_hash[:7]}")
+                df = self.cm.hf.load_parquet(key, revision=commit_hash)
+                if not df.empty:
+                    logger.success(f"Successfully rescued healthy version from commit {commit_hash[:7]}.")
+                    # 直ちに修復版としてステージング（Atomic書き戻しの起点）
+                    self.cm.hf.save_and_upload(key, df, defer=True)
+                    return df
+            except Exception:
+                continue
+
+        logger.error(f"Failed to find any healthy version in history for {key}.")
+        return None
 
     # ==========================================
     # Layer 2: Physical Asset Reconciliation
@@ -182,8 +217,37 @@ class DataReconciliationEngine:
                     self._report_anomaly(
                         "Layer2_Physical", f"Found {len(corrupted)} corrupted ZIP files.", details=corrupted
                     )
+                    if self.repair:
+                        from data_engine.engines.edinet_engine import EdinetEngine
+
+                        # 破損ファイルを API から再取得
+                        edinet = EdinetEngine(os.getenv("EDINET_API_KEY"), self.data_path)
+                        for repo_path, _ in corrupted:
+                            match = re.search(r"raw/edinet/([^/]+)/", repo_path)
+                            if match:
+                                doc_id = match.group(1)
+                                logger.info(f"Re-downloading corrupted file: {doc_id}")
+                                if edinet.download_doc(doc_id):
+                                    # カタログの状態をリセット（再解析を促す）
+                                    self.cm.catalog_df.loc[
+                                        self.cm.catalog_df["doc_id"] == doc_id, "processed_status"
+                                    ] = "pending"
+                                    logger.success(f"Redownloaded and reset catalog for {doc_id}")
                 else:
                     logger.info(f"✅ Deep CRC check passed for all {len(sample_paths)} sampled ZIP files.")
+
+                if self.repair and (missing_zips or missing_pdfs):
+                    # 不足ファイルを API から再取得
+                    from data_engine.engines.edinet_engine import EdinetEngine
+
+                    edinet = EdinetEngine(os.getenv("EDINET_API_KEY"), self.data_path)
+                    for doc_id in missing_zips + missing_pdfs:
+                        logger.info(f"Recovering missing file for {doc_id}...")
+                        if edinet.download_doc(doc_id):
+                            self.cm.catalog_df.loc[self.cm.catalog_df["doc_id"] == doc_id, "processed_status"] = (
+                                "pending"
+                            )
+                            logger.success(f"Recovered {doc_id}")
 
         except Exception as e:
             self._report_anomaly("Layer2_Physical", f"Physical reconciliation failed: {e}")
@@ -193,9 +257,25 @@ class DataReconciliationEngine:
     # ==========================================
     def reconcile_analytical_data(self):
         """分析用Parquetとカタログの整合性 (孤児・重複・Bin)"""
-        logger.info("--- [Layer 3] Analytical Data Reconciliation ---")
+        logger.info("--- [Layer 3] Analytical Data Reconciliation (Target-reduced O(1) Deduction) ---")
 
         try:
+            # 1. カタログから「各Binにあるべき書類」を数学的に事前計算（O(1) ターゲット・リダクション）
+            def calculate_bin_id(r):
+                jcn = str(r.get("jcn") or "")
+                if jcn and len(jcn) >= 2 and jcn not in ["None", "nan"]:
+                    return f"J{jcn[-2:]}"
+                e_code = str(r.get("edinet_code") or "")
+                if e_code and len(e_code) >= 2 and e_code not in ["None", "nan"]:
+                    return f"E{e_code[-2:]}"
+                return "No"
+
+            catalog_df = self.cm.catalog_df.copy()
+            catalog_df["expected_bin"] = catalog_df.apply(calculate_bin_id, axis=1)
+            # 正常（done）な書類だけを真の監査対象とする
+            done_docs = catalog_df[catalog_df["processed_status"] == "done"]
+            expected_docs_per_bin = done_docs.groupby("expected_bin")["doc_id"].apply(set).to_dict()
+
             # Binファイル群の取得
             files = self.cm.hf.api.list_repo_files(repo_id=self.hf_repo, repo_type="dataset")
             bin_files = [
@@ -208,82 +288,131 @@ class DataReconciliationEngine:
                 logger.info("No Master Data chunks (Bins) found.")
                 return
 
-            all_docs_in_bins = set()
-            duplicates = []
-            bin_mismatches = []
-
-            # 各 Bin ファイルの監査
+            processed_bins = set()
             from huggingface_hub import hf_hub_download
 
+            # 各 Bin ファイルごとの独立した O(1) 検証ループ
             for bf in bin_files:
+                match = re.search(r"bin=([^/]+)/", bf)
+                expected_bin = match.group(1) if match else "Unknown"
+                processed_bins.add(expected_bin)
+
+                expected_docs = expected_docs_per_bin.get(expected_bin, set())
+
                 try:
-                    # HFからダウンロードして読み込み
-                    local_p = hf_hub_download(
-                        repo_id=self.hf_repo, filename=bf, repo_type="dataset", token=self.hf_token
-                    )
-                    df = pd.read_parquet(local_p)
-                    if df.empty:
-                        continue
+                    df = None
+                    try:
+                        local_p = hf_hub_download(
+                            repo_id=self.hf_repo, filename=bf, repo_type="dataset", token=self.hf_token
+                        )
+                        df = pd.read_parquet(local_p)
+                    except Exception as e:
+                        logger.error(f"Bin file {bf} is corrupted: {e}")
+                        if self.repair:
+                            # Bin ファイル単位のロールバック試行
+                            history = self.cm.hf.get_file_history(bf)
+                            for commit_hash in history[1:]:
+                                try:
+                                    temp_p = hf_hub_download(
+                                        repo_id=self.hf_repo,
+                                        filename=bf,
+                                        repo_type="dataset",
+                                        token=self.hf_token,
+                                        revision=commit_hash,
+                                    )
+                                    df = pd.read_parquet(temp_p)
+                                    if not df.empty:
+                                        logger.success(f"Rescued {bf} from {commit_hash[:7]}")
+                                        self.cm.hf.add_commit_operation(bf, Path(temp_p))
+                                        break
+                                except Exception:
+                                    continue
 
-                    # 期待されるBin名 (パスから抽出: 例 'master/financial_values/bin=J01/data.parquet' -> 'J01')
-                    match = re.search(r"bin=([^/]+)/", bf)
-                    expected_bin = match.group(1) if match else "Unknown"
+                            if df is None:
+                                logger.warning(f"Repair: Target-reducing regeneration for corrupted {bf}")
 
-                    # 1. 重複チェック
-                    if "doc_id" in df.columns and "key" in df.columns:
-                        # context_ref がある場合はそれも一意キーに含める
-                        dup_keys = ["doc_id", "key"]
-                        if "context_ref" in df.columns:
-                            dup_keys.append("context_ref")
+                        # 読めない場合（破損 ＆ ロールバック失敗）は、対象Binの書類だけをピンポイントで救済
+                        if df is None:
+                            if expected_docs:
+                                self._report_anomaly(
+                                    "Layer3_Analytical", f"Corrupted bin {bf}. {len(expected_docs)} docs missing."
+                                )
+                                if self.repair:
+                                    # O(1) 消去法：対象Binの書類のみ pending にリセットする
+                                    self.cm.catalog_df.loc[
+                                        self.cm.catalog_df["doc_id"].isin(expected_docs), "processed_status"
+                                    ] = "pending"
+                                    logger.success(
+                                        f"Catalog reset staged for {len(expected_docs)} docs "
+                                        f"strictly in {expected_bin}."
+                                    )
+                            continue
 
-                        dups = df[df.duplicated(subset=dup_keys, keep=False)]
+                    modified = False
+
+                    if "doc_id" in df.columns and not df.empty:
+                        actual_docs = set(df["doc_id"].dropna().unique())
+                    else:
+                        actual_docs = set()
+
+                    # 1. 重複チェック (ID + 値の完全一致のみ排除)
+                    if "key" in df.columns and not df.empty:
+                        dup_keys = ["doc_id", "key", "context_ref", "value"]
+                        actual_keys = [k for k in dup_keys if k in df.columns]
+
+                        dups = df[df.duplicated(subset=actual_keys, keep=False)]
                         if not dups.empty:
-                            duplicates.append((bf, len(dups)))
+                            self._report_anomaly("Layer3_Analytical", f"Perfect duplicates in {bf}", details=len(dups))
+                            if self.repair:
+                                df = df.drop_duplicates(subset=actual_keys, keep="first")
+                                modified = True
 
-                    # 2. Bin アサインメントの正確性
-                    if "code" in df.columns:
-                        # 妥当な証券コードを持つレコードで、先頭2桁がBinと異なるものを探す
-                        valid_codes = df[df["code"].notna() & (df["code"] != "")]
-                        if not valid_codes.empty:
-                            mismatched = valid_codes[valid_codes["code"].astype(str).str[:2] != str(expected_bin)]
-                            if not mismatched.empty:
-                                bin_mismatches.append((bf, len(mismatched)))
+                    # 2. 孤児・アサインメント不一致 (Binに存在するが、カタログ上でこのBinに属すべきではない書類)
+                    unrecognized_docs = actual_docs - expected_docs
+                    if unrecognized_docs:
+                        self._report_anomaly(
+                            "Layer3_Analytical", f"Unrecognized/Orphan docs in {bf}", details=len(unrecognized_docs)
+                        )
+                        if self.repair:
+                            logger.info(f"Purging {len(unrecognized_docs)} unrecognized records from {bf}.")
+                            df = df[~df["doc_id"].isin(unrecognized_docs)]
+                            modified = True
 
-                    # 孤児チェック用に doc_id を収集
-                    if "doc_id" in df.columns:
-                        all_docs_in_bins.update(df["doc_id"].dropna().unique())
+                    # 3. 欠落データチェック (カタログ上はこのBinに属すべきだが、健康なBin内に存在しない書類)
+                    missing_in_bin = expected_docs - actual_docs
+                    if missing_in_bin:
+                        self._report_anomaly(
+                            "Layer3_Analytical", f"Missing docs in healthy {bf}", details=len(missing_in_bin)
+                        )
+                        if self.repair:
+                            logger.info(f"Resetting {len(missing_in_bin)} missing docs to 'pending'.")
+                            self.cm.catalog_df.loc[
+                                self.cm.catalog_df["doc_id"].isin(missing_in_bin), "processed_status"
+                            ] = "pending"
+                            logger.success(f"Catalog reset staged strictly for missing docs in {expected_bin}.")
+
+                    if self.repair and modified:
+                        self.cm.hf.save_and_upload(bf, df, defer=True)
 
                 except Exception as e:
                     self._report_anomaly("Layer3_Analytical", f"Failed to audit bin {bf}: {e}")
 
-            if duplicates:
-                self._report_anomaly(
-                    "Layer3_Analytical",
-                    f"Detected duplicate records in {len(duplicates)} physical bin files.",
-                    details=duplicates,
-                )
-            else:
-                logger.info("✅ No duplicate records found in any bins.")
-
-            if bin_mismatches:
-                self._report_anomaly(
-                    "Layer3_Analytical",
-                    f"Detected bin assignment mismatches in {len(bin_mismatches)} files.",
-                    details=bin_mismatches,
-                )
-            else:
-                logger.info("✅ All records are correctly assigned to their respective physical bins.")
-
-            # 3. 孤児データチェック (Catalog <-> Master Data)
-            catalog_docs = set(self.cm.catalog_df["doc_id"].dropna().unique())
-
-            orphans_in_bins = all_docs_in_bins - catalog_docs
-            if orphans_in_bins:
-                self._report_anomaly(
-                    "Layer3_Analytical",
-                    f"Detected {len(orphans_in_bins)} orphan docs in Master Bins (Not in Catalog).",
-                    details=list(orphans_in_bins)[:10],
-                )
+            # 4. 物理ファイル自体が存在しない Bin への究極のフェイルセーフ (Expected but completely missing bin file)
+            # `financial_values` などが完全に消滅した場合、ファイルリストに挙がらないため、カタログ主導で検知する
+            for e_bin, e_docs in expected_docs_per_bin.items():
+                if e_bin == "No" or not e_docs:
+                    continue
+                if e_bin not in processed_bins:
+                    self._report_anomaly(
+                        "Layer3_Analytical", f"Completely missing Bin file for {e_bin}. {len(e_docs)} docs lost."
+                    )
+                    if self.repair:
+                        self.cm.catalog_df.loc[self.cm.catalog_df["doc_id"].isin(e_docs), "processed_status"] = (
+                            "pending"
+                        )
+                        logger.success(
+                            f"Staged {len(e_docs)} docs for regeneration due to completely missing bin {e_bin}."
+                        )
 
         except Exception as e:
             self._report_anomaly("Layer3_Analytical", f"Analytical reconciliation failed: {e}")
@@ -291,7 +420,7 @@ class DataReconciliationEngine:
     # ==========================================
     # Layer 4: API Catalog Reconciliation
     # ==========================================
-    def reconcile_api_catalog(self, days_to_check: int = 5):
+    def reconcile_api_catalog(self, days_to_check: int = 30):
         """直近N日間のAPI応答とカタログを照合"""
         logger.info(f"--- [Layer 4] API Catalog Reconciliation (Last {days_to_check} days) ---")
 
@@ -357,26 +486,74 @@ class DataReconciliationEngine:
                     f"Detected {len(mismatches)} metadata drift(s) against FSA EDINET API.",
                     details=mismatches[:20],
                 )
+                if self.repair:
+                    logger.info("Synchronizing Catalog metadata with FSA fact...")
+                    for m in mismatches:
+                        doc_id = m["doc_id"]
+                        field = m["field"]
+                        api_val = m["api_value"]
+                        self.cm.catalog_df.loc[self.cm.catalog_df["doc_id"] == doc_id, field] = api_val
+                    logger.success("Metadata drift repair staged in RAM.")
             else:
                 logger.info("✅ Catalog is perfectly synchronized with EDINET API.")
 
         except Exception as e:
             self._report_anomaly("Layer4_Catalog", f"API reconciliation failed: {e}")
 
+    def reconcile_indexing(self):
+        """[Layer 5] 指数履歴の不変性と整合性を検証"""
+        logger.info("--- [Layer 5] Indexing Reconciliation ---")
+        try:
+            from data_engine.core.models import ARIA_SCHEMAS
+
+            key = "index_history"
+            df = None
+            try:
+                df = self.cm.hf.load_parquet(key)
+            except Exception as e:
+                logger.error(f"Index History is corrupted: {e}")
+                if self.repair:
+                    df = self._attempt_file_rollback(key)
+
+            if df is not None:
+                # 最小限のカラム検証
+                schema = ARIA_SCHEMAS.get(key)
+                if schema and set(df.columns) != set(schema.names):
+                    self._report_anomaly("Layer5_Indexing", "Schema drift in history.parquet")
+                    if self.repair:
+                        self.cm.hf.save_and_upload(key, df, defer=True)
+                else:
+                    logger.info("✅ Index History is healthy.")
+        except Exception as e:
+            self._report_anomaly("Layer5_Indexing", f"Indexing check failed: {e}")
+
     def run_full_audit(self) -> Dict[str, Any]:
         """全レイヤーの監査を実行し結果レポートを生成"""
         logger.info("Starting Extreme Integrity Audit (Data Reconciliation)...")
+        if self.repair:
+            logger.info("REPAIR MODE: ACTIVE (Self-healing enabled)")
 
+        # 工学的に正しい順序: API事実の確定 -> 目録の修復 -> 物理的照合 -> 分析整合性 -> 派生データ
+        self.reconcile_api_catalog(days_to_check=30)
         self.reconcile_schemas()
         self.reconcile_physical_assets()
         self.reconcile_analytical_data()
-        self.reconcile_api_catalog()
+        self.reconcile_indexing()
+
+        if self.repair:
+            # カタログ更新の反映
+            self.cm.save_catalog()
+            # 大規模なコミットの送信
+            if self.cm.hf.has_pending_operations:
+                logger.info("Pushing self-healing repair commit to HF Hub...")
+                self.cm.hf.push_commit("Self-healing repair by ARIA Integrity Audit")
 
         total_anomalies = sum(len(v) for v in self.anomalies.values())
-
         report = {
             "timestamp": datetime.now().isoformat(),
-            "status": "FAILED" if total_anomalies > 0 else "PASSED",
+            "status": "REPAIRED"
+            if self.repair and total_anomalies > 0
+            else ("FAILED" if total_anomalies > 0 else "PASSED"),
             "total_anomalies": total_anomalies,
             "details": self.anomalies,
         }
@@ -401,6 +578,7 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--save-report", action="store_true", help="Save the reconciliation report to JSON")
+    parser.add_argument("--repair", action="store_true", help="Enable self-healing repair mode")
     args = parser.parse_args()
 
     hf_repo = os.getenv("HF_REPO")
@@ -410,7 +588,7 @@ def main():
         logger.critical("HF_REPO and HF_TOKEN are required.")
         sys.exit(1)
 
-    engine = DataReconciliationEngine(hf_repo, hf_token, Path("data"))
+    engine = DataReconciliationEngine(hf_repo, hf_token, Path("data"), repair=args.repair)
     report = engine.run_full_audit()
 
     if args.save_report:

@@ -14,6 +14,8 @@ data/20*/
 *.db
 *.log
 *.zip
+*.parquet
+*.json
 
 # 環境設定
 .env

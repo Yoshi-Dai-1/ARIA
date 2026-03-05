@@ -102,6 +102,7 @@ python -m data_engine.executors.harvester_main --mode merger --run-id <RUN_ID>
 - **Zero Drift Architecture**: Discovery ジョブが取得したメタデータを Artifact として共有し、全 Worker が同一のメタデータを使用。
 - **Status Sync (取下検知)**: 最新 API で「取下」が検知された場合、カタログを遡及的に更新。
 - **Self-healing (Auto-retry)**: 過去の失敗・未完了書類を自動救済。
+- **Extreme Integrity Audit**: 5層（スキーマ / 物理ファイル / 分析マスタ / API カタログ / 指数履歴）にわたるデータの自己治癒。HF のコミット履歴を活用したロールバックと、再解析によるハイブリッドな復旧を提供。
 
 
 ### 3. 市場データ収集 (Daily Indices Update)

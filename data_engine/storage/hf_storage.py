@@ -53,20 +53,21 @@ class HfStorage:
     # ──────────────────────────────────────────────
     # Parquet 読み込み
     # ──────────────────────────────────────────────
-    def load_parquet(self, key: str, clean_fn=None, force_download: bool = False) -> pd.DataFrame:
+    def load_parquet(self, key: str, clean_fn=None, force_download: bool = False, revision: str = None) -> pd.DataFrame:
         """
         HF リポジトリから Parquet ファイルを読み込む。
-        バッファに保留中のデータがあればそちらを優先する (Read-Your-Writes)。
 
         Args:
             key: 内部キー ("catalog", "master" 等)
             clean_fn: DataFrame に適用するクレンジング関数 (optional)
             force_download: キャッシュを無視して再ダウンロードするか
+            revision: 特定のコミットハッシュまたはブランチ名
         """
         filename = self.paths[key]
 
         # 【重要: Lost Update 防止】保留中のコミット（メモリ上）があれば、リモートより優先する
-        if filename in self._commit_operations:
+        # ただし特定リビジョンの指定がある場合は、履歴探索中と見なしリモートを優先
+        if not revision and filename in self._commit_operations:
             data = self._commit_operations[filename]
             logger.debug(f"メモリ上の保留中データをロードに使用します: {filename}")
             return data[0] if isinstance(data, tuple) else data
@@ -78,12 +79,14 @@ class HfStorage:
                 repo_type="dataset",
                 token=self.hf_token,
                 force_download=force_download,
+                revision=revision,
             )
             df = pd.read_parquet(local_path)
             # 【絶対ガード】読み込み直後にクレンジング
             if clean_fn:
                 df = clean_fn(key, df)
-            logger.debug(f"ロード成功: {filename} ({len(df)} rows)")
+            rev_label = f" (revision: {revision[:7]})" if revision else ""
+            logger.debug(f"ロード成功: {filename}{rev_label} ({len(df)} rows)")
             return df
         except RepositoryNotFoundError:
             logger.error(f"リポジトリが見つかりません: {self.hf_repo}")
@@ -324,8 +327,37 @@ class HfStorage:
         return True
 
     # ──────────────────────────────────────────────
-    # 内部ヘルパー
+    # 履歴探索・修復用ヘルパー
     # ──────────────────────────────────────────────
+    def get_file_history(self, key: str, max_commits: int = 15):
+        """特定のファイルのコミット履歴を取得する"""
+        if not self.api:
+            return []
+
+        filename = self.paths.get(key)
+        if not filename:
+            # key が paths にない場合（Bin等）は直接指定を想定
+            filename = key
+
+        try:
+            commits = self.api.list_repo_commits(repo_id=self.hf_repo, repo_type="dataset", path_in_repo=filename)
+            return [c.commit_id for c in commits[:max_commits]]
+        except Exception as e:
+            logger.warning(f"履歴の取得に失敗しました ({filename}): {e}")
+            return []
+
+    def get_file_metadata(self, repo_path: str):
+        """ファイルのメタデータ（ETag等）を取得する"""
+        if not self.api:
+            return None
+        try:
+            info = self.api.get_paths_info(repo_id=self.hf_repo, repo_type="dataset", paths=[repo_path])
+            if info:
+                return info[0]
+            return None
+        except Exception:
+            return None
+
     def _upload_with_retry(self, local_path_str: str, repo_path: str, max_retries: int = 5) -> bool:
         """単一ファイルのアップロード（リトライ付き）"""
         for attempt in range(max_retries):

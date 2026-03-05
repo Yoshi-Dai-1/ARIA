@@ -10,7 +10,11 @@ concurrency:
 #     - cron: '0 18 * * 6'
 on:
   workflow_dispatch:
-
+    inputs:
+      repair_mode:
+        description: 'Run self-healing repair'
+        type: boolean
+        default: false
 
 jobs:
   audit:
@@ -38,4 +42,8 @@ jobs:
           HF_REPO: ${{ vars.HF_REPO }}
           PYTHONPATH: .
         run: |
-          python -m data_engine.services.data_reconciliation --save-report
+          REPAIR_FLAG=""
+          if [ "${{ github.event.inputs.repair_mode }}" = "true" ]; then
+            REPAIR_FLAG="--repair"
+          fi
+          python -m data_engine.services.data_reconciliation --save-report $REPAIR_FLAG
