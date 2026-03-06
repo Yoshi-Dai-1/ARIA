@@ -2,7 +2,6 @@ import json
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
-from pathlib import Path
 
 import pandas as pd
 from loguru import logger
@@ -187,7 +186,7 @@ class WorkerEngine:
                 f"上場企業コードあり: {skipped_reasons.get('has_sec_code', 0)} 件)"
             )
 
-        meta_cache_path = Path("data/meta/discovery_metadata.json")
+        meta_cache_path = self.catalog.data_path / "meta" / "discovery_metadata.json"
         if self.args.list_only:
             meta_cache_path.parent.mkdir(parents=True, exist_ok=True)
             with open(meta_cache_path, "w", encoding="utf-8") as f:

@@ -294,6 +294,41 @@ class ReconciliationEngine:
                 f"(新規発見: {new_codes_count} 件 / 属性更新: {jpx_count - new_codes_count} 件)"
             )
 
+            # --- 【極限監査修正】JPX リスト外銘柄の非活性化ロジック ---
+            # 特殊銘柄（ETF/REIT/PRO）および優先株は、JPX リストに存在しない＝上場廃止/償還と見なす
+            master_df = self.cm.master_df
+            if not master_df.empty:
+                # 現行マスタの特殊銘柄かつアクティブなもの
+                def is_jpx_managed(row):
+                    market = str(row.get("market") or "").upper()
+                    is_special = any(x in market for x in ["ETF", "REIT", "PRO MARKET"])
+                    is_preferred = str(row.get("code") or "")[-1:] != "0"
+                    return is_special or is_preferred
+
+                jpx_managed_mask = master_df.apply(is_jpx_managed, axis=1)
+                active_mask = master_df["is_active"].fillna(False).astype(bool)
+
+                # リストから消えた銘柄を抽出
+                missing_from_jpx = master_df[jpx_managed_mask & active_mask & ~master_df["code"].isin(incoming_codes)]
+
+                if not missing_from_jpx.empty:
+                    logger.warning(f"🔴 JPX リスト外銘柄を検知 (非活性化処理): {len(missing_from_jpx)} 件")
+                    deactivated_list = []
+                    for _, m_row in missing_from_jpx.iterrows():
+                        deactivated_rec = m_row.to_dict()
+                        deactivated_rec["is_active"] = False
+                        deactivated_list.append(deactivated_rec)
+
+                    # incoming_data に偽装して追加処理に回す
+                    incoming_data = pd.concat([incoming_data, pd.DataFrame(deactivated_list)], ignore_index=True)
+
+            # 全ての incoming_data に対して、明示的に指定がない場合は Active と見なす
+            # (これを行わないと、concat後の NaN が None になり Pydantic でバリデーションエラーになる可能性がある)
+            if "is_active" not in incoming_data.columns:
+                incoming_data["is_active"] = True
+            else:
+                incoming_data["is_active"] = incoming_data["is_active"].fillna(True)
+
         processed_records = []
         for _, row in incoming_data.iterrows():
             rec = row.to_dict()
