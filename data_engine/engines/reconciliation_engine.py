@@ -152,7 +152,7 @@ class ReconciliationEngine:
                     "industry_edinet": ed_rec.industry_edinet,
                     "industry_edinet_en": ed_rec.industry_edinet_en,
                     "is_listed_edinet": is_listed_official,
-                    "is_active": is_listed_official if m_rec.get("is_active") is None else m_rec.get("is_active"),
+                    "is_active": is_listed_official,  # 【修正】古い値を維持せず、金融庁の事実(FACT)を反映させる
                 }
 
                 changed = False

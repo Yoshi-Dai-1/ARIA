@@ -30,7 +30,9 @@ def normalize_code(code) -> str:
 def get_edinet_repo_path(doc_id: str, submit_at: str, suffix: str = "zip") -> str:
     """
     EDINET書類のリポジトリ内パスを生成する (Partitioned Structure)
-    例: raw/edinet/year=2024/month=10/day=23/S100BK7G.zip
+    Worker の保存構造に合わせ、ZIP は zip/ サブディレクトリ、PDF は pdf/ サブディレクトリに格納する。
+    例: raw/edinet/year=2024/month=10/day=23/zip/S100BK7G.zip
+    例: raw/edinet/year=2024/month=10/day=23/pdf/S100BK7G.pdf
     """
     if not submit_at or len(str(submit_at)) < 10:
         # 日付不明な場合はフォールバック (基本的には発生しない想定)
@@ -40,6 +42,6 @@ def get_edinet_repo_path(doc_id: str, submit_at: str, suffix: str = "zip") -> st
     d = str(submit_at)[:10]
     try:
         y, m, day = d.split("-")
-        return f"raw/edinet/year={y}/month={m}/day={day}/{doc_id}.{suffix}"
+        return f"raw/edinet/year={y}/month={m}/day={day}/{suffix}/{doc_id}.{suffix}"
     except Exception:
         return f"raw/edinet/unknown/{doc_id}.{suffix}"

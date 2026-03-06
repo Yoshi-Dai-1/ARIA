@@ -238,9 +238,17 @@ class CatalogManager:
     # Catalog / History Methods
     # ──────────────────────────────────────────────
     def is_processed(self, doc_id: str) -> bool:
+        """
+        書類が「処理完了」かどうかを判定する。
+        【工学的主権】success / retracted のみを処理済みとし、
+        failure / pending は「再処理対象」として残す（自己修復の起点）。
+        """
         if self.catalog_df.empty:
             return False
-        return doc_id in self.catalog_df["doc_id"].values
+        matches = self.catalog_df[self.catalog_df["doc_id"] == doc_id]
+        if matches.empty:
+            return False
+        return matches.iloc[0]["processed_status"] in ("success", "retracted")
 
     def get_status(self, doc_id: str) -> str:
         if self.catalog_df.empty:

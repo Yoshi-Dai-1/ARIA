@@ -148,6 +148,7 @@ class DataReconciliationEngine:
         try:
             # Hugging Face の raw ディレクトリ配下のファイルリストを取得
             files = self.cm.hf.api.list_repo_files(repo_id=self.hf_repo, repo_type="dataset")
+            # サブディレクトリ (zip/ pdf/) を含む全ファイルを対象にする
             raw_files = set([f for f in files if f.startswith("raw/edinet/")])
 
             # 存在すべきファイルの導出
@@ -273,7 +274,7 @@ class DataReconciliationEngine:
             catalog_df = self.cm.catalog_df.copy()
             catalog_df["expected_bin"] = catalog_df.apply(calculate_bin_id, axis=1)
             # 正常（done）な書類だけを真の監査対象とする
-            done_docs = catalog_df[catalog_df["processed_status"] == "done"]
+            done_docs = catalog_df[catalog_df["processed_status"] == "success"]
             expected_docs_per_bin = done_docs.groupby("expected_bin")["doc_id"].apply(set).to_dict()
 
             # Binファイル群の取得
@@ -542,7 +543,7 @@ class DataReconciliationEngine:
 
         if self.repair:
             # カタログ更新の反映
-            self.cm.save_catalog()
+            self.cm.hf.save_and_upload("catalog", self.cm.catalog_df, clean_fn=self.cm._clean_dataframe, defer=True)
             # 大規模なコミットの送信
             if self.cm.hf.has_pending_operations:
                 logger.info("Pushing self-healing repair commit to HF Hub...")
