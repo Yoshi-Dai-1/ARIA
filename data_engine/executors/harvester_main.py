@@ -73,9 +73,13 @@ def main():
     catalog = CatalogManager(sync_master=is_merger)
 
     if args.mode == "merger":
-        run_merger(catalog, run_id)
+        success = run_merger(catalog, run_id)
     else:
-        run_worker_pipeline(args, catalog.edinet, catalog, run_id, chunk_id)
+        success = run_worker_pipeline(args, catalog.edinet, catalog, run_id, chunk_id)
+
+    if not success:
+        logger.error("パイプライン実行中にエラーが発生したため、異常終了します。")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

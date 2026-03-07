@@ -1,5 +1,4 @@
 import json
-import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 
@@ -523,5 +522,4 @@ class WorkerEngine:
             return True
         else:
             logger.error("=== Worker停止 (エラーあり) ===")
-            sys.exit(1)
             return False

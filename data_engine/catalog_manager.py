@@ -350,34 +350,3 @@ class CatalogManager:
 
     def get_name_history(self) -> pd.DataFrame:
         return self.hf.load_parquet("name")
-
-    def process_documents(self, doc_ids: List[str], force_refresh: bool = False) -> bool:
-        """
-        書類の取得・解析・統合を一気通貫で実行する (Physical Audit 用オーケストレーター)。
-        """
-        import argparse
-
-        from data_engine.engines.worker_engine import WorkerEngine
-
-        logger.info(f"オーケストレーション開始: {len(doc_ids)} 件の書類処理")
-
-        # Worker 用の簡略化された引数オブジェクトを作成
-        args = argparse.Namespace(
-            start=None, end=None, mode="worker", list_only=False, id_list=",".join(doc_ids), force_refresh=force_refresh
-        )
-
-        # WorkerEngine の初期化 (run_id と chunk_id は検証用の一時ID)
-        run_id = f"audit_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}"
-        worker = WorkerEngine(args, self.edinet, self, run_id, "chunk_0")
-
-        try:
-            success = worker.run()
-            if success:
-                logger.success("物理検証パイプラインが正常に完了しました。")
-                # 必要に応じて最新の変更を反映
-                self.catalog_df = self.hf.load_parquet("catalog", clean_fn=self._clean_dataframe)
-                return True
-            return False
-        except Exception as e:
-            logger.exception(f"物理検証パイプライン実行中に致命的エラー: {e}")
-            return False
