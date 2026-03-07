@@ -220,36 +220,70 @@ class DataReconciliationEngine:
                         "Layer2_Physical", f"Found {len(corrupted)} corrupted ZIP files.", details=corrupted
                     )
                     if self.repair:
-                        from data_engine.engines.edinet_engine import EdinetEngine
-
                         # 破損ファイルを API から再取得
-                        edinet = EdinetEngine(os.getenv("EDINET_API_KEY"), self.data_path)
                         for repo_path, _ in corrupted:
                             match = re.search(r"raw/edinet/([^/]+)/", repo_path)
                             if match:
                                 doc_id = match.group(1)
-                                logger.info(f"Re-downloading corrupted file: {doc_id}")
-                                if edinet.download_doc(doc_id):
-                                    # カタログの状態をリセット（再解析を促す）
+                                # 破損ファイルも再ダウンロードが必要なため同様に保護チェック
+                                from data_engine.executors.backfill_manager import get_dynamic_limit_date
+
+                                limit_date = get_dynamic_limit_date()
+
+                                submit_at_str = str(
+                                    self.cm.catalog_df.loc[self.cm.catalog_df["doc_id"] == doc_id, "submit_at"].iloc[0]
+                                )
+                                if not submit_at_str or submit_at_str == "nan":
+                                    continue
+                                submit_date = datetime.strptime(submit_at_str.split(" ")[0], "%Y-%m-%d").date()
+
+                                if submit_date >= limit_date:
+                                    logger.info(f"Marking corrupted file {doc_id} as pending for Harvester...")
                                     self.cm.catalog_df.loc[
                                         self.cm.catalog_df["doc_id"] == doc_id, "processed_status"
                                     ] = "pending"
-                                    logger.success(f"Redownloaded and reset catalog for {doc_id}")
+                                    logger.success(f"Status reset to pending for {doc_id}")
+                                else:
+                                    logger.error(
+                                        f"Corrupted file {doc_id} is older than API retention ({limit_date}). "
+                                        "Marked as 'unrecoverable' to prevent infinite 404 loops."
+                                    )
+                                    self.cm.catalog_df.loc[
+                                        self.cm.catalog_df["doc_id"] == doc_id, "processed_status"
+                                    ] = "unrecoverable"
                 else:
                     logger.info(f"✅ Deep CRC check passed for all {len(sample_paths)} sampled ZIP files.")
 
                 if self.repair and (missing_zips or missing_pdfs):
-                    # 不足ファイルを API から再取得
-                    from data_engine.engines.edinet_engine import EdinetEngine
+                    # 不足ファイルはAPIを直接叩かず、ワーカー(edinet_harvester)に取得させるため pending にリセットする
+                    # ただし、API保持期間（10年）を超過している場合は、永久ループ(404)を防ぐため unrecoverable とする
+                    from data_engine.executors.backfill_manager import get_dynamic_limit_date
 
-                    edinet = EdinetEngine(os.getenv("EDINET_API_KEY"), self.data_path)
+                    limit_date = get_dynamic_limit_date()
+
                     for doc_id in missing_zips + missing_pdfs:
-                        logger.info(f"Recovering missing file for {doc_id}...")
-                        if edinet.download_doc(doc_id):
+                        submit_at_str = str(
+                            self.cm.catalog_df.loc[self.cm.catalog_df["doc_id"] == doc_id, "submit_at"].iloc[0]
+                        )
+                        if not submit_at_str or submit_at_str == "nan":
+                            continue
+
+                        submit_date = datetime.strptime(submit_at_str.split(" ")[0], "%Y-%m-%d").date()
+
+                        if submit_date >= limit_date:
+                            logger.info(f"Marking missing file {doc_id} as pending for Harvester...")
                             self.cm.catalog_df.loc[self.cm.catalog_df["doc_id"] == doc_id, "processed_status"] = (
                                 "pending"
                             )
-                            logger.success(f"Recovered {doc_id}")
+                            logger.success(f"Status reset to pending for {doc_id}")
+                        else:
+                            logger.error(
+                                f"Missing file {doc_id} is older than API retention ({limit_date}). "
+                                "Marked as 'unrecoverable' to prevent infinite 404 loops."
+                            )
+                            self.cm.catalog_df.loc[self.cm.catalog_df["doc_id"] == doc_id, "processed_status"] = (
+                                "unrecoverable"
+                            )
 
         except Exception as e:
             self._report_anomaly("Layer2_Physical", f"Physical reconciliation failed: {e}")
@@ -387,11 +421,32 @@ class DataReconciliationEngine:
                             "Layer3_Analytical", f"Missing docs in healthy {bf}", details=len(missing_in_bin)
                         )
                         if self.repair:
-                            logger.info(f"Resetting {len(missing_in_bin)} missing docs to 'pending'.")
-                            self.cm.catalog_df.loc[
-                                self.cm.catalog_df["doc_id"].isin(missing_in_bin), "processed_status"
-                            ] = "pending"
-                            logger.success(f"Catalog reset staged strictly for missing docs in {expected_bin}.")
+                            from data_engine.executors.backfill_manager import get_dynamic_limit_date
+
+                            limit_date = get_dynamic_limit_date()
+
+                            for doc_id in missing_in_bin:
+                                submit_at_str = str(
+                                    self.cm.catalog_df.loc[self.cm.catalog_df["doc_id"] == doc_id, "submit_at"].iloc[0]
+                                )
+                                if not submit_at_str or submit_at_str == "nan":
+                                    continue
+                                submit_date = datetime.strptime(submit_at_str.split(" ")[0], "%Y-%m-%d").date()
+
+                                if submit_date >= limit_date:
+                                    self.cm.catalog_df.loc[
+                                        self.cm.catalog_df["doc_id"] == doc_id, "processed_status"
+                                    ] = "pending"
+                                else:
+                                    # Bin欠損＆再取得不可の完全なロスト状態
+                                    self.cm.catalog_df.loc[
+                                        self.cm.catalog_df["doc_id"] == doc_id, "processed_status"
+                                    ] = "unrecoverable"
+
+                            logger.success(
+                                f"Catalog reset staged strictly for {len(missing_in_bin)} "
+                                f"missing docs in {expected_bin}."
+                            )
 
                     if self.repair and modified:
                         self.cm.hf.save_and_upload(bf, df, defer=True)

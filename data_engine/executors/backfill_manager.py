@@ -1,6 +1,6 @@
 import argparse
 import json
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from huggingface_hub import HfApi, hf_hub_download
@@ -16,12 +16,25 @@ HF_REPO = CONFIG.HF_REPO
 HF_TOKEN = CONFIG.HF_TOKEN
 # 1回の遡り期間（7日＝1週間）
 BACKFILL_DAYS = 7
-# 限界日（これより前はAPIリストからの取得が不可：2016-02-15が最古の取得可能日として検証済み）
-LIMIT_DATE = date(2016, 2, 15)
 
 
 def get_jst_today():
     return datetime.now(ZoneInfo("Asia/Tokyo")).date()
+
+
+def get_dynamic_limit_date():
+    """EDINET APIの仕様に基づく「取得可能な最古の日付」を動的に算出（実測に基づく10年前のローリング）"""
+    today = get_jst_today()
+    try:
+        # 安全マージンを加味し「ぴったり10年前」を限界とする
+        return today.replace(year=today.year - 10)
+    except ValueError:
+        # うるう年（2月29日）のフォールバック
+        return today.replace(year=today.year - 10, day=28)
+
+
+# 限界日（これより前はAPIリストからの取得が不可）
+LIMIT_DATE = get_dynamic_limit_date()
 
 
 def load_cursor():

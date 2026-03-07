@@ -340,7 +340,7 @@ class HfStorage:
             filename = key
 
         try:
-            commits = self.api.list_repo_commits(repo_id=self.hf_repo, repo_type="dataset", path_in_repo=filename)
+            commits = self.api.list_repo_commits(repo_id=self.hf_repo, repo_type="dataset")
             return [c.commit_id for c in commits[:max_commits]]
         except Exception as e:
             logger.warning(f"履歴の取得に失敗しました ({filename}): {e}")
