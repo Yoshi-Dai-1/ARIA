@@ -144,7 +144,7 @@ class EdinetResponseList(BaseModel):
 
 class EdinetMetadataInputV2(BaseModel):
     date_api_param: date = Field(..., title="date", description="date(YYYY-MM-DD)")
-    type_api_param: int = Field(isin=[1,2], title="type", description="1: Retrieves metadata only. 2: Retrieve the list of submitted documents and metadata.",default=2)
+    type_api_param: Literal[1, 2] = Field(2, title="type", description="1: Retrieves metadata only. 2: Retrieve the list of submitted documents and metadata.")
     api_key: str = Field(..., title="Subscription-Key", description="API Key")
     ope_date_time_api_param: Optional[str] = Field(None, title="opeDateTime", description="HH:MM:SS")
 
@@ -403,7 +403,7 @@ def request_term(api_key:str, start_date_str:str,end_date_str:str, ope_date_time
 # %% doc
 
 class EdinetDocInputV2(BaseModel):
-    type_api_param: int = Field(isin=[1,2,5], title="type", description="1: xbrl, 2: pdf, 5:csv",default=1)
+    type_api_param: Literal[1, 2, 5] = Field(1, title="type", description="1: xbrl, 2: pdf, 5:csv")
     api_key: str = Field(..., title="Subscription-Key", description="API Key")
     def export(self):
         return {"type": self.type_api_param, "Subscription-Key": self.api_key}
