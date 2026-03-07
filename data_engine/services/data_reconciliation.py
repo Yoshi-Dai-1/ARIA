@@ -38,7 +38,8 @@ class DataReconciliationEngine:
         self.repair = repair
 
         # 内部状態として CatalogManager を持つが、スコープは 'All' にして全量監査を行う
-        self.cm = CatalogManager(hf_repo, hf_token, data_path, scope="All", sync_master=True)
+        # 修復モード (repair=True) の時のみマスターの動的更新を許可し、監査モードでは不要なAPIコールと更新をスキップする
+        self.cm = CatalogManager(hf_repo, hf_token, data_path, scope="All", sync_master=self.repair)
 
         # 検証エラーの集計
         self.anomalies = {
@@ -507,7 +508,8 @@ class DataReconciliationEngine:
         try:
             from data_engine.core.models import ARIA_SCHEMAS
 
-            key = "index_history"
+            # モデル定義に準拠した正しいキー名 ("indices") を使用
+            key = "indices"
             df = None
             try:
                 df = self.cm.hf.load_parquet(key)
