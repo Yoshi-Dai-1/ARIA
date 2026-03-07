@@ -66,7 +66,7 @@ financial-lakehouse/
 │   └── indices/                    # 指数構成データ（Daily Indices Update 連携）
 │       ├── Nikkei225/
 │       │   ├── constituents/year=YYYY/data_YYYYMMDD.parquet  # スナップショット
-│       │   └── history.parquet      # 追加・除外・ウエイト変化イベント履歴
+│       │   └── history.parquet     # 追加・除外・ウエイト変化イベント履歴
 │       └── TOPIX/
 │           ├── constituents/year=YYYY/data_YYYYMMDD.parquet
 │           └── history.parquet

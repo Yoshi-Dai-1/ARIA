@@ -322,8 +322,27 @@ class CatalogManager:
         """社名変更履歴を更新（将来の機能拡張用）"""
         hist_df = self.hf.load_parquet("name")
         m_df = pd.concat([hist_df, new_events], ignore_index=True)
-        m_df.drop_duplicates(subset=["code", "old_name", "new_name", "change_date"], keep="last", inplace=True)
-        m_df.sort_values(["change_date", "code"], ascending=[False, True], inplace=False)
+
+        # 【極限保守】複数回の非時系列検知で旧名カナ/英名が None に上書きされないように、
+        # 有効な値（NotNull）を優先して圧縮する
+        # 文字列以外の None (NaN等) を排除するためにまずは DataFrame を正規化
+        m_df = m_df.where(pd.notnull(m_df), None)
+
+        # グループ化キー
+        group_keys = ["code", "old_name", "new_name", "change_date"]
+
+        # 各グループ内で最初に見つかった「Noneではない有効な値」を拾う (forward_fill的アプローチ)
+        # sort_values でカナ/英名が入っている行を上に持ってくる (Noneはソートで下に行くように工夫)
+        m_df = m_df.sort_values(
+            by=["code", "change_date", "new_name_kana", "old_name_kana"],
+            ascending=[True, False, False, False],
+            na_position="last",
+        )
+
+        # first() により、各カラムで最初に見つかった非Null値を採用して1行に圧縮する
+        m_df = m_df.groupby(group_keys, dropna=False).first().reset_index()
+
+        m_df.sort_values(["change_date", "code"], ascending=[False, True], inplace=True)
         self.hf.save_and_upload("name", m_df, defer=True)
 
     def get_listing_history(self) -> pd.DataFrame:
