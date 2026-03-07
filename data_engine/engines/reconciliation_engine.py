@@ -412,11 +412,20 @@ class ReconciliationEngine:
                 "parent_code",
                 "former_edinet_codes",
             ]:
-                val = resolve_attr(sorted_group, attr)
-                if val is not None:
-                    if attr == "is_listed_edinet" and is_jpx_update:
-                        continue
-                    latest_rec[attr] = val
+                if attr == "former_edinet_codes":
+                    all_formers = set()
+                    for v in sorted_group[attr].dropna():
+                        s_v = str(v).strip()
+                        if s_v:
+                            all_formers.update([x.strip() for x in s_v.split(",") if x.strip()])
+                    if all_formers:
+                        latest_rec[attr] = ",".join(sorted(all_formers))
+                else:
+                    val = resolve_attr(sorted_group, attr)
+                    if val is not None:
+                        if attr == "is_listed_edinet" and is_jpx_update:
+                            continue
+                        latest_rec[attr] = val
 
             if code is None:
                 best_records.append(latest_rec)

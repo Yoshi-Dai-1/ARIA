@@ -274,6 +274,34 @@ class CatalogManager:
         self.hf.save_and_upload("catalog", self.catalog_df, clean_fn=self._clean_dataframe, defer=True)
         logger.info(f"カタログを更新・コミットバッファに追加しました (全 {len(self.catalog_df)} 件)")
 
+        # 【工学的主権】マスタの last_submitted_at を自動更新する (完全同期)
+        if not self.master_df.empty and "submit_at" in df_new.columns:
+            master_updated = False
+            # 今回登録された各コードの最新提出日時
+            latest_submits = df_new.dropna(subset=["code", "submit_at"]).groupby("code")["submit_at"].max().to_dict()
+
+            master_dict = {
+                str(row["code"]): row.to_dict() for _, row in self.master_df.iterrows() if pd.notna(row.get("code"))
+            }
+
+            for code, submit_time in latest_submits.items():
+                if not code or str(code).strip() == "":
+                    continue
+                if code in master_dict:
+                    m_rec = master_dict[code]
+                    current_last = m_rec.get("last_submitted_at")
+                    # 辞書順比較による最新判定 (フォーマットが整っている前提)
+                    if not current_last or str(submit_time) > str(current_last):
+                        m_rec["last_submitted_at"] = str(submit_time)
+                        master_updated = True
+
+            if master_updated:
+                # master_df 自体を更新してバッファへ載せる
+                new_master_df = pd.DataFrame(list(master_dict.values()))
+                self.master_df = self._clean_dataframe("master", new_master_df)
+                self.hf.save_and_upload("master", self.master_df, clean_fn=self._clean_dataframe, defer=True)
+                logger.info("書類の提出を検知し、マスタの last_submitted_at を更新しました。")
+
         # 【工学的主権】更新された銘柄の社名変更履歴を再構成
         unique_codes = df_new["code"].unique()
         for code in unique_codes:
