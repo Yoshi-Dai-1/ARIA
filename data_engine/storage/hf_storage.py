@@ -113,6 +113,12 @@ class HfStorage:
 
             elif key == "name":
                 return pd.DataFrame(columns=["code", "old_name", "new_name", "change_date"])
+
+            elif key == "indices":
+                schema = ARIA_SCHEMAS.get("indices")
+                cols = schema.names if schema else []
+                return pd.DataFrame(columns=cols)
+
             return pd.DataFrame()
         except HfHubHTTPError as e:
             logger.error(f"HF API エラー ({e.response.status_code}): {filename}")

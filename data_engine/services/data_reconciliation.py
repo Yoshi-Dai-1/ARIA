@@ -647,6 +647,11 @@ def main():
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
+    # 外部ライブラリ（httpx, urllib3）の過剰なINFOログ（HTTPリクエストごとのトレース）を抑制する
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--save-report", action="store_true", help="Save the reconciliation report to JSON")
     parser.add_argument("--repair", action="store_true", help="Enable self-healing repair mode")

@@ -48,6 +48,7 @@ class CatalogManager:
             "master": "meta/stocks_master.parquet",
             "listing": "meta/listing_history.parquet",
             "name": "meta/name_history.parquet",
+            "indices": "meta/index_history.parquet",
         }
 
         # 3. Foundation Layer (Storage & Merger)
