@@ -124,6 +124,8 @@ class CatalogRecord(BaseModel):
     doc_info_edit_status: Optional[str] = None  # 財務局修正状態 (1:修正情報, 2:修正された書類)
     disclosure_status: Optional[str] = None  # 開示ステータス (1:OK, 2:修正 etc.)
     current_report_reason: Optional[str] = None  # 臨時報告書の提出理由
+    has_xbrl: Optional[bool] = None  # XBRL(ZIP)が本来存在するはずか (APIフラグ)
+    has_pdf: Optional[bool] = None  # PDFが本来存在するはずか (APIフラグ)
 
     # 5. Infrastructure (システム管理情報)
     raw_zip_path: Optional[str] = None

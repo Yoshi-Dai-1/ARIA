@@ -52,7 +52,7 @@ financial-lakehouse/
 │           ├── zip/                # ZIPアーカイブ（1万ファイル制限対応）
 │           └── pdf/                # PDF書類（1万ファイル制限対応）
 ├── catalog/                        # ドキュメントインデックス
-│   └── documents_index.parquet     # 30カラム構成。全書類のメタデータ SSOT
+│   └── documents_index.parquet     # 32カラム構成。全書類のメタデータ SSOT
 ├── meta/                           # システムメタデータ
 │   ├── stocks_master.parquet       # 銘柄マスタ (EDINETコードリスト+JPX属性)
 │   ├── listing_history.parquet     # 上場・廃止・再上場イベント履歴

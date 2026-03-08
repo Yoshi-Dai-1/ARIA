@@ -162,11 +162,20 @@ class DataReconciliationEngine:
                 if not submit_date_str:
                     continue
 
-                # ユーティリティ関数による共通パス導出 (SSOT)
-                if str(row.get("xbrl_flag", "0")) == "1" or row.get("raw_zip_path"):
+                # 【工学的主権】APIの意図(フラグ)に基づき期待値を算出。NaNトラップをpd.isnaで回避。
+                # has_xbrl/has_pdf が None の場合は、既存レコードとの互換性のためパスの有無で判定
+                import pandas as pd
+
+                should_have_zip = row.get("has_xbrl")
+                if should_have_zip is True:
+                    expected_zips[doc_id] = utils.get_edinet_repo_path(doc_id, submit_date_str, suffix="zip")
+                elif should_have_zip is None and not pd.isna(row.get("raw_zip_path")):
                     expected_zips[doc_id] = utils.get_edinet_repo_path(doc_id, submit_date_str, suffix="zip")
 
-                if str(row.get("pdf_flag", "0")) == "1" or row.get("pdf_path"):
+                should_have_pdf = row.get("has_pdf")
+                if should_have_pdf is True:
+                    expected_pdfs[doc_id] = utils.get_edinet_repo_path(doc_id, submit_date_str, suffix="pdf")
+                elif should_have_pdf is None and not pd.isna(row.get("pdf_path")):
                     expected_pdfs[doc_id] = utils.get_edinet_repo_path(doc_id, submit_date_str, suffix="pdf")
 
             # 存在確認 (Existence check)

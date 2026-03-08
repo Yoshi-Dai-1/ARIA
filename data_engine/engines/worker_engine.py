@@ -345,6 +345,8 @@ class WorkerEngine:
                 "doc_info_edit_status": (row.get("docInfoEditStatus") or "").strip() or None,
                 "disclosure_status": (row.get("disclosureStatus") or "").strip() or None,
                 "current_report_reason": (row.get("currentReportReason") or "").strip() or None,
+                "has_xbrl": row.get("xbrlFlag") == "1",
+                "has_pdf": row.get("pdfFlag") == "1",
                 "raw_zip_path": rel_zip_path,
                 "pdf_path": rel_pdf_path,
                 "processed_status": final_status,
