@@ -210,6 +210,13 @@ class DataReconciliationEngine:
                     f"{len(missing_pdfs)} expected PDF files are missing from HF storage.",
                     details=missing_pdfs,
                 )
+                if self.repair:
+                    logger.info("Resetting status for docs with missing PDFs to trigger downstream purge...")
+                    for d_id in missing_pdfs:
+                        self.cm.catalog_df.loc[self.cm.catalog_df["doc_id"] == d_id, "processed_status"] = "pending"
+                        self.repairs["Layer2_Metadata"].append(
+                            {"doc_id": d_id, "action": "status_reset_due_to_missing_pdf"}
+                        )
 
             # 【工学的主権】メタデータ不整合(Ghost Attributes)の検知
             ghost_zips = [
