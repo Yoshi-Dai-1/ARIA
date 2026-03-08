@@ -39,7 +39,7 @@ class DataReconciliationEngine:
 
         # 内部状態として CatalogManager を持つが、スコープは 'All' にして全量監査を行う
         # 修復モード (repair=True) の時のみマスターの動的更新を許可し、監査モードでは不要なAPIコールと更新をスキップする
-        self.cm = CatalogManager(hf_repo, hf_token, data_path, scope="All", sync_master=self.repair)
+        self.cm = CatalogManager(hf_repo, hf_token, data_path, scope="All", sync_master=False)
 
         # 検証エラーの集計
         self.anomalies = {
@@ -107,7 +107,7 @@ class DataReconciliationEngine:
                         logger.info(f"Repairing schema for {filename}...")
                         # 欠落列の補完 (NULL) と余剰列の削除、型の正規化
                         self.cm.hf.save_and_upload(key, df, defer=True)
-                        logger.success(f"Schema normalization staged for {filename}.")
+                        logger.info(f"Schema normalization staged for {filename}.")
 
                 else:
                     logger.info(f"✅ {filename} matches {model_class.__name__} perfectly.")
@@ -124,7 +124,7 @@ class DataReconciliationEngine:
                 logger.debug(f"Testing revision: {commit_hash[:7]}")
                 df = self.cm.hf.load_parquet(key, revision=commit_hash)
                 if not df.empty:
-                    logger.success(f"Successfully rescued healthy version from commit {commit_hash[:7]}.")
+                    logger.info(f"Successfully rescued healthy version from commit {commit_hash[:7]}.")
                     # 直ちに修復版としてステージング（Atomic書き戻しの起点）
                     self.cm.hf.save_and_upload(key, df, defer=True)
                     return df
@@ -242,7 +242,7 @@ class DataReconciliationEngine:
                                     self.cm.catalog_df.loc[
                                         self.cm.catalog_df["doc_id"] == doc_id, "processed_status"
                                     ] = "pending"
-                                    logger.success(f"Status reset to pending for {doc_id}")
+                                    logger.info(f"Status reset to pending for {doc_id}")
                                 else:
                                     logger.error(
                                         f"Corrupted file {doc_id} is older than API retention ({limit_date}). "
@@ -275,7 +275,7 @@ class DataReconciliationEngine:
                             self.cm.catalog_df.loc[self.cm.catalog_df["doc_id"] == doc_id, "processed_status"] = (
                                 "pending"
                             )
-                            logger.success(f"Status reset to pending for {doc_id}")
+                            logger.info(f"Status reset to pending for {doc_id}")
                         else:
                             logger.error(
                                 f"Missing file {doc_id} is older than API retention ({limit_date}). "
@@ -358,7 +358,7 @@ class DataReconciliationEngine:
                                     )
                                     df = pd.read_parquet(temp_p)
                                     if not df.empty:
-                                        logger.success(f"Rescued {bf} from {commit_hash[:7]}")
+                                        logger.info(f"Rescued {bf} from {commit_hash[:7]}")
                                         self.cm.hf.add_commit_operation(bf, Path(temp_p))
                                         break
                                 except Exception:
@@ -378,7 +378,7 @@ class DataReconciliationEngine:
                                     self.cm.catalog_df.loc[
                                         self.cm.catalog_df["doc_id"].isin(expected_docs), "processed_status"
                                     ] = "pending"
-                                    logger.success(
+                                    logger.info(
                                         f"Catalog reset staged for {len(expected_docs)} docs "
                                         f"strictly in {expected_bin}."
                                     )
@@ -443,7 +443,7 @@ class DataReconciliationEngine:
                                         self.cm.catalog_df["doc_id"] == doc_id, "processed_status"
                                     ] = "unrecoverable"
 
-                            logger.success(
+                            logger.info(
                                 f"Catalog reset staged strictly for {len(missing_in_bin)} "
                                 f"missing docs in {expected_bin}."
                             )
@@ -467,7 +467,7 @@ class DataReconciliationEngine:
                         self.cm.catalog_df.loc[self.cm.catalog_df["doc_id"].isin(e_docs), "processed_status"] = (
                             "pending"
                         )
-                        logger.success(
+                        logger.info(
                             f"Staged {len(e_docs)} docs for regeneration due to completely missing bin {e_bin}."
                         )
 
@@ -550,7 +550,7 @@ class DataReconciliationEngine:
                         field = m["field"]
                         api_val = m["api_value"]
                         self.cm.catalog_df.loc[self.cm.catalog_df["doc_id"] == doc_id, field] = api_val
-                    logger.success("Metadata drift repair staged in RAM.")
+                    logger.info("Metadata drift repair staged in RAM.")
             else:
                 logger.info("✅ Catalog is perfectly synchronized with EDINET API.")
 
