@@ -696,7 +696,17 @@ class DataReconciliationEngine:
                 self.cm.hf.push_commit("Self-healing repair by ARIA Integrity Audit")
 
         total_anomalies = sum(len(v) for v in self.anomalies.values())
-        total_repairs = sum(len(v) for v in self.repairs.values())
+
+        # 【工学的主権】より直感的な統計のため、重複を排除した「修正対象数」を算出
+        unique_repairs = set()
+        for layer_repairs in self.repairs.values():
+            for r in layer_repairs:
+                # 修正対象（doc_id または bin）を識別子としてカウント
+                identifier = r.get("doc_id") or r.get("bin") or r.get("key")
+                if identifier:
+                    unique_repairs.add(identifier)
+
+        total_repairs = len(unique_repairs) if unique_repairs else 0
         report = {
             "timestamp": datetime.now().isoformat(),
             "status": "REPAIRED"
