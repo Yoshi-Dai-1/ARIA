@@ -107,7 +107,22 @@ python -m data_engine.executors.harvester_main --mode merger --run-id <RUN_ID>
 - **Extreme Integrity Audit**: 5層（スキーマ / 物理ファイル / 分析マスタ / API カタログ / 指数履歴）にわたるデータの自己治癒。HF のコミット履歴を活用したロールバックと、再解析によるハイブリッドな復旧を提供。
 
 
-### 3. 市場データ収集 (Daily Indices Update)
+### 3. データ基盤の監査と自己修復 (Integrity Audit)
+
+`integrity_audit.yml` により、定期的にデータレイクの全レイヤー（スキーマ、物理アセット、分析マスタ、インデックス）の整合性を監査します。
+
+- **監査モード (デフォルト)**: 読み取り専用で実行され、不整合を発見しても報告のみを行い、既存データを一切変更しません。安全性が 100% 担保されたモードです。
+- **自己修復モード (`--repair`)**: 明示的にフラグを指定して実行された場合のみ、以下の「因果の連鎖」に基づきデータを浄化します。
+    - **因果の連鎖 (Causal Purge)**: 物理ファイル（ZIP）が消失、あるいは「亡霊（メタデータ矛盾）」として排除された際、その派生データである分析用マスタ（`financial_values` 等）からも、該当書類のデータのみを自動的にパージ（外科的切除）します。
+    - **外科的切除**: ファイル単位の削除ではなく、Bin 内の DataFrame に対して対象 ID のみを除去することで、無関係な他の銘柄データへの非干渉を保証します。
+
+## スキルと規範
+
+ARIA プロジェクトには、AI が遵守すべき厳格なエンジニアリング規範が組み込まれています。
+- [aria-engineer](file:///Users/yoshi_dai/repos/ARIA/.agent/skills/aria-engineer/SKILL.md): データ整合性、NaN トラップの排除、因果の連鎖などの技術規律。
+- [stock-data-expert](file:///Users/yoshi_dai/repos/ARIA/.agent/skills/stock-data-expert/SKILL.md): 日本の証券データ特有のドメイン知識と正規化ルール。
+
+### 4. 市場データ収集 (Daily Indices Update)
 
 毎日 04:00 JST に自動実行されます。本ワークフローは指数の取得に専念します。
 
@@ -122,7 +137,7 @@ python -m data_engine.executors.indices_main --mode indices
 python -m data_engine.executors.indices_main --mode master
 ```
 
-### 4. 高度な最適化: `sync_master` カテゴリ制御
+### 5. 高度な最適化: `sync_master` カテゴリ制御
 
 ARIA は並列実行時の API コールを最小化するため、`CatalogManager` に `sync_master` フラグを導入しています。
 

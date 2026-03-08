@@ -45,8 +45,16 @@ class DataReconciliationEngine:
         self.anomalies = {
             "Layer1_Schema": [],
             "Layer2_Physical": [],
+            "Layer2_Metadata": [],
             "Layer3_Analytical": [],
             "Layer4_Catalog": [],
+            "Layer5_Indexing": [],
+        }
+        # 修復アクションの記録
+        self.repairs = {
+            "Layer1_Schema": [],
+            "Layer2_Metadata": [],
+            "Layer3_Analytical": [],
             "Layer5_Indexing": [],
         }
 
@@ -188,12 +196,64 @@ class DataReconciliationEngine:
                     f"{len(missing_zips)} expected ZIP files are missing from HF storage.",
                     details=missing_zips,
                 )
+                if self.repair:
+                    logger.info("Resetting status for docs with missing ZIPs to trigger downstream purge...")
+                    for d_id in missing_zips:
+                        self.cm.catalog_df.loc[self.cm.catalog_df["doc_id"] == d_id, "processed_status"] = "pending"
+                        self.repairs["Layer2_Metadata"].append(
+                            {"doc_id": d_id, "action": "status_reset_due_to_missing_zip"}
+                        )
+
             if missing_pdfs:
                 self._report_anomaly(
                     "Layer2_Physical",
                     f"{len(missing_pdfs)} expected PDF files are missing from HF storage.",
                     details=missing_pdfs,
                 )
+
+            # 【工学的主権】メタデータ不整合(Ghost Attributes)の検知
+            ghost_zips = [
+                doc_id
+                for doc_id, row in catalog_df.iterrows()
+                if row.get("has_xbrl") is False and not pd.isna(row.get("raw_zip_path"))
+            ]
+            ghost_pdfs = [
+                doc_id
+                for doc_id, row in catalog_df.iterrows()
+                if row.get("has_pdf") is False and not pd.isna(row.get("pdf_path"))
+            ]
+
+            if ghost_zips:
+                msg = (
+                    f"Metadata conflict detected: {len(ghost_zips)} Ghost ZIP paths found "
+                    "(API says no ZIP, but catalog has path)."
+                )
+                self._report_anomaly("Layer2_Metadata", msg, details=ghost_zips)
+            if ghost_pdfs:
+                msg = (
+                    f"Metadata conflict detected: {len(ghost_pdfs)} Ghost PDF paths found "
+                    "(API says no PDF, but catalog has path)."
+                )
+                self._report_anomaly("Layer2_Metadata", msg, details=ghost_pdfs)
+
+            # 修復モード：ゴースト属性の除去 (API定義を優先しカタログを浄化)
+            if self.repair and (ghost_zips or ghost_pdfs):
+                logger.info("Repairing ghost attributes (resetting invalid paths to NULL and resetting status)...")
+                for d_id in ghost_zips:
+                    self.cm.catalog_df.loc[self.cm.catalog_df["doc_id"] == d_id, "raw_zip_path"] = None
+                    # 【工学的主権】ステータスをリセットすることで下流の Layer 3 での自動削除を誘発
+                    self.cm.catalog_df.loc[self.cm.catalog_df["doc_id"] == d_id, "processed_status"] = "invalid"
+                    self.repairs["Layer2_Metadata"].append(
+                        {"doc_id": d_id, "action": "reset_ghost_zip_path_and_status"}
+                    )
+                for d_id in ghost_pdfs:
+                    self.cm.catalog_df.loc[self.cm.catalog_df["doc_id"] == d_id, "pdf_path"] = None
+                    self.repairs["Layer2_Metadata"].append({"doc_id": d_id, "action": "reset_ghost_pdf_path"})
+
+                if ghost_zips:
+                    logger.success(f"Successfully removed {len(ghost_zips)} Ghost ZIP paths from catalog.")
+                if ghost_pdfs:
+                    logger.success(f"Successfully removed {len(ghost_pdfs)} Ghost PDF paths from catalog.")
 
             logger.info(
                 f"Verified existence of {len(expected_zips) - len(missing_zips)} ZIPs "
@@ -423,6 +483,9 @@ class DataReconciliationEngine:
                             self._report_anomaly("Layer3_Analytical", f"Perfect duplicates in {bf}", details=len(dups))
                             if self.repair:
                                 df = df.drop_duplicates(subset=actual_keys, keep="first")
+                                self.repairs["Layer3_Analytical"].append(
+                                    {"bin": bf, "action": "drop_duplicates", "count": len(dups)}
+                                )
                                 modified = True
 
                     # 2. 孤児・アサインメント不一致 (Binに存在するが、カタログ上でこのBinに属すべきではない書類)
@@ -434,6 +497,10 @@ class DataReconciliationEngine:
                         if self.repair:
                             logger.info(f"Purging {len(unrecognized_docs)} unrecognized records from {bf}.")
                             df = df[~df["doc_id"].isin(unrecognized_docs)]
+                            for d_id in unrecognized_docs:
+                                self.repairs["Layer3_Analytical"].append(
+                                    {"bin": bf, "doc_id": d_id, "action": "purge_orphan"}
+                                )
                             modified = True
 
                     # 3. 欠落データチェック (カタログ上はこのBinに属すべきだが、健康なBin内に存在しない書類)
@@ -629,13 +696,16 @@ class DataReconciliationEngine:
                 self.cm.hf.push_commit("Self-healing repair by ARIA Integrity Audit")
 
         total_anomalies = sum(len(v) for v in self.anomalies.values())
+        total_repairs = sum(len(v) for v in self.repairs.values())
         report = {
             "timestamp": datetime.now().isoformat(),
             "status": "REPAIRED"
             if self.repair and total_anomalies > 0
             else ("FAILED" if total_anomalies > 0 else "PASSED"),
             "total_anomalies": total_anomalies,
+            "total_repairs": total_repairs,
             "details": self.anomalies,
+            "repairs": self.repairs if self.repair else {},
         }
 
         if total_anomalies > 0:
