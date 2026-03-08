@@ -47,3 +47,11 @@ jobs:
             REPAIR_FLAG="--repair"
           fi
           python -m data_engine.services.data_reconciliation --save-report $REPAIR_FLAG
+      
+      - name: Upload Audit Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reconciliation-report
+          path: logs/reconciliation_report.json
+          retention-days: 14
