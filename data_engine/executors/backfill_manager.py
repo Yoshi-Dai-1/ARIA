@@ -23,14 +23,16 @@ def get_jst_today():
 
 
 def get_dynamic_limit_date():
-    """EDINET APIの仕様に基づく「取得可能な最古の日付」を動的に算出（実測に基づく10年前のローリング）"""
+    """EDINET APIの仕様に基づく「取得可能な最古の日付」を動的に算出（10年前－5日の安全マージン）"""
     today = get_jst_today()
     try:
-        # 安全マージンを加味し「ぴったり10年前」を限界とする
-        return today.replace(year=today.year - 10)
+        # 安全マージンを加味し「ぴったり10年前」からさらに5日遡る
+        base_limit = today.replace(year=today.year - 10)
     except ValueError:
         # うるう年（2月29日）のフォールバック
-        return today.replace(year=today.year - 10, day=28)
+        base_limit = today.replace(year=today.year - 10, day=28)
+
+    return base_limit - timedelta(days=5)
 
 
 # 限界日（これより前はAPIリストからの取得が不可）

@@ -200,7 +200,8 @@ class DataReconciliationEngine:
                 available_zips = [path for path in expected_zips.values() if path in raw_files]
                 sample_paths = random.sample(available_zips, min(sample_size, len(available_zips)))
 
-                logger.info(f"Running deep CRC integrity check on {len(sample_paths)} sampled ZIP files...")
+                if sample_paths:
+                    logger.info(f"Running deep CRC integrity check on {len(sample_paths)} sampled ZIP files...")
                 corrupted = []
                 for p in sample_paths:
                     try:
@@ -221,6 +222,8 @@ class DataReconciliationEngine:
                     )
                     if self.repair:
                         # 破損ファイルを API から再取得
+                        c_pending = 0
+                        c_unrecoverable = 0
                         for repo_path, _ in corrupted:
                             match = re.search(r"raw/edinet/([^/]+)/", repo_path)
                             if match:
@@ -238,20 +241,24 @@ class DataReconciliationEngine:
                                 submit_date = datetime.strptime(submit_at_str.split(" ")[0], "%Y-%m-%d").date()
 
                                 if submit_date >= limit_date:
-                                    logger.info(f"Marking corrupted file {doc_id} as pending for Harvester...")
                                     self.cm.catalog_df.loc[
                                         self.cm.catalog_df["doc_id"] == doc_id, "processed_status"
                                     ] = "pending"
-                                    logger.info(f"Status reset to pending for {doc_id}")
+                                    c_pending += 1
                                 else:
-                                    logger.error(
-                                        f"Corrupted file {doc_id} is older than API retention ({limit_date}). "
-                                        "Marked as 'unrecoverable' to prevent infinite 404 loops."
-                                    )
                                     self.cm.catalog_df.loc[
                                         self.cm.catalog_df["doc_id"] == doc_id, "processed_status"
                                     ] = "unrecoverable"
-                else:
+                                    c_unrecoverable += 1
+
+                        if c_pending > 0:
+                            logger.info(f"Marked {c_pending} corrupted files as 'pending' for Harvester.")
+                        if c_unrecoverable > 0:
+                            logger.warning(
+                                f"Marked {c_unrecoverable} corrupted files as 'unrecoverable' "
+                                f"(older than API limit: {limit_date})."
+                            )
+                elif sample_paths:
                     logger.info(f"✅ Deep CRC check passed for all {len(sample_paths)} sampled ZIP files.")
 
                 if self.repair and (missing_zips or missing_pdfs):
@@ -260,8 +267,10 @@ class DataReconciliationEngine:
                     from data_engine.executors.backfill_manager import get_dynamic_limit_date
 
                     limit_date = get_dynamic_limit_date()
+                    m_pending = 0
+                    m_unrecoverable = 0
 
-                    for doc_id in missing_zips + missing_pdfs:
+                    for doc_id in set(missing_zips + missing_pdfs):
                         submit_at_str = str(
                             self.cm.catalog_df.loc[self.cm.catalog_df["doc_id"] == doc_id, "submit_at"].iloc[0]
                         )
@@ -271,19 +280,23 @@ class DataReconciliationEngine:
                         submit_date = datetime.strptime(submit_at_str.split(" ")[0], "%Y-%m-%d").date()
 
                         if submit_date >= limit_date:
-                            logger.info(f"Marking missing file {doc_id} as pending for Harvester...")
                             self.cm.catalog_df.loc[self.cm.catalog_df["doc_id"] == doc_id, "processed_status"] = (
                                 "pending"
                             )
-                            logger.info(f"Status reset to pending for {doc_id}")
+                            m_pending += 1
                         else:
-                            logger.error(
-                                f"Missing file {doc_id} is older than API retention ({limit_date}). "
-                                "Marked as 'unrecoverable' to prevent infinite 404 loops."
-                            )
                             self.cm.catalog_df.loc[self.cm.catalog_df["doc_id"] == doc_id, "processed_status"] = (
                                 "unrecoverable"
                             )
+                            m_unrecoverable += 1
+
+                    if m_pending > 0:
+                        logger.info(f"Status reset to 'pending' for {m_pending} missing files.")
+                    if m_unrecoverable > 0:
+                        logger.warning(
+                            f"Marked {m_unrecoverable} missing files as 'unrecoverable' "
+                            f"(older than API limit: {limit_date})."
+                        )
 
         except Exception as e:
             self._report_anomaly("Layer2_Physical", f"Physical reconciliation failed: {e}")
