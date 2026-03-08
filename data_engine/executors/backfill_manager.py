@@ -92,8 +92,8 @@ def calculate_next_period():
         # カーソルがある場合：その日付から BACKFILL_DAYS 分進める (過去->未来)
         start_date = datetime.strptime(cursor["next_target_start"], "%Y-%m-%d").date()
     else:
-        # 初回：最も古い取得可能日（2016-02-15）を開始点とする
-        # 理由：古いデータほどAPIから消えるリスクが高いため、先に確保する「保全優先」戦略
+        # 初回：取得可能限界日（10年前−5日）を開始点とする
+        # 理由：APIから消滅する直前のデータを確実に捉えるため、限界の少し手前から「助走」を開始する
         start_date = LIMIT_DATE
 
     # 終了日の計算

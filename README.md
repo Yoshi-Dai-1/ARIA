@@ -94,9 +94,11 @@ python -m data_engine.executors.harvester_main --mode worker --run-id <RUN_ID> -
 python -m data_engine.executors.harvester_main --mode merger --run-id <RUN_ID>
 ```
 
-### 2. 統合データ収集 (2016年2月15日〜現在)
+### 2. 統合データ収集 (10年間の時系列・遡及取得)
 
-`edinet_harvester.yml` により、2時間おき（JST偶数時、06時を除く）に自動実行されます。本日の新着書類と、過去の歴史データ（7日刻み）を並列で取得します。
+`edinet_harvester.yml` により、2時間おき（JST偶数時、04時・06時を除く）に自動実行されます。本日の新着書類の取得と並行して、API V2 の保持期限（10年）によって消えてしまう前の古い書類から順に確保するロジックを動かしています。
+- **取得限界の自動算出**: 実行当日から10年前を計算し、APIサーバーの更新遅延などを考慮してさらに5日間の余裕（バッファ）を持たせた日付を「取得できる最古の日」として自動で判断します。
+- **古い順からの確保**: APIから削除されるリスクが最も高い「古い書類」から順番に取得を進め、ARIA レイクハウスへ永続的に保存します。
 - **Hybrid Ingestion**: 「今」のポーリングと「過去」の遡及を一つのパイプラインで両立。
 - **ARIA_SCOPE**: `data_engine/aria_config.json` の `aria_scope` フィールドで制御。`Listed` (上場企業のみ), `Unlisted` (非上場企業のみ), `All` (全量) の切り替えに対応。設定ファイルによる一元管理（SSOT）のため、1箇所の変更で全ワークフロー・全スクリプトに適用されます。
 - **Zero Drift Architecture**: Discovery ジョブが取得したメタデータを Artifact として共有し、全 Worker が同一のメタデータを使用。
@@ -107,7 +109,7 @@ python -m data_engine.executors.harvester_main --mode merger --run-id <RUN_ID>
 
 ### 3. 市場データ収集 (Daily Indices Update)
 
-毎日 06:30 JST に自動実行されます。本ワークフローは指数の取得に専念します。
+毎日 04:00 JST に自動実行されます。本ワークフローは指数の取得に専念します。
 
 ```bash
 # 全モード (Master 更新 + 指数取得)

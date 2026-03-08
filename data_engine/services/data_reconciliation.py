@@ -177,13 +177,13 @@ class DataReconciliationEngine:
                 self._report_anomaly(
                     "Layer2_Physical",
                     f"{len(missing_zips)} expected ZIP files are missing from HF storage.",
-                    details=missing_zips[:10],
+                    details=missing_zips,
                 )
             if missing_pdfs:
                 self._report_anomaly(
                     "Layer2_Physical",
                     f"{len(missing_pdfs)} expected PDF files are missing from HF storage.",
-                    details=missing_pdfs[:10],
+                    details=missing_pdfs,
                 )
 
             logger.info(
@@ -554,7 +554,7 @@ class DataReconciliationEngine:
                 self._report_anomaly(
                     "Layer4_Catalog",
                     f"Detected {len(mismatches)} metadata drift(s) against FSA EDINET API.",
-                    details=mismatches[:20],
+                    details=mismatches,
                 )
                 if self.repair:
                     logger.info("Synchronizing Catalog metadata with FSA fact...")
@@ -600,7 +600,7 @@ class DataReconciliationEngine:
 
     def run_full_audit(self) -> Dict[str, Any]:
         """全レイヤーの監査を実行し結果レポートを生成"""
-        logger.info("Starting Extreme Integrity Audit (Data Reconciliation)...")
+        logger.info("Starting ARIA Data Foundation Audit...")
         if self.repair:
             logger.info("REPAIR MODE: ACTIVE (Self-healing enabled)")
 

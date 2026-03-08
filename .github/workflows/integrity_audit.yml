@@ -4,11 +4,10 @@ concurrency:
   group: aria-global-lock
   cancel-in-progress: false
 
-# on:
-#   schedule:
-#     # 毎週日曜 JST 03:00 (UTC 土曜 18:00)
-#     - cron: '0 18 * * 6'
 on:
+  schedule:
+    # 毎週日曜 JST 06:00 (UTC 土曜 21:00) : 04:00のIndices終了後に開始し、08:00のHarvester再開前に完了させる
+    - cron: '0 21 * * 6'
   workflow_dispatch:
     inputs:
       repair_mode:

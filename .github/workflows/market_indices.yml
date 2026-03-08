@@ -6,7 +6,7 @@ concurrency:
 
 on:
   schedule:
-    - cron: '30 21 * * *'  # 毎日日本時間 06:30 (UTC 21:30) - Market Masterの30分後
+    - cron: '0 19 * * *'  # 毎日日本時間 04:00 (UTC 19:00) - Harvesterの2時間後
   workflow_dispatch:
     # inputs: None (Target Date removed as per user request)
 
