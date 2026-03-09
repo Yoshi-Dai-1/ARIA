@@ -26,28 +26,28 @@ def fill_df(data_df):
     )
     merged = merged.sort_values(by=['docid','data'])
     merged = merged.assign(
-        decimals=merged.decimals.fillna(method='ffill'),
-        #precision=merged.precision.fillna(method='ffill'),
-        context_ref=merged.context_ref.fillna(method='ffill'),
-        unit=merged.unit.fillna(method='ffill'),
-        period_start=merged.period_start.fillna(method='ffill'),
-        period_end=merged.period_end.fillna(method='ffill'),
-        instant_date=merged.instant_date.fillna(method='ffill'),
-        order=merged.order.fillna(method='ffill'),
-        non_consolidated_flg=merged.non_consolidated_flg.fillna(method='ffill'),
-        current_flg=merged.current_flg.fillna(method='ffill'),
-        prior_flg=merged.prior_flg.fillna(method='ffill'),
-        role=merged.role.fillna(method='ffill'),
-        filerName=merged.filerName.fillna(method='ffill'),
-        sector_label_33=merged.sector_label_33.fillna(method='ffill')
+        decimals=merged.decimals.ffill(),
+        #precision=merged.precision.ffill(),
+        context_ref=merged.context_ref.ffill(),
+        unit=merged.unit.ffill(),
+        period_start=merged.period_start.ffill(),
+        period_end=merged.period_end.ffill(),
+        instant_date=merged.instant_date.ffill(),
+        order=merged.order.ffill(),
+        non_consolidated_flg=merged.non_consolidated_flg.ffill(),
+        current_flg=merged.current_flg.ffill(),
+        prior_flg=merged.prior_flg.ffill(),
+        role=merged.role.ffill(),
+        filerName=merged.filerName.ffill(),
+        sector_label_33=merged.sector_label_33.ffill()
 
     )
     merged = merged.sort_values(by=['key','data'])
     merged = merged.assign(
-        element_name=merged.element_name.fillna(method='ffill'),
-        isTextBlock_flg=merged.isTextBlock_flg.fillna(method='ffill'),
-        abstract_flg=merged.abstract_flg.fillna(method='ffill'),
-        label_jp=merged.label_jp.fillna(method='ffill')
+        element_name=merged.element_name.ffill(),
+        isTextBlock_flg=merged.isTextBlock_flg.ffill(),
+        abstract_flg=merged.abstract_flg.ffill(),
+        label_jp=merged.label_jp.ffill()
     )
     merged = merged.sort_index()
     merged.data = merged.data.fillna(-1)
