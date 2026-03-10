@@ -79,7 +79,7 @@ class CatalogManager:
         self.catalog_df = self.hf.load_parquet("catalog", clean_fn=self._clean_dataframe)
         self.master_df = self.hf.load_parquet("master", clean_fn=self._clean_dataframe)
 
-        logger.info(f"CatalogManager Initialized (Scope: {self.scope}, SyncMaster: {sync_master})")
+        logger.debug(f"CatalogManager Initialized (Scope: {self.scope}, SyncMaster: {sync_master})")
 
         if sync_master:
             # 整合性チェックと最新スキーマへのアップグレード
@@ -93,7 +93,7 @@ class CatalogManager:
                     logger.info("初期マスター構築を検知しました。直ちに Hugging Face に保存します。")
                     self.hf.push_commit("Initial Master Build from EDINET")
         else:
-            logger.info("マスタ同期をスキップしました (sync_master=False)。HF上の既存データを使用します。")
+            logger.debug("マスタ同期をスキップしました (sync_master=False)。HF上の既存データを使用します。")
 
     # ──────────────────────────────────────────────
     # 委譲 (Delegations)

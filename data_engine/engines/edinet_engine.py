@@ -23,7 +23,7 @@ class EdinetEngine:
         from data_engine.core.network_utils import GLOBAL_ROBUST_SESSION
 
         self.session = GLOBAL_ROBUST_SESSION
-        logger.info("EdinetEngine を初期化しました (Persistent Session 注入済)。")
+        logger.debug("EdinetEngine を初期化しました (Persistent Session 注入済)。")
 
     def fetch_metadata(self, start_date: str, end_date: str, ope_date_time: str = None) -> List[Dict]:
         """

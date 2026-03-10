@@ -118,29 +118,40 @@ class WorkerEngine:
         """Workerモード (デフォルト): データの取得・解析・保存のパイプラインを実行する"""
         logger.info("=== Worker Pipeline Started ===")
 
-        # 2. 増分同期のためのチェックポイント取得
-        last_ope_time = None
-        if not self.catalog.catalog_df.empty and "ope_date_time" in self.catalog.catalog_df.columns:
-            # カタログ内の最新の操作日時を取得
-            max_ope = self.catalog.catalog_df["ope_date_time"].max()
-            if not pd.isna(max_ope) and str(max_ope).strip() != "":
-                try:
-                    # 【工学的主権】APIの反映遅延（Visibility Lag）に備え、1時間のルックバックバッファを適用する
-                    # 14:00に取得した際、13:55の書類が見えていなかったとしても、次回の1時間戻した検索で確実に捉える。
-                    # 重複は CatalogManager.update_catalog の drop_duplicates で排除されるため安全。
-                    dt_ope = datetime.strptime(max_ope, "%H:%M:%S")
-                    dt_buffer = dt_ope - pd.Timedelta(hours=1)
-                    # 00:00:00 を下回らないように調整
-                    if dt_buffer.day < dt_ope.day:  # 日を跨いだ場合
-                        last_ope_time = "00:00:00"
-                    else:
-                        last_ope_time = dt_buffer.strftime("%H:%M:%S")
-                    logger.info(f"増分同期チェックポイント: {max_ope} -> {last_ope_time} (1h Buffer適用)")
-                except Exception as e:
-                    logger.warning(f"ope_date_time の計算に失敗しました: {e}")
-                    last_ope_time = None
+        meta_cache_path = self.catalog.data_path / "meta" / "discovery_metadata.json"
+        target_ids = self.args.id_list.split(",") if self.args.id_list else None
 
-        all_meta = self.edinet.fetch_metadata(self.args.start, self.args.end, ope_date_time=last_ope_time)
+        # 2. 増分同期またはDiscoveryキャッシュの利用
+        is_worker_with_cache = self.args.mode == "worker" and meta_cache_path.exists()
+
+        if is_worker_with_cache:
+            try:
+                with open(meta_cache_path, "r", encoding="utf-8") as f:
+                    all_meta = json.load(f)
+                logger.info("Discovery時のメタデータキャッシュを利用します（APIフェッチをスキップ）。")
+            except Exception as e:
+                logger.warning(f"メタデータキャッシュの読み込みに失敗しました。APIフェッチにフォールバックします: {e}")
+                is_worker_with_cache = False
+
+        if not is_worker_with_cache:
+            last_ope_time = None
+            if not self.catalog.catalog_df.empty and "ope_date_time" in self.catalog.catalog_df.columns:
+                # カタログ内の最新の操作日時を取得
+                max_ope = self.catalog.catalog_df["ope_date_time"].max()
+                if not pd.isna(max_ope) and str(max_ope).strip() != "":
+                    try:
+                        dt_ope = datetime.strptime(max_ope, "%H:%M:%S")
+                        dt_buffer = dt_ope - pd.Timedelta(hours=1)
+                        if dt_buffer.day < dt_ope.day:
+                            last_ope_time = "00:00:00"
+                        else:
+                            last_ope_time = dt_buffer.strftime("%H:%M:%S")
+                        logger.info(f"増分同期チェックポイント: {max_ope} -> {last_ope_time} (1h Buffer適用)")
+                    except Exception as e:
+                        logger.warning(f"ope_date_time の計算に失敗しました: {e}")
+                        last_ope_time = None
+
+            all_meta = self.edinet.fetch_metadata(self.args.start, self.args.end, ope_date_time=last_ope_time)
         if not all_meta:
             if self.args.list_only:
                 print("JSON_MATRIX_DATA: []")
@@ -148,56 +159,50 @@ class WorkerEngine:
 
         initial_count = len(all_meta)
         filtered_meta = []
-        skipped_reasons = {"no_sec_code": 0, "invalid_length": 0, "has_sec_code": 0}
+        # Discoveryモード (list-only) の場合のみフィルタリングを実行
+        if self.args.list_only:
+            filtered_meta = []
+            skipped_reasons = {"no_sec_code": 0, "invalid_length": 0, "has_sec_code": 0}
 
-        for row in all_meta:
-            raw_code = row.get("secCode")
-            sec_code = "" if raw_code is None else str(raw_code).strip()
-            if sec_code.lower() in ["none", "nan", "null"]:
-                sec_code = ""
+            for row in all_meta:
+                raw_code = row.get("secCode")
+                sec_code = "" if raw_code is None else str(raw_code).strip()
+                if sec_code.lower() in ["none", "nan", "null"]:
+                    sec_code = ""
 
-            if ARIA_SCOPE == "Listed":
-                if not sec_code:
-                    skipped_reasons["no_sec_code"] += 1
+                if ARIA_SCOPE == "Listed":
+                    if not sec_code:
+                        skipped_reasons["no_sec_code"] += 1
+                        continue
+                    if len(sec_code) < 4:
+                        skipped_reasons["invalid_length"] += 1
+                        continue
+                    filtered_meta.append(row)
+                elif ARIA_SCOPE == "Unlisted":
+                    if sec_code and len(sec_code) >= 4:
+                        skipped_reasons["has_sec_code"] += 1
+                        continue
+                    filtered_meta.append(row)
+                elif ARIA_SCOPE == "All":
+                    filtered_meta.append(row)
+                else:
+                    logger.warning(f"Unknown ARIA_SCOPE: {ARIA_SCOPE}. Falling back to skip.")
                     continue
-                if len(sec_code) < 4:
-                    skipped_reasons["invalid_length"] += 1
-                    logger.debug(f"書類スキップ (コード短縮): {row.get('docID')} - {sec_code}")
-                    continue
-                filtered_meta.append(row)
-            elif ARIA_SCOPE == "Unlisted":
-                if sec_code and len(sec_code) >= 4:
-                    skipped_reasons["has_sec_code"] += 1
-                    continue
-                filtered_meta.append(row)
-            elif ARIA_SCOPE == "All":
-                filtered_meta.append(row)
-            else:
-                logger.warning(f"Unknown ARIA_SCOPE: {ARIA_SCOPE}. Falling back to skip.")
-                continue
 
-        all_meta = filtered_meta
-        if not self.args.id_list:
+            all_meta = filtered_meta
+            skipped_count = sum(skipped_reasons.values())
             logger.info(
-                f"最終処理対象書類数: {len(all_meta)} 件 "
-                f"(全 {initial_count} 件中 | 証券コードなし: {skipped_reasons.get('no_sec_code', 0)} 件, "
-                f"コード不正: {skipped_reasons.get('invalid_length', 0)} 件, "
-                f"上場企業コードあり: {skipped_reasons.get('has_sec_code', 0)} 件)"
+                f"フィルタリング完了: {len(all_meta)}/{initial_count} 件を抽出 "
+                f"(採用: {len(all_meta)} 件 | スキップ: {skipped_count} 件 ["
+                f"証券コードなし: {skipped_reasons.get('no_sec_code', 0)}, "
+                f"形式不正: {skipped_reasons.get('invalid_length', 0)}, "
+                f"スコープ外: {skipped_reasons.get('has_sec_code', 0)}])"
             )
 
-        meta_cache_path = self.catalog.data_path / "meta" / "discovery_metadata.json"
-        if self.args.list_only:
             meta_cache_path.parent.mkdir(parents=True, exist_ok=True)
             with open(meta_cache_path, "w", encoding="utf-8") as f:
                 json.dump(all_meta, f, ensure_ascii=False, indent=2)
             logger.info(f"Discoveryメタデータを保存しました: {meta_cache_path}")
-        elif self.args.mode == "worker" and meta_cache_path.exists():
-            try:
-                with open(meta_cache_path, "r", encoding="utf-8") as f:
-                    all_meta = json.load(f)
-                logger.info("Discovery時のメタデータキャッシュを利用してDriftを防止します。")
-            except Exception as e:
-                logger.warning(f"メタデータキャッシュの読み込みに失敗しました: {e}")
 
         if self.args.list_only:
             matrix_data = []
@@ -241,26 +246,13 @@ class WorkerEngine:
         text_roles = fs_dict["report"] + fs_dict["notes"]
 
         loaded_acc = {}
-        target_ids = self.args.id_list.split(",") if self.args.id_list else None
-
         for row in all_meta:
             doc_id = row.get("docID")
-            edinet_code = row.get("edinetCode")
-            title = row.get("docDescription", "名称不明")
-
-            # 3. 第2段階フィルタ (手動実行時の安全網 & 高速化)
-            # 【工学的主権】ARIA_SCOPE="All" の場合は全ての銘柄を許可する
-            if ARIA_SCOPE != "All":
-                is_listed_master = edinet_code in self.listed_edinet_codes
-                # Listed モードなのに非上場、または Unlisted モードなのに上場企業ならスキップ
-                if is_listed_master != (ARIA_SCOPE == "Listed"):
-                    continue
-
             if target_ids and doc_id not in target_ids:
                 continue
 
-            if target_ids:
-                found_target_ids.add(doc_id)
+            found_target_ids.add(doc_id)
+            title = row.get("docDescription", "名称不明")
 
             if not getattr(self.args, "force_refresh", False) and self.catalog.is_processed(doc_id):
                 continue

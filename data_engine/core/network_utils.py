@@ -122,7 +122,7 @@ def patch_all_networking():
                     mod.requests.head = robust_session.head
                     mod.requests.request = robust_session.request
 
-                    logger.info(f"Patched all networking entry points in {mod_name}")
+                    logger.debug(f"Patched all networking entry points in {mod_name}")
         except Exception as e:
             logger.debug(f"Failed to patch {mod_name}: {e}")
 

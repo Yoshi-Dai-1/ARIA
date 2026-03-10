@@ -26,7 +26,7 @@ class FsaEngine:
     def __init__(self, session: Optional[requests.Session] = None):
         # 堅牢な共通セッションを優先し、なければ GLOBAL を使用
         self.session = session or GLOBAL_ROBUST_SESSION
-        logger.info("FsaEngine を初期化しました。")
+        logger.debug("FsaEngine を初期化しました。")
 
     def sync_edinet_code_lists(self) -> Tuple[Dict[str, EdinetCodeRecord], Dict[str, str]]:
         """
