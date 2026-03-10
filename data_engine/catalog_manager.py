@@ -174,6 +174,9 @@ class CatalogManager:
                     d = {k: (v if pd.notna(v) else None) for k, v in row.to_dict().items()}
                     records.append(StockMasterRecord(**d).model_dump())
                 return pd.DataFrame(records)
+            else:
+                # 未知のキー（financial_values 等）はバリデーションせずそのまま返す
+                return df
         except Exception as e:
             logger.warning(f"データクレンジングエラー ({key}): {e} - フォールバックとして元のDFを返します。")
 

@@ -50,7 +50,7 @@ class MasterMerger:
             filename = f"{master_type}_bin{bin_id}.parquet"
 
             return catalog_manager.save_delta(
-                key="master",
+                key=master_type,
                 df=new_data,
                 run_id=run_id,
                 chunk_id=chunk_id,

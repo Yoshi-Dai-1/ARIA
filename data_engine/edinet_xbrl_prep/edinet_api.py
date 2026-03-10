@@ -206,9 +206,12 @@ def get_edinet_metadata(params: EdinetMetadataInputV2, session: Optional[request
         try:
             res_list=[]
             res_parsed = json.loads(res.text)
-            for res_day in res_parsed['results']:
-                res_day['access_date'] = datetime.today().strftime('%Y-%m-%d')
-                res_list.append({key: res_day[key] for key in get_columns(EdinetResponse)})
+            if 'results' in res_parsed and res_parsed['results'] is not None:
+                for res_day in res_parsed['results']:
+                    res_day['access_date'] = datetime.today().strftime('%Y-%m-%d')
+                    res_list.append({key: res_day[key] for key in get_columns(EdinetResponse)})
+            else:
+                logger.warning(f"EDINET metadata response does not contain 'results' for date: {params.date_api_param}")
             result_temp["data"] = res_list
 
         except json.JSONDecodeError as e:

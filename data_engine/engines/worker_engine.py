@@ -144,7 +144,7 @@ class WorkerEngine:
         if not all_meta:
             if self.args.list_only:
                 print("JSON_MATRIX_DATA: []")
-            return
+            return True
 
         initial_count = len(all_meta)
         filtered_meta = []
@@ -221,7 +221,7 @@ class WorkerEngine:
                     }
                 )
             print(f"JSON_MATRIX_DATA: {json.dumps(matrix_data)}")
-            return
+            return True
 
         logger.info("=== Data Lakehouse 2.0 実行開始 ===")
         tasks = []

@@ -77,9 +77,11 @@ def main():
     else:
         success = run_worker_pipeline(args, catalog.edinet, catalog, run_id, chunk_id)
 
-    if not success:
-        logger.error("パイプライン実行中にエラーが発生したため、異常終了します。")
+    if success is False:
+        logger.error("パイプライン実行中に致命的なエラーが発生したため、異常終了します。")
         sys.exit(1)
+
+    logger.info("パイプライン処理が正常に終了しました。")
 
 
 if __name__ == "__main__":
