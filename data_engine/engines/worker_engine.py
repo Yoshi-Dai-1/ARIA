@@ -6,6 +6,7 @@ import pandas as pd
 from loguru import logger
 
 from data_engine.core.config import ARIA_SCOPE, CONFIG, HF_WARNING_THRESHOLD, RAW_DIR, TEMP_DIR
+from data_engine.core.network_utils import patch_all_networking
 from data_engine.core.utils import normalize_code
 from data_engine.edinet_xbrl_prep.fs_tbl import get_fs_tbl
 
@@ -113,10 +114,16 @@ class WorkerEngine:
                 .dropna()
                 .unique()
             )
+        # 全体的な通信の堅牢化を適用
+        patch_all_networking()
+
+        # 起動情報の集約表示（工学的主権: 冗長性を排除し、重要な情報のみを提示）
+        logger.info(f"ARIA Execution Scope: {ARIA_SCOPE}")
 
     def run(self):
         """Workerモード (デフォルト): データの取得・解析・保存のパイプラインを実行する"""
-        logger.info("=== Worker Pipeline Started ===")
+        mode_label = "Discovery" if self.args.list_only else "Worker"
+        logger.info(f"=== {mode_label} Pipeline Started ===")
 
         meta_cache_path = self.catalog.data_path / "meta" / "discovery_metadata.json"
         target_ids = self.args.id_list.split(",") if self.args.id_list else None
@@ -155,6 +162,10 @@ class WorkerEngine:
         if not all_meta:
             if self.args.list_only:
                 print("JSON_MATRIX_DATA: []")
+                # GHA堅牢化: 0件でも空のキャッシュファイルを生成し、後続のmvエラーを防止する
+                meta_cache_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(meta_cache_path, "w", encoding="utf-8") as f:
+                    json.dump([], f, ensure_ascii=False, indent=2)
             return True
 
         initial_count = len(all_meta)
@@ -190,30 +201,23 @@ class WorkerEngine:
                     continue
 
             all_meta = filtered_meta
-            skipped_count = sum(skipped_reasons.values())
-            logger.info(
-                f"フィルタリング完了: {len(all_meta)}/{initial_count} 件を抽出 "
-                f"(採用: {len(all_meta)} 件 | スキップ: {skipped_count} 件 ["
-                f"証券コードなし: {skipped_reasons.get('no_sec_code', 0)}, "
-                f"形式不正: {skipped_reasons.get('invalid_length', 0)}, "
-                f"スコープ外: {skipped_reasons.get('has_sec_code', 0)}])"
-            )
 
-            meta_cache_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(meta_cache_path, "w", encoding="utf-8") as f:
-                json.dump(all_meta, f, ensure_ascii=False, indent=2)
-            logger.info(f"Discoveryメタデータを保存しました: {meta_cache_path}")
-
-        if self.args.list_only:
+            # 既処理（カタログ参照）によるフィルタリング
             matrix_data = []
+            final_filtered_meta = []
+            processed_skip_count = 0
+
             for row in all_meta:
                 docid = row["docID"]
                 if self.catalog.is_processed(docid):
                     api_retracted = row.get("withdrawalStatus") == "1"
                     local_status = self.catalog.get_status(docid)
+                    # 取下げステータスの同期が必要な場合を除きスキップ
                     if not (api_retracted and local_status != "retracted"):
+                        processed_skip_count += 1
                         continue
 
+                final_filtered_meta.append(row)
                 raw_sec_code = normalize_code(str(row.get("secCode", "")).strip())
                 matrix_data.append(
                     {
@@ -225,6 +229,29 @@ class WorkerEngine:
                         "form": row.get("formCode"),
                     }
                 )
+
+            all_meta = final_filtered_meta
+            skipped_count = sum(skipped_reasons.values()) + processed_skip_count
+
+            # スコアに応じた詳細ラベルの作成（工学的最適化）
+            skip_details = [f"既処理: {processed_skip_count}"]
+            if ARIA_SCOPE == "Listed":
+                skip_details.append(f"証券コードなし: {skipped_reasons['no_sec_code']}")
+                skip_details.append(f"形式不正: {skipped_reasons['invalid_length']}")
+            elif ARIA_SCOPE == "Unlisted":
+                skip_details.append(f"証券コードあり: {skipped_reasons['has_sec_code']}")
+
+            logger.info(
+                f"フィルタリング完了: {len(all_meta)}/{initial_count} 件を抽出 "
+                f"(採用: {len(all_meta)} 件 | 総スキップ: {skipped_count} 件 ["
+                f"{', '.join(skip_details)}])"
+            )
+
+            meta_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(meta_cache_path, "w", encoding="utf-8") as f:
+                json.dump(all_meta, f, ensure_ascii=False, indent=2)
+            logger.info(f"Discoveryメタデータを保存しました: {meta_cache_path}")
+
             print(f"JSON_MATRIX_DATA: {json.dumps(matrix_data)}")
             return True
 

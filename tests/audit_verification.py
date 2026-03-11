@@ -1,6 +1,6 @@
+from pathlib import Path
 import shutil
 import sys
-from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
@@ -100,16 +100,13 @@ def test_audit_logic():
                 assert "E00004" not in master_un["edinet_code"].values
                 print("PASS: Scope Filtering (Unlisted) Verified")
 
-    # Cleanup temp data AFTER test session if desired, but we'll leave it for now to avoid the 10 items issue
-    # rm -rf DATA_PATH
-
 
 if __name__ == "__main__":
     try:
         test_audit_logic()
         print("\n🎯 ALL AUDIT TESTS PASSED")
-        # Final cleanup of data directory to keep git clean
-        DATA_PATH = Path("/Users/yoshi_dai/repos/ARIA/tests/temp_audit_test")
+        # Final cleanup encouraged
+        DATA_PATH = root / "tests" / "temp_audit_test"
         if DATA_PATH.exists():
             shutil.rmtree(DATA_PATH)
     except Exception as e:

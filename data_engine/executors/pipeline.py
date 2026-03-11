@@ -2,18 +2,8 @@ import signal
 
 from loguru import logger
 
-# モジュールのインポート
-from data_engine.core.config import ARIA_SCOPE
-from data_engine.core.network_utils import patch_all_networking
 from data_engine.engines.merger_engine import MergerEngine
 from data_engine.engines.worker_engine import WorkerEngine
-
-# グローバルな実行環境の統制 (TQDM等) は CONFIG インポート時に適用済み
-
-# 全体的な通信の堅牢化を適用
-patch_all_networking()
-
-logger.info(f"ARIA Execution Scope (from SSOT config): {ARIA_SCOPE}")
 
 
 # シグナルハンドリング
