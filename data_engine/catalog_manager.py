@@ -135,7 +135,14 @@ class CatalogManager:
                 self.reconciliation.update_master_from_edinet_codes()
                 self.hf.push_commit("Initial Master Build from EDINET")
 
+        # 1. 完全一致で検索 (JP:12340 等)
         row = self.master_df[self.master_df["code"] == code]
+        
+        # 2. 完全一致で見つからず、プレフィックスがある場合は剥がして再試行 (Legacy対応)
+        if row.empty and ":" in str(code):
+            core_code = str(code).split(":", 1)[1]
+            row = self.master_df[self.master_df["code"] == core_code]
+            
         if not row.empty:
             col_name = "sector_jpx_33" if "sector_jpx_33" in self.master_df.columns else "sector"
             val = row.iloc[0].get(col_name)
@@ -285,9 +292,23 @@ class CatalogManager:
             # 今回登録された各コードの最新提出日時
             latest_submits = df_new.dropna(subset=["code", "submit_at"]).groupby("code")["submit_at"].max().to_dict()
 
-            master_dict = {
-                str(row["code"]): row.to_dict() for _, row in self.master_df.iterrows() if pd.notna(row.get("code"))
-            }
+            # プレフィックス耐性のあるルックアップ用辞書の構築 (新旧双方のキーでアクセス可能にする)
+            master_dict = {}
+            for _, row in self.master_df.iterrows():
+                m_code = row.get("code")
+                if pd.isna(m_code):
+                    continue
+                m_rec = row.to_dict()
+                m_code_str = str(m_code)
+                master_dict[m_code_str] = m_rec
+                if ":" not in m_code_str:
+                    # プレフィックスがない既存レコードに対し、JP: 付きでも引けるようにする
+                    master_dict[f"JP:{m_code_str}"] = m_rec
+                else:
+                    # プレフィックスがある場合、プレフィックスなしでも引けるようにする (念視)
+                    core = m_code_str.split(":", 1)[1]
+                    if core not in master_dict:
+                        master_dict[core] = m_rec
 
             for code, submit_time in latest_submits.items():
                 if not code or str(code).strip() == "":
@@ -301,8 +322,15 @@ class CatalogManager:
                         master_updated = True
 
             if master_updated:
-                # master_df 自体を更新してバッファへ載せる
-                new_master_df = pd.DataFrame(list(master_dict.values()))
+                # 相互リンク (JP:12340 と 12340) による重複を排除して DataFrame化
+                unique_records = []
+                seen_ids = set()
+                for rec in master_dict.values():
+                    if id(rec) not in seen_ids:
+                        unique_records.append(rec)
+                        seen_ids.add(id(rec))
+                
+                new_master_df = pd.DataFrame(unique_records)
                 self.master_df = self._clean_dataframe("master", new_master_df)
                 self.hf.save_and_upload("master", self.master_df, clean_fn=self._clean_dataframe, defer=True)
                 logger.info("書類の提出を検知し、マスタの last_submitted_at を更新しました。")

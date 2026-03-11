@@ -11,7 +11,7 @@ from data_engine.catalog_manager import CatalogManager
 from data_engine.core.config import CONFIG
 from data_engine.core.network_utils import patch_all_networking
 from data_engine.core.utils import get_edinet_repo_path
-from data_engine.edinet_xbrl_prep.edinet_api import request_term
+from data_engine.engines.parsing.edinet.edinet_api import request_term
 
 
 class ExtremeIntegrityAuditor:

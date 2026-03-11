@@ -77,10 +77,10 @@ class NikkeiStrategy(IndexStrategy):
             # クリーニング
             df = df.dropna(subset=[code_col, weight_col])
 
-            # コードを文字列化 (4桁想定)
-            df["code"] = df[code_col].astype(str).str.replace(".0", "", regex=False).str.strip().apply(normalize_code)
-            # 4桁未満の場合は左パディング (例: 1 -> 0001 は稀だが念のため)
-            df = df[df["code"].str.match(r"^\d+$")]
+            # コードを文字列化 (JPプレフィックス付与)
+            df["code"] = df[code_col].astype(str).str.replace(".0", "", regex=False).str.strip().apply(
+                lambda x: normalize_code(x, nationality="JP")
+            )
 
             # ウエイトのパース
             def parse_weight(x):
@@ -127,8 +127,8 @@ class TopixStrategy(IndexStrategy):
 
             df = df[[code_col, weight_col]].rename(columns={code_col: "code", weight_col: "weight"})
 
-            # 型変換
-            df["code"] = df["code"].astype(str).str.strip().apply(normalize_code)
+            # 型変換 (JPプレフィックス付与)
+            df["code"] = df["code"].astype(str).str.strip().apply(lambda x: normalize_code(x, nationality="JP"))
 
             def parse_weight(x):
                 if isinstance(x, str):
@@ -199,7 +199,7 @@ class MarketDataEngine:
                 "市場・商品区分": "market",
             }
         )
-        df["code"] = df["code"].astype(str).str.strip().apply(lambda x: x + "0" if len(x) == 4 else x)
+        df["code"] = df["code"].astype(str).str.strip().apply(lambda x: normalize_code(x, nationality="JP"))
 
         return df[["code", "company_name", "sector_jpx_33", "sector_jpx_17", "market"]]
 

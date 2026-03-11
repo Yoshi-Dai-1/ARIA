@@ -79,13 +79,13 @@ def patch_all_networking():
     except ImportError:
         pass
 
-    # 2. 外部ライブラリ edinet_xbrl_prep の通信を堅牢化
+    # 2. 外部ライブラリ parsing/edinet の通信を堅牢化
     modules_to_patch = []
     modules_to_patch.extend(
         [
-            "data_engine.edinet_xbrl_prep.edinet_api",
-            "data_engine.edinet_xbrl_prep.link_base_file_analyzer",
-            "data_engine.edinet_xbrl_prep.fs_tbl",
+            "data_engine.engines.parsing.edinet.edinet_api",
+            "data_engine.engines.parsing.edinet.link_base_file_analyzer",
+            "data_engine.engines.parsing.edinet.fs_tbl",
         ]
     )
 

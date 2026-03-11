@@ -22,6 +22,7 @@
 - **EDINET コード集約ブリッジ**: 合併等でコードが変更されても、金融庁公式の集約一覧 (ESE140190.csv) を用いて歴史を自動で繋ぐ名寄せ機能
 - **API V2 増分同期**: `opeDateTime` パラメータを活用し、差分のみを効率的に取得
 - **Market Data Pipeline**: EDINET とは独立した市場データ収集エンジン (Nikkei 225, TOPIX 対応)
+- **Global Namespacing (Nationality Tags)**: 全証券コードに `JP:` プレフィックスを強制。将来の海外市場展開への拡張性と技術的主権を担保
 - **Hugging Face Integration**: 単一リポジトリでの効率的なデータレイク管理
 
 ## アーキテクチャ (Monorepo)
@@ -32,10 +33,12 @@
 Python による堅牢なデータ処理基盤。直感的で拡張性の高いパッケージ構成を採用しています。
 - **`core/`**: 基盤ロジック（`models.py` (SSOTスキーマ), `config.py`, `utils.py`, `network_utils.py`, `taxonomy_urls.json`）
 - **`storage/`**: データ永続化層（`hf_storage.py` (Hugging Face), `delta_manager.py` (デルタ管理)）
-- **`engines/`**: 専門データ取得・処理エンジン（`edinet_engine.py`, `market_engine.py`, `reconciliation_engine.py`, `master_merger.py`）
-- **`services/`**: 自律管理・監査サービス（`data_reconciliation.py` (4層監査)）
+- **`engines/`**: 専門データ取得・処理エンジン
+    - `filtering/`: 書類選別フィルター (`FilteringEngine`)
+    - `parsing/`: XBRL解析エンジン (`edinet_xbrl_prep` 統合)
+    - `edinet_engine.py`, `market_engine.py`, `reconciliation_engine.py`, `master_merger.py`
+- **`services/`**: 自律管理・監査サービス（`data_reconciliation.py` (5層監査)）
 - **`executors/`**: パイプライン実行エントリーポイント（`harvester_main.py`, `indices_main.py`, `pipeline.py`, `backfill_manager.py`）
-- **`edinet_xbrl_prep/`**: XBRL解析・正規化を行う内包サブモジュール
 
 ### 2. Web Frontend (`web_frontend/`)
 Vite + React による投資分析ダッシュボード（開発中）。
@@ -52,9 +55,9 @@ financial-lakehouse/
 │           ├── zip/                # ZIPアーカイブ（1万ファイル制限対応）
 │           └── pdf/                # PDF書類（1万ファイル制限対応）
 ├── catalog/                        # ドキュメントインデックス
-│   └── documents_index.parquet     # 32カラム構成。全書類のメタデータ SSOT
+│   └── documents_index.parquet     # 32カラム構成。全書類のメタデータ SSOT (codeは `JP:XXXXX` 形式)
 ├── meta/                           # システムメタデータ
-│   ├── stocks_master.parquet       # 銘柄マスタ (EDINETコードリスト+JPX属性)
+│   ├── stocks_master.parquet       # 銘柄マスタ (EDINETコードリスト+JPX属性。codeは `JP:XXXXX` 形式)
 │   ├── listing_history.parquet     # 上場・廃止・再上場イベント履歴
 │   ├── name_history.parquet        # 社名変更履歴 (漢字・カナ・英語の三位一体)
 │   └── backfill_cursor.json        # バックフィル進行状況 (保全優先カーソル)

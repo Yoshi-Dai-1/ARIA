@@ -4,28 +4,21 @@
 
 # %% Requirements
 
-import requests
 import json
-import pandas as pd
-import numpy as np
-import datetime
-from time import sleep
 import warnings
-from tqdm import tqdm
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from pydantic import BaseModel
-
-import pandera as pa
-from pandera.typing import DataFrame, Series
-from pydantic import ConfigDict
-from pydantic import validate_call
-
-from datetime import datetime, timedelta, date
-from pydantic import BaseModel, Field,SecretStr
 from time import sleep
-from typing import Literal, Annotated, Optional, List, Dict, Union, Any
-from pydantic.functional_validators import BeforeValidator
+from typing import Annotated, Any, Literal, Optional
+
+import pandas as pd
+import pandera as pa
+import requests
 from loguru import logger
+from pandera.typing import Series
+from pydantic import BaseModel, ConfigDict, Field, validate_call
+from pydantic.functional_validators import BeforeValidator
+from tqdm import tqdm
 
 
 
@@ -175,7 +168,8 @@ def normalize_date(v: Any) -> datetime:
         # カンマやスラッシュ、ハイフンなどの区切りに対応
         for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y%m%d"):
             try:
-                return datetime.strptime(s_v[:10].replace("/", "-"), "%Y-%m-%d")
+                # 区切り文字を統一せず、多様な形式(fmt)で直接パースを試みる
+                return datetime.strptime(s_v[:10], fmt)
             except Exception:
                 continue
     return datetime.now()
@@ -279,23 +273,43 @@ class EdinetResponseDf(pa.DataFrameModel):
     docTypeCode: Series[str] = pa.Field(nullable=True) # 書類種別コード
     periodStart: Series[str] = pa.Field(nullable=True) # 開始期間
     periodEnd: Series[str] = pa.Field(nullable=True) # 終了期間
-    submitDateTime: Series[str] = pa.Field(nullable=True) # 書類提出日時 
-    docDescription: Series[str] = pa.Field(nullable=True) # EDINETの閲覧サイトの書類検索結果画面において、「提出書類」欄に表示される文字列
+    submitDateTime: Series[str] = pa.Field(nullable=True) # 書類提出日時
+    docDescription: StrOrNone = Field(
+        default="",
+        title="提出書類",
+        description="EDINET の閲覧サイトの書類検索結果画面において、「提出書類」欄に表示される文字列"
+    )
     issuerEdinetCode: Series[str] = pa.Field(nullable=True) # 発行会社EDINETコード 大量保有について発行会社の EDINETコード
-    subjectEdinetCode: Series[str] = pa.Field(nullable=True) # 公開買付けについて対象となるEDINETコード
-    subsidiaryEdinetCode: Series[str] = pa.Field(nullable=True) # 子会社の EDINET コードが出力されます。複数存在する場合(最大10個)、","(カンマ)で結合した文字列が出力
-    currentReportReason: Series[str] = pa.Field(nullable=True) # 臨報提出事由、臨時報告書の提出事由が出力され ます。複数存在する場合、","(カンマ)で結合した文字列が出力
+    subjectEdinetCode: Series[str] = pa.Field(
+        nullable=True
+    ) # 公開買付けについて対象となるEDINETコード
+    subsidiaryEdinetCode: Series[str] = pa.Field(
+        nullable=True
+    ) # 子会社の EDINET コードが出力されます。複数存在する場合(最大10個)、","(カンマ)で結合した文字列が出力
+    currentReportReason: Series[str] = pa.Field(
+        nullable=True
+    ) # 臨報提出事由、臨時報告書の提出事由が出力され ます。複数存在する場合、","(カンマ)で結合した文字列が出力
     parentDocID: Series[str] = pa.Field(nullable=True) # 親書類管理番号
-    opeDateTime: Series[str] = pa.Field(nullable=True) # 「2-1-6 財務局職員による書類情報修正」、「2-1-7 財務局職員による書類の不開示」、磁気ディスク提出及び紙面提出を行った日時が出力
+    opeDateTime: StrOrNone = Field(
+        default="",
+        title="処理日時",
+        description="「2-1-6 財務局職員による書類情報修正」などの日時"
+    )
     withdrawalStatus: Series[str] = pa.Field(isin=['0','1','2']) # 取下書は"1"、取り下げられた書類は"2"、それ以外は"0"が出力
     docInfoEditStatus: Series[str] = pa.Field(isin=['0','1','2']) # 財務局職員が書類を修正した情報は"1"、修正された書類は"2"、それ以外は"0"が出力
-    disclosureStatus: Series[str] = pa.Field(isin=['0','1','2','3']) # 財務局職員によって書類の不開示を開始した情報は"1"、不開示とされている書類は"2"、財務局職員によって書類の不開示を解除した情報は "3"、それ以外は"0"が出力
+    disclosureStatus: Series[str] = pa.Field(
+        isin=['0','1','2','3']
+    ) # 財務局職員によって書類の不開示を開始した情報は"1"、不開示とされている書類は"2"、財務局職員によって書類の不開示を解除した情報は "3"、それ以外は"0"が出力
     xbrlFlag: Series[str] = pa.Field(isin=['0','1']) # 書類にXBRLがある場合は"1"、それ以外0
     pdfFlag: Series[str] = pa.Field(isin=['0','1']) # 書類にPDFがある場合は"1"、それ以外0
-    attachDocFlag: Series[str] = pa.Field(isin=['0','1']) # 書類に代替書面・添付文書がある場合: 1、それ以外: 0
+    attachDocFlag: Series[str] = pa.Field(
+        isin=['0','1']
+    ) # 書類に代替書面・添付文書がある場合: 1、それ以外: 0
     englishDocFlag: Series[str] = pa.Field(isin=['0','1']) # 書類に英文ファイルがある場合: 1
     csvFlag: Series[str] = pa.Field(isin=['0','1']) # 書類にcsvがある場合1
-    legalStatus: Series[str] = pa.Field(isin=['0','1','2']) # "1":縦覧中 "2":延長期間中(法定縦覧期間満了書類だが引き続き閲覧可能。) "0":閲覧期間満了(縦覧期間満了かつ延長期間なし、延長期間満了又は取下げにより閲覧できないもの。なお、不開示は含まない。)
+    legalStatus: Series[str] = pa.Field(
+        isin=['0','1','2']
+    ) # "1":縦覧中 "2":延長期間中(法定縦覧期間満了書類だが引き続き閲覧可能。) "0":閲覧期間満了(縦覧期間満了かつ延長期間なし、延長期間満了又は取下げにより閲覧できないもの。なお、不開示は含まない。)
     sector_label_33: Series[str] = pa.Field(nullable=True) # 33業種区分
 
     def __len__(self):

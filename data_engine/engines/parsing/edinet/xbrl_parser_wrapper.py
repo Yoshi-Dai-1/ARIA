@@ -1,23 +1,15 @@
-
 import pandas as pd
-
 from arelle import Cntlr
 from arelle.ModelValue import qname
-
 from zipfile import ZipFile
 import json
 from pathlib import Path
-from typing import List, Tuple, Union
-import pandera as pa
-from pandera.typing import DataFrame, Series
-
-from typing import Literal
-import json
 from typing import Annotated
-from pydantic import BaseModel, Field
-
+import pandera as pa
+from pandera.typing import Series
+from pydantic import BaseModel
 from pydantic.functional_validators import BeforeValidator
-from .utils import *
+from .utils import get_columns_df, get_dtype_dict
 # %% #################################################################
 #
 #            schima
@@ -172,11 +164,14 @@ def get_xbrl_wrapper(docid,zip_file:str,temp_dir:Path,out_path:Path,update_flg=F
     
     
     try:
-        already_exist_flg=(out_path / "xbrl_parsed.csv").exists()
-        if (already_exist_flg)&(update_flg==False):
+        already_exist_flg = (out_path / "xbrl_parsed.csv").exists()
+        if already_exist_flg and not update_flg:
             log_dict["already_parse_xbrl"] = True
-            xbrl_parsed=pd.read_csv(out_path / "xbrl_parsed.csv",dtype=dtype(xbrl_elm_schima))
-            return xbrl_elm_schima(xbrl_parsed),log_dict
+            xbrl_parsed = pd.read_csv(
+                out_path / "xbrl_parsed.csv",
+                dtype=get_dtype_dict(xbrl_elm_schima)
+            )
+            return xbrl_elm_schima(xbrl_parsed), log_dict
     except Exception as e:
         already_exist_flg=False
         pass

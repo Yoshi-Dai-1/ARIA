@@ -6,12 +6,12 @@ from loguru import logger
 from data_engine.core.models import EdinetDocument
 
 # 内部モジュール（外部ライブラリ）のインポート
-from data_engine.edinet_xbrl_prep.edinet_api import (
+from data_engine.engines.parsing.edinet.edinet_api import (
     edinet_response_metadata,
     request_doc,
     request_term,
 )
-from data_engine.edinet_xbrl_prep.link_base_file_analyzer import account_list_common
+from data_engine.engines.parsing.edinet.link_base_file_analyzer import account_list_common
 
 
 class EdinetEngine:

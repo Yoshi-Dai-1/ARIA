@@ -1,28 +1,16 @@
-
 import pandera as pa
-from pandera.typing import DataFrame, Series
-
-import os
-import logging
-from logging.handlers import RotatingFileHandler
-import inspect
-from pathlib import Path
-from datetime import datetime, timedelta, date
-from pydantic import BaseModel, Field
-from time import sleep
 import time
 import contextlib
 from loguru import logger
 
-from typing import Literal
-import json
-from typing import Annotated
-from pydantic.functional_validators import BeforeValidator
 
 
-
-def get_columns_df(schima:pa.DataFrameModel)->list:
+def get_columns_df(schima: pa.DataFrameModel) -> list:
     return list(schima.to_schema().columns.keys())
+
+
+def get_dtype_dict(schima: pa.DataFrameModel) -> dict:
+    return {name: col.dtype for name, col in schima.to_schema().columns.items()}
 
 
 def remove_empty_lists(lst):

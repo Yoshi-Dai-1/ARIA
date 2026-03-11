@@ -17,6 +17,7 @@ import pandas as pd
 from loguru import logger
 
 from data_engine.core.models import StockMasterRecord
+from data_engine.core.utils import normalize_code
 
 
 class ReconciliationEngine:
@@ -63,15 +64,23 @@ class ReconciliationEngine:
         display_name = f" ({name})" if name else ""
         logger.debug(f"証券コード {sec_code}{display_name} の EDINET情報を書類一覧API (V2) から探索中...")
 
-        sec_code_5 = sec_code if len(sec_code) == 5 else sec_code + "0"
+        sec_code_5 = normalize_code(sec_code, nationality="JP")
 
-        # 優先株などの場合は親銘柄から継承を試みる
-        if sec_code_5[4] != "0" and not self.cm.master_df.empty:
-            parent_code = sec_code_5[:4] + "0"
-            parent_row = self.cm.master_df[self.cm.master_df["code"] == parent_code]
-            if not parent_row.empty and pd.notna(parent_row.iloc[0].get("edinet_code")):
-                logger.debug(f"優先株 {sec_code_5} の EDINETコードを親銘柄 {parent_code} から継承します。")
-                return parent_row.iloc[0]["edinet_code"], parent_row.iloc[0].get("jcn")
+        # 優先株などの場合は親銘柄から継承を試める
+        # JP:12341 -> JP:12340 のようにプレフィックスを維持して親を求める
+        if ":" in sec_code_5:
+            prefix, core = sec_code_5.split(":", 1)
+            if core[-1] != "0":
+                parent_code = f"{prefix}:{core[:4]}0"
+                # CatalogManager の tolerance 向上に合わせ、一貫した検索を行う
+                parent_row = self.cm.master_df[self.cm.master_df["code"] == parent_code]
+                if parent_row.empty:
+                    # Legacy fallback
+                    parent_row = self.cm.master_df[self.cm.master_df["code"] == f"{core[:4]}0"]
+
+                if not parent_row.empty and pd.notna(parent_row.iloc[0].get("edinet_code")):
+                    logger.debug(f"優先株 {sec_code_5} の EDINETコードを親銘柄 {parent_code} から継承します。")
+                    return parent_row.iloc[0]["edinet_code"], parent_row.iloc[0].get("jcn")
 
         # 直近30日間をスキャン
         end_date = datetime.datetime.now()
@@ -336,14 +345,14 @@ class ReconciliationEngine:
             sec_code = rec.get("code")
 
             if sec_code:
-                sec_code = str(sec_code).strip()
-                if len(sec_code) == 4:
-                    sec_code += "0"
+                sec_code = normalize_code(sec_code, nationality="JP")
                 rec["code"] = sec_code
 
-                if sec_code[4] != "0":
-                    parent_c = sec_code[:4] + "0"
-                    rec["parent_code"] = parent_c
+                # 優先株判定と親コード設定 (JP:12341 -> JP:12340)
+                if ":" in sec_code:
+                    prefix, core = sec_code.split(":", 1)
+                    if core[-1] != "0":
+                        rec["parent_code"] = f"{prefix}:{core[:4]}0"
 
                 if not rec.get("edinet_code") or not rec.get("jcn"):
                     market = str(rec.get("market") or "").upper()
@@ -351,7 +360,12 @@ class ReconciliationEngine:
                     is_preferred = sec_code[4] != "0"
 
                     if not self.cm.master_df.empty:
-                        m_row = self.cm.master_df[self.cm.master_df["code"].astype(str) == str(sec_code)]
+                        # プレフィックス耐性のある検索
+                        m_row = self.cm.master_df[self.cm.master_df["code"] == sec_code]
+                        if m_row.empty and ":" in str(sec_code):
+                            core = str(sec_code).split(":", 1)[1]
+                            m_row = self.cm.master_df[self.cm.master_df["code"] == core]
+                        
                         if not m_row.empty:
                             m_rec = m_row.iloc[0].to_dict()
                             for k, v in m_rec.items():
@@ -474,6 +488,10 @@ class ReconciliationEngine:
         master_info = {}
         if not self.cm.master_df.empty:
             m_row = self.cm.master_df[self.cm.master_df["code"] == code]
+            if m_row.empty and ":" in str(code):
+                core = str(code).split(":", 1)[1]
+                m_row = self.cm.master_df[self.cm.master_df["code"] == core]
+            
             if not m_row.empty:
                 master_info = m_row.iloc[0].to_dict()
 

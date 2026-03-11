@@ -8,7 +8,8 @@ from loguru import logger
 from data_engine.core.config import ARIA_SCOPE, CONFIG, HF_WARNING_THRESHOLD, RAW_DIR, TEMP_DIR
 from data_engine.core.network_utils import patch_all_networking
 from data_engine.core.utils import normalize_code
-from data_engine.edinet_xbrl_prep.fs_tbl import get_fs_tbl
+from data_engine.engines.filtering_engine import FilteringEngine, ProcessVerdict, SkipReason
+from data_engine.engines.parsing.edinet.fs_tbl import get_fs_tbl
 
 # 設定 (SSOT から取得)
 PARALLEL_WORKERS = CONFIG.PARALLEL_WORKERS
@@ -58,7 +59,7 @@ def parse_worker(args):
             df["docid"] = docid
             sec_code_meta = row.get("secCode")
             if sec_code_meta and str(sec_code_meta).strip():
-                df["code"] = normalize_code(sec_code_meta)
+                df["code"] = normalize_code(sec_code_meta, nationality="JP")
             else:
                 df["code"] = None
 
@@ -106,7 +107,6 @@ class WorkerEngine:
         self.chunk_id = chunk_id
         self.is_shutting_down = False
 
-        # 1. 起動時に Listed 銘柄の EDINET コードをセット化 (高速判定用)
         self.listed_edinet_codes = set()
         if not self.catalog.master_df.empty:
             self.listed_edinet_codes = set(
@@ -114,6 +114,9 @@ class WorkerEngine:
                 .dropna()
                 .unique()
             )
+        # 2. 判定エンジンの初期化（憲法の番人）
+        self.filtering = FilteringEngine(aria_scope=ARIA_SCOPE)
+
         # 全体的な通信の堅牢化を適用
         patch_all_networking()
 
@@ -173,55 +176,39 @@ class WorkerEngine:
         # Discoveryモード (list-only) の場合のみフィルタリングを実行
         if self.args.list_only:
             filtered_meta = []
-            skipped_reasons = {"no_sec_code": 0, "invalid_length": 0, "has_sec_code": 0}
+            skipped_reasons = {
+                SkipReason.NO_SEC_CODE: 0,
+                SkipReason.INVALID_CODE_LENGTH: 0,
+                SkipReason.HAS_SEC_CODE: 0,
+                SkipReason.ALREADY_PROCESSED: 0,
+                SkipReason.WITHDRAWN: 0,
+            }
+            matrix_data = []
 
             for row in all_meta:
-                raw_code = row.get("secCode")
-                sec_code = "" if raw_code is None else str(raw_code).strip()
-                if sec_code.lower() in ["none", "nan", "null"]:
-                    sec_code = ""
+                doc_id = row.get("docID")
+                is_processed = self.catalog.is_processed(doc_id)
+                local_status = self.catalog.get_status(doc_id)
 
-                if ARIA_SCOPE == "Listed":
-                    if not sec_code:
-                        skipped_reasons["no_sec_code"] += 1
-                        continue
-                    if len(sec_code) < 4:
-                        skipped_reasons["invalid_length"] += 1
-                        continue
-                    filtered_meta.append(row)
-                elif ARIA_SCOPE == "Unlisted":
-                    if sec_code and len(sec_code) >= 4:
-                        skipped_reasons["has_sec_code"] += 1
-                        continue
-                    filtered_meta.append(row)
-                elif ARIA_SCOPE == "All":
-                    filtered_meta.append(row)
-                else:
-                    logger.warning(f"Unknown ARIA_SCOPE: {ARIA_SCOPE}. Falling back to skip.")
+                # 【憲法の番人】判定エンジンへ委譲
+                verdict, reason = self.filtering.get_verdict(
+                    row, is_processed=is_processed, local_status=local_status
+                )
+
+                if verdict in [
+                    ProcessVerdict.SKIP_OUT_OF_SCOPE,
+                    ProcessVerdict.SKIP_PROCESSED,
+                    ProcessVerdict.SKIP_WITHDRAWN,
+                ]:
+                    if reason in skipped_reasons:
+                        skipped_reasons[reason] += 1
                     continue
 
-            all_meta = filtered_meta
-
-            # 既処理（カタログ参照）によるフィルタリング
-            matrix_data = []
-            final_filtered_meta = []
-            processed_skip_count = 0
-
-            for row in all_meta:
-                docid = row["docID"]
-                if self.catalog.is_processed(docid):
-                    api_retracted = row.get("withdrawalStatus") == "1"
-                    local_status = self.catalog.get_status(docid)
-                    # 取下げステータスの同期が必要な場合を除きスキップ
-                    if not (api_retracted and local_status != "retracted"):
-                        processed_skip_count += 1
-                        continue
-
-                final_filtered_meta.append(row)
-                raw_sec_code = normalize_code(str(row.get("secCode", "")).strip())
+                filtered_meta.append(row)
+                raw_sec_code = normalize_code(str(row.get("secCode", "")).strip(), nationality="JP")
                 matrix_data.append(
                     {
-                        "id": docid,
+                        "id": doc_id,
                         "code": raw_sec_code,
                         "edinet": row.get("edinetCode"),
                         "xbrl": row.get("xbrlFlag") == "1",
@@ -231,16 +218,16 @@ class WorkerEngine:
                     }
                 )
 
-            all_meta = final_filtered_meta
-            skipped_count = sum(skipped_reasons.values()) + processed_skip_count
+            all_meta = filtered_meta
+            skipped_count = sum(skipped_reasons.values())
 
             # スコアに応じた詳細ラベルの作成（工学的最適化）
-            skip_details = [f"既処理: {processed_skip_count}"]
+            skip_details = [f"既処理: {skipped_reasons[SkipReason.ALREADY_PROCESSED]}"]
             if ARIA_SCOPE == "Listed":
-                skip_details.append(f"証券コードなし: {skipped_reasons['no_sec_code']}")
-                skip_details.append(f"形式不正: {skipped_reasons['invalid_length']}")
+                skip_details.append(f"証券コードなし: {skipped_reasons[SkipReason.NO_SEC_CODE]}")
+                skip_details.append(f"形式不正: {skipped_reasons[SkipReason.INVALID_CODE_LENGTH]}")
             elif ARIA_SCOPE == "Unlisted":
-                skip_details.append(f"証券コードあり: {skipped_reasons['has_sec_code']}")
+                skip_details.append(f"証券コードあり: {skipped_reasons[SkipReason.HAS_SEC_CODE]}")
 
             logger.info(
                 f"フィルタリング完了: {len(all_meta)}/{initial_count} 件を抽出 "
@@ -292,13 +279,34 @@ class WorkerEngine:
             found_target_ids.add(doc_id)
             title = row.get("docDescription", "名称不明")
 
-            # 既処理スキップの明示的カウント
-            if not getattr(self.args, "force_refresh", False) and self.catalog.is_processed(doc_id):
+            title = row.get("docDescription", "名称不明")
+
+            # 【憲法の番人】判定エンジンへ委譲
+            is_processed = self.catalog.is_processed(doc_id)
+            local_status = self.catalog.get_status(doc_id)
+            verdict, reason = self.filtering.get_verdict(
+                row, is_processed=is_processed, local_status=local_status
+            )
+
+            # 既処理・スコープ外スキップの明示的カウント
+            if verdict == ProcessVerdict.SKIP_PROCESSED:
                 worker_stats["already_skipped"] += 1
                 logger.debug(f"スキップ（既処理）: {doc_id} | {title}")
                 continue
+            if verdict == ProcessVerdict.SKIP_OUT_OF_SCOPE:
+                # 本来 Discovery で排除されているはずだが、Drift 対策
+                logger.warning(f"スキップ（スコープ外）: {doc_id} | {title} | {reason}")
+                continue
+            if verdict == ProcessVerdict.SKIP_WITHDRAWN:
+                # 取下げ済みの場合、ステータス更新のみ行うために後続へ進むか、
+                # すでにカタログが 'retracted' なら完全にスキップ
+                if local_status == "retracted":
+                    continue
+                # ステータス更新のために保存処理へ進む
+                logger.info(f"取下げステータス同期: {doc_id} | {title}")
 
             submit_date = parse_datetime(row["submitDateTime"])
+            # ... (ディレクトリ作成ロジックは維持)
             save_dir = (
                 RAW_BASE_DIR
                 / "edinet"
@@ -343,11 +351,13 @@ class WorkerEngine:
                 except Exception:
                     pass
 
-            sec_code = normalize_code(row.get("secCode", ""))
+            # カタログレコードの生成
+            sec_code = normalize_code(row.get("secCode", ""), nationality="JP")
             parent_id = row.get("parentDocID")
             is_amendment = parent_id is not None or str(dtc).endswith("1") or "訂正" in (title or "")
-            w_status = row.get("withdrawalStatus")
-            final_status = "retracted" if w_status == "1" else "pending"
+
+            # 最終ステータスの決定（取下げ事実の反映）
+            final_status = "retracted" if verdict == ProcessVerdict.SKIP_WITHDRAWN else "success"
 
             rel_zip_path = str(raw_zip.relative_to(RAW_BASE_DIR.parent)) if zip_ok else None
             rel_pdf_path = str(raw_pdf.relative_to(RAW_BASE_DIR.parent)) if pdf_ok else None
@@ -374,7 +384,7 @@ class WorkerEngine:
                 "ordinance_code": (ord_c or "").strip() or None,
                 "is_amendment": is_amendment,
                 "parent_doc_id": (parent_id or "").strip() or None,
-                "withdrawal_status": (w_status or "").strip() or None,
+                "withdrawal_status": (row.get("withdrawalStatus") or "").strip() or None,
                 "doc_info_edit_status": (row.get("docInfoEditStatus") or "").strip() or None,
                 "disclosure_status": (row.get("disclosureStatus") or "").strip() or None,
                 "current_report_reason": (row.get("currentReportReason") or "").strip() or None,
@@ -388,13 +398,12 @@ class WorkerEngine:
             }
             potential_catalog_records[doc_id] = record
 
-            is_target_yuho = dtc == "120" and ord_c == "010" and form_c == "030000"
-            if is_target_yuho and zip_ok:
+            if verdict == ProcessVerdict.PARSE and zip_ok:
                 worker_stats["parsing_attempted"] += 1
                 try:
                     import shutil
 
-                    from data_engine.edinet_xbrl_prep.fs_tbl import linkbasefile
+                    from data_engine.engines.parsing.edinet.fs_tbl import linkbasefile
 
                     detect_dir = TEMP_DIR / f"detect_{doc_id}"
                     lb = linkbasefile(zip_file_str=str(raw_zip), temp_path_str=str(detect_dir))
@@ -424,10 +433,9 @@ class WorkerEngine:
                         shutil.rmtree(detect_dir)
             else:
                 worker_stats["metadata_saved"] += 1
-                if not is_target_yuho:
+                if verdict == ProcessVerdict.SAVE_METADATA:
                     logger.debug(f"非解析対象保存: {doc_id} | {title}")
-                    record["processed_status"] = "success"
-                elif is_target_yuho and not zip_ok:
+                elif verdict == ProcessVerdict.PARSE and not zip_ok:
                     logger.error(f"保存失敗（有報）: {doc_id} | {title}")
                     record["processed_status"] = "failure"
                     worker_stats["parsing_failure"] += 1
@@ -495,7 +503,9 @@ class WorkerEngine:
                                 processed_infos.append(
                                     {
                                         "docID": did,
-                                        "sector": self.catalog.get_sector(normalize_code(meta_row.get("secCode", ""))),
+                                        "sector": self.catalog.get_sector(
+                                            normalize_code(meta_row.get("secCode", ""), nationality="JP")
+                                        ),
                                     }
                                 )
                     logger.info(f"解析進捗: {min(i + BATCH_PARALLEL_SIZE, len(tasks))} / {len(tasks)} tasks 完了")

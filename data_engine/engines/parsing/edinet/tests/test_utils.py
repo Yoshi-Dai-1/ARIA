@@ -1,7 +1,7 @@
 """Tests for the utils module."""
 
 import unittest
-from edinet_xbrl_prep.utils import format_taxonomi
+from data_engine.engines.parsing.edinet.utils import format_taxonomi
 
 
 class TestFormatTaxonomi(unittest.TestCase):

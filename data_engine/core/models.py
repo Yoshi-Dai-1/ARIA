@@ -4,6 +4,8 @@ from typing import Any, Optional, Union, get_args, get_origin
 import pyarrow as pa
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from data_engine.core.utils import normalize_code
+
 
 class EdinetDocument(BaseModel):
     """EDINET APIから取得される書類メタデータのバリデーションモデル (API v2 全フィールド網羅)"""
@@ -259,14 +261,7 @@ class StockMasterRecord(BaseModel):
     @field_validator("code", "parent_code", mode="before")
     @classmethod
     def normalize_sec_code(cls, v: Optional[str]) -> Optional[str]:
-        if v is None:
-            return None
-        s_v = str(v).strip()
-        if not s_v or s_v == "nan":
-            return None
-        if len(s_v) == 4:
-            return s_v + "0"
-        return s_v
+        return normalize_code(v, nationality="JP")
 
     @field_validator("is_listed_edinet", mode="before")
     @classmethod

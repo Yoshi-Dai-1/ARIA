@@ -1,28 +1,18 @@
-"""
-リンクベースファイル解析用モジュール
-"""
 import xml.etree.ElementTree as ET
-import re
+from pathlib import Path
+from typing import Annotated, Dict, Literal, Optional
 from zipfile import ZipFile
+
 import pandas as pd
 import pandera as pa
-from pandera.typing import DataFrame, Series
-
-
-
-from datetime import datetime, timedelta, date
-from pydantic import BaseModel, Field
-from time import sleep
-from typing import Optional, Dict, Literal
-import json
-from typing import Annotated
-from pydantic.functional_validators import BeforeValidator
-
-from pathlib import Path
 import requests
 from loguru import logger
-from .xbrl_parser_wrapper import *
-from .utils import *
+from pandera.typing import Series
+from pydantic import BaseModel, Field
+from pydantic.functional_validators import BeforeValidator
+
+from .utils import (flatten_list, format_taxonomi, get_columns_df,
+                    remove_empty_lists)
 # %%
 StrOrNone = Annotated[str, BeforeValidator(lambda x: x or "")]
 FloatOrNone = Annotated[float, BeforeValidator(lambda x: x or 0.0)]
@@ -119,7 +109,7 @@ class AccountLabel(pa.DataFrameModel):
     role: Series[str]
     lang: Series[str]
 
-# ... (既存のコード)
+
 
 def safe_attr_get(attr_sr, pattern, default=None):
     """Pandas Series (attrib) からパターンにマッチする属性値を安全に取得する"""
@@ -734,13 +724,13 @@ class account_list_common():
     """
     共通タクソノミの取得。主にリンクベースファイルでimportされているlabel情報を取得する。
     """
-    def __init__(self, data_path: Path, account_list_year: str, session: Optional[requests.Session] = None, taxonomy_urls: Dict[str, str] = None):
-
-        linkfiles_dict={
-            'pre.xml':"jpcrp030000-asr",
-            'lab.xml':"jpcrp",
-            'lab-en.xml':"jpcrp"}
-        schima_word_list=['jppfs','jpcrp']
+    def __init__(
+        self,
+        data_path: Path,
+        account_list_year: str,
+        session: Optional[requests.Session] = None,
+        taxonomy_urls: Dict[str, str] = None
+    ):
         self.taxonomy_file = data_path / "taxonomy_{}.zip".format(account_list_year)
         self.account_list_year = str(account_list_year)
         self.temp_path = data_path / "tmp/taxonomy"
@@ -909,20 +899,26 @@ class account_list_common():
         label_tbl_jpcrp_jp = self.get_label_common_obj_jpcrp_lab.export_label_tbl(
             label_to_taxonomi_dict=self.label_to_taxonomi_dict
             )
-        df_jpcrp = label_tbl_jpcrp_jp.query("role == 'label'").drop_duplicates(subset='key').set_index("key").rename(columns={"text":"label_jp"})
+        df_jpcrp = label_tbl_jpcrp_jp.query("role == 'label'") \
+            .drop_duplicates(subset='key').set_index("key") \
+            .rename(columns={"text":"label_jp"})
         if not short_label_only:
-            get_label_common_obj = get_label_common(
-                file_str=self.path_jpcrp_lab_en,
-                lang="English"
-                )
             label_tbl_jpcrp_en = self.get_label_common_obj_jpcrp_lab_en.export_label_tbl(
                 label_to_taxonomi_dict=self.label_to_taxonomi_dict
             )
-            df_jpcrp = df_jpcrp.join([
-                label_tbl_jpcrp_jp.query("role == 'verboseLabel'").drop_duplicates(subset='key').set_index("key")[['text']].rename(columns={"text":"label_jp_long"}),
-                label_tbl_jpcrp_en.query("role == 'label'").drop_duplicates(subset='key').set_index("key")[['text']].rename(columns={"text":"label_en"}),
-                label_tbl_jpcrp_en.query("role == 'verboseLabel'").drop_duplicates(subset='key').set_index("key")[['text']].rename(columns={"text":"label_en_long"})
-                ],how="left")
+            df_jpcrp_en = label_tbl_jpcrp_en.query("role == 'label'") \
+                .drop_duplicates(subset='key').set_index("key")[['text']] \
+                .rename(columns={"text": "label_en"})
+            # verboseLabel (long labels)
+            df_jpcrp_jp_long = label_tbl_jpcrp_jp.query("role == 'verboseLabel'") \
+                .drop_duplicates(subset='key').set_index("key")[['text']] \
+                .rename(columns={"text": "label_jp_long"})
+            df_jpcrp_en_long = label_tbl_jpcrp_en.query("role == 'verboseLabel'") \
+                .drop_duplicates(subset='key').set_index("key")[['text']] \
+                .rename(columns={"text": "label_en_long"})
+            
+            # Combine all labels for jpcrp
+            df_jpcrp = df_jpcrp.join([df_jpcrp_en, df_jpcrp_jp_long, df_jpcrp_en_long], how="left")
         
         label_tbl_jppfs_jp = self.get_label_common_obj_jppfs_lab.export_label_tbl(
             label_to_taxonomi_dict=self.label_to_taxonomi_dict
@@ -1019,91 +1015,4 @@ class get_presentation_common():
         self._make_label_to_taxonomi_dict()
         return self.label_to_taxonomi_dict
 
-# %% #################################################################
-#
-#            deprecated
-#
-######################################################################
-
-def get_presentation_account_list_aud(docid:str,identifier:str,out_path)->(ParentChildLink,OriginalAccountList,dict,dict):
-    """
-    locator:
-        (role:)
-        href:
-        label:
-    arc:
-        (role:)
-        from:
-        to:
-        order:
-        role is given to edge
-    """
-    dict_t={
-        'docID':docid,
-        'org_taxonomi_cnt':None,
-        'org_taxonomi_list':[],
-        'status':None,
-        'error_message':None
-            }
-    try:
-        data_dir_raw = PROJDIR / "data" / "1_raw"
-        zip_file = list(data_dir_raw.glob("data_pool_*/"+docid+".zip"))[0]
-        with ZipFile(str(zip_file)) as zf:
-                fn=[item for item in zf.namelist() if ("pre.xml" in item)&("aai" in item)]
-                if len(fn)>0:
-                    zf.extract(fn[0], out_path)
-        xml_def_path=out_path / "XBRL" / "AuditDoc"
-        if len(list(xml_def_path.glob("*pre.xml")))==0:
-            raise Exception("No pre.xml file")
-        else:
-            tree = ET.parse(str(list(xml_def_path.glob("*pre.xml"))[0]))
-            root = tree.getroot()
-    
-            locators = []
-            arcs = []
-            for child in root:
-                attr_sr_p = pd.Series(child.attrib)
-                role = attr_sr_p[attr_sr_p.index.str.contains('role')].item()
-                for child_of_child in child:
-                    locator = {'role':role,'schima_taxonomi':None}
-                    arc = {'parent':None,'child':None,'child_order':None,'role':role}
-    
-                    attr_sr = pd.Series(child_of_child.attrib)
-                    attr_type = attr_sr[attr_sr.index.str.contains('type')].item()
-                    if attr_type=='locator':
-                        locator['schima_taxonomi'] = attr_sr[attr_sr.index.str.contains('href')].item().split('#')[1]
-                        locator['label'] = attr_sr[attr_sr.index.str.contains('label')].item()
-                    elif attr_type=='arc':
-                        arc['parent'] = attr_sr[attr_sr.index.str.contains('from')].item()
-                        arc['child'] = attr_sr[attr_sr.index.str.contains('to')].item()
-                        arc['child_order'] = attr_sr[attr_sr.index.str.contains('order')].item()
-    
-                    locators.append(locator)
-                    arcs.append(arc)
-    
-            locators_df = pd.DataFrame(locators).dropna(subset=['schima_taxonomi'])
-            locators_df = locators_df.assign(
-                role=locators_df.role.str.split('/',expand=True).iloc[:,-1],
-                key=locators_df.schima_taxonomi.apply(format_taxonomi)
-                                           )
-            label_to_taxonomi_dict = locators_df.set_index('label')['key'].to_dict()
-    
-            p_edges_df = pd.DataFrame(arcs).dropna(subset=['child'])
-            p_edges_df = p_edges_df.assign(
-                parent_key=p_edges_df.parent.replace(label_to_taxonomi_dict),
-                child_key = p_edges_df.child.replace(label_to_taxonomi_dict))
-    
-            p_edges_df = ParentChildLink(p_edges_df)
-            pre_detail_list = OriginalAccountList(locators_df)
-            dict_t['status'] = 'success'            
-            #dict_t['org_taxonomi_cnt'] = len(pre_detail_list.query("schima_taxonomi.str.contains(@identifier)"))
-            #dict_t['org_taxonomi_list'] = pre_detail_list.query("schima_taxonomi.str.contains(@identifier)").schima_taxonomi.to_list()
-    except Exception as e:
-        label_to_taxonomi_dict = {}
-        dict_t['status'] = 'error'
-        dict_t['error_message'] = e
-        p_edges_df = ParentChildLink(pd.DataFrame(columns=get_columns_df(ParentChildLink)))
-        pre_detail_list = OriginalAccountList(pd.DataFrame(columns=get_columns_df(OriginalAccountList)))
-    
-    return p_edges_df[get_columns_df(ParentChildLink)],pre_detail_list[get_columns_df(OriginalAccountList)],label_to_taxonomi_dict,dict_t
 

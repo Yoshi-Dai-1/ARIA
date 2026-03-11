@@ -1,14 +1,11 @@
 import pandas as pd
 
 
-def normalize_code(code) -> str:
+def normalize_code(code, nationality: str = None) -> str:
     """
-    証券コードを ARIA 規格 (5桁) に正規化した文字列として返す。
-    - None / NaN は空文字列 "" に変換。
-    - 数値 (float/int) は文字列に変換。
-    - "1301.0" のような Excel 由来の .0 サフィックスを除去。
-    - 4桁の場合は末尾に "0" を付与して 5 桁化する。
-    - すでに 5 桁以上の場合はそのまま返す。
+    証券コードを ARIA 規格に正規化した文字列として返す。
+    - JP の場合: 4桁なら末尾0付与で5桁化し、"JP:" プレフィックスを付ける。
+    - すでにプレフィックス (例: "JP:") が含まれる場合は二重付与を防止する。
     """
     if code is None or pd.isna(code):
         return None
@@ -16,13 +13,25 @@ def normalize_code(code) -> str:
     # 文字列化して空白除去
     c = str(code).strip()
 
-    # Excel/Float 由来の ".0" を除去 (例: "1301.0" -> "1301")
+    # すでにプレフィックスがあるかチェック
+    if ":" in c:
+        prefix, core_code = c.split(":", 1)
+        current_nat = prefix.upper()
+        c = core_code.strip()
+    else:
+        current_nat = nationality.upper() if nationality else None
+
+    # Excel/Float 由来の ".0" を除去
     if c.endswith(".0"):
         c = c[:-2]
 
-    # 4桁なら 5 桁化 (日本株の基本ルール)
-    if len(c) == 4:
-        return c + "0"
+    # 日本株 (JP) の 5 桁化ルール
+    if current_nat == "JP" and len(c) == 4:
+        c = c + "0"
+
+    # 最終的なプレフィックス結合
+    if current_nat:
+        return f"{current_nat}:{c}"
 
     return c
 
