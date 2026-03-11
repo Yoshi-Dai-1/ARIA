@@ -223,6 +223,7 @@ class WorkerEngine:
                     {
                         "id": docid,
                         "code": raw_sec_code,
+                        "edinet": row.get("edinetCode"),
                         "xbrl": row.get("xbrlFlag") == "1",
                         "type": row.get("docTypeCode"),
                         "ord": row.get("ordinanceCode"),
@@ -273,6 +274,16 @@ class WorkerEngine:
         text_roles = fs_dict["report"] + fs_dict["notes"]
 
         loaded_acc = {}
+        worker_stats = {
+            "assigned": len(target_ids) if target_ids else initial_count,
+            "processed": 0,
+            "already_skipped": 0,
+            "metadata_saved": 0,
+            "parsing_attempted": 0,
+            "parsing_success": 0,
+            "parsing_failure": 0,
+        }
+
         for row in all_meta:
             doc_id = row.get("docID")
             if target_ids and doc_id not in target_ids:
@@ -281,7 +292,10 @@ class WorkerEngine:
             found_target_ids.add(doc_id)
             title = row.get("docDescription", "名称不明")
 
+            # 既処理スキップの明示的カウント
             if not getattr(self.args, "force_refresh", False) and self.catalog.is_processed(doc_id):
+                worker_stats["already_skipped"] += 1
+                logger.debug(f"スキップ（既処理）: {doc_id} | {title}")
                 continue
 
             submit_date = parse_datetime(row["submitDateTime"])
@@ -376,6 +390,7 @@ class WorkerEngine:
 
             is_target_yuho = dtc == "120" and ord_c == "010" and form_c == "030000"
             if is_target_yuho and zip_ok:
+                worker_stats["parsing_attempted"] += 1
                 try:
                     import shutil
 
@@ -402,15 +417,20 @@ class WorkerEngine:
                 except Exception as e:
                     logger.error(f"【解析中止】タクソノミ判定失敗 ({doc_id}): {e}")
                     record["processed_status"] = "failure"
+                    worker_stats["parsing_failure"] += 1
                     continue
                 finally:
                     if detect_dir.exists():
                         shutil.rmtree(detect_dir)
             else:
+                worker_stats["metadata_saved"] += 1
                 if not is_target_yuho:
+                    logger.debug(f"非解析対象保存: {doc_id} | {title}")
                     record["processed_status"] = "success"
                 elif is_target_yuho and not zip_ok:
+                    logger.error(f"保存失敗（有報）: {doc_id} | {title}")
                     record["processed_status"] = "failure"
+                    worker_stats["parsing_failure"] += 1
 
         # HF 警告
         checked_dirs = set()
@@ -452,15 +472,18 @@ class WorkerEngine:
                                 logger.error(f"解析失敗 ({t_type}): {did} - {err}")
                                 if "No objects to concatenate" not in err:
                                     target_rec["processed_status"] = "failure"
+                                    worker_stats["parsing_failure"] += 1
                             elif res_df is not None:
                                 if target_rec.get("processed_status") != "failure":
                                     target_rec["processed_status"] = "success"
 
                                 if t_type == "financial_values":
+                                    worker_stats["parsing_success"] += 1
                                     quant_only = res_df[res_df["isTextBlock_flg"] == 0]
                                     if not quant_only.empty:
                                         all_quant_dfs.append(quant_only)
                                 elif t_type == "qualitative_text":
+                                    worker_stats["parsing_success"] += 1
                                     txt_only = res_df[res_df["isTextBlock_flg"] == 1]
                                     if not txt_only.empty:
                                         all_text_dfs.append(txt_only)
@@ -539,8 +562,24 @@ class WorkerEngine:
 
         if all_success:
             self.catalog.mark_chunk_success(self.run_id, self.chunk_id, defer=True, local_only=True)
-            logger.success(f"=== Worker完了: {self.run_id}/{self.chunk_id} ===")
+            
+            # 【工学的主権】貸借一致サマリー（Summary Stats）の出力
+            # Assigned (総割当) = Already-Skipped (既処理) + Metadata-Only (非解析) + Parsing-Attempted (解析対象)
+            # Parsing-Attempted = Success-Docs (完全成功) + Failure-Docs (一部または全部失敗)
+            parse_docs = worker_stats['parsing_attempted']
+            success_docs = worker_stats['parsing_success'] // 2
+            failure_docs = parse_docs - success_docs
+            
+            logger.info(
+                f"=== Worker 完了サマリー [{self.run_id}/{self.chunk_id}] ===\n"
+                f"・割当総数: {worker_stats['assigned']} 件\n"
+                f"  ├ 既処理スキップ: {worker_stats['already_skipped']} 件\n"
+                f"  ├ 非解析対象保存: {worker_stats['metadata_saved']} 件 (Metadata-only)\n"
+                f"  └ 解析対象実行: {parse_docs} 件 (有報等)\n"
+                f"      └ 成功: {success_docs} / 失敗: {failure_docs}\n"
+                f"・最終ステータス: SUCCESS"
+            )
             return True
         else:
-            logger.error("=== Worker停止 (エラーあり) ===")
+            logger.error(f"=== Worker 停止 (エラーあり) [{self.run_id}/{self.chunk_id}] ===")
             return False

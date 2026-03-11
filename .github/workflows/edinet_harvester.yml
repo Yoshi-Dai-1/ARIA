@@ -123,22 +123,42 @@ jobs:
                   unique_primary.append(x)
                   seen_ids.add(x['id'])
           
-          def build_matrix(data, n_jobs, idx_offset=0):
-              if not data or n_jobs == 0: return '[]'
-              company_map = {}
+          def get_tasks(data):
+              if not data: return [], 0
+              group_map = {}
               for item in data:
-                  code = item.get('code', '9999')
-                  company_map.setdefault(code, []).append(item)
+                  group_key = item.get('edinet') or item.get('code') or 'UNKNOWN'
+                  group_map.setdefault(group_key, []).append(item)
               tasks = []
-              for code, items in company_map.items():
+              for group_key, items in group_map.items():
                   w = 10
                   for x in items:
                       is_yuho = x.get('type') == '120' and x.get('ord') == '010' and x.get('form') == '030000'
                       w += 50 if is_yuho else 2
                   tasks.append({'ids': [x['id'] for x in items], 'weight': w})
-              tasks.sort(key=lambda x: x['weight'], reverse=True)
+              return tasks, sum(t['weight'] for t in tasks)
+
+          tasks_p, weight_p = get_tasks(unique_primary)
+          tasks_r, weight_r = get_tasks(retry)
+          total_w = weight_p + weight_r
+          
+          # 【工学的主権】リソース最大分配 (将来の拡張性を考慮し定数化)
+          TOTAL_SLOTS = 20
+          
+          if total_w == 0:
+              n_jobs_p, n_jobs_r = 0, 0
+          elif weight_p > 0 and weight_r > 0:
+              # 比例配分しつつ、最低1ジョブを保証
+              n_jobs_p = max(1, min(TOTAL_SLOTS - 1, round(TOTAL_SLOTS * weight_p / total_w)))
+              n_jobs_r = TOTAL_SLOTS - n_jobs_p
+          else:
+              n_jobs_p = TOTAL_SLOTS if weight_p > 0 else 0
+              n_jobs_r = TOTAL_SLOTS if weight_r > 0 else 0
+
+          def build_matrix(tasks, n_jobs, idx_offset=0):
+              if not tasks or n_jobs == 0: return '[]'
               actual_jobs = min(n_jobs, len(tasks))
-              if actual_jobs == 0: return '[]'
+              tasks.sort(key=lambda x: x['weight'], reverse=True)
               buckets = [[] for _ in range(actual_jobs)]
               ws = [0] * actual_jobs
               for t in tasks:
@@ -148,8 +168,8 @@ jobs:
               return json.dumps([{'ids': ','.join(b), 'idx': i + idx_offset, 'weight': ws[i]} for i, b in enumerate(buckets) if b])
 
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-              f.write(f'matrix_primary={build_matrix(unique_primary, 18)}\n')
-              f.write(f'matrix_retry={build_matrix(retry, 2, 18)}\n')
+              f.write(f'matrix_primary={build_matrix(tasks_p, n_jobs_p, 0)}\n')
+              f.write(f'matrix_retry={build_matrix(tasks_r, n_jobs_r, n_jobs_p)}\n')
           "
 
       - name: Upload Metadata Artifact

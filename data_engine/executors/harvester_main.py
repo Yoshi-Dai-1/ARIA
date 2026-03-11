@@ -69,8 +69,10 @@ def main():
     # CatalogManager が設定とタクソノミURLを自動ロードする
     # Merger モードのみが唯一のマスタ同期ポイント (sync_master=True)
     # Worker / list-only モードは HF 上の既存マスタを使用する
+    # Discovery (list-only) モードでは、同期ラグを防ぐため最新カタログを強制取得する
     is_merger = args.mode == "merger"
-    catalog = CatalogManager(sync_master=is_merger)
+    is_list_only = getattr(args, "list_only", False)
+    catalog = CatalogManager(sync_master=is_merger, force_refresh=is_list_only)
 
     if args.mode == "merger":
         success = run_merger(catalog, run_id)

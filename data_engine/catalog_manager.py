@@ -29,6 +29,7 @@ class CatalogManager:
         scope: str = None,
         edinet: bool = True,
         sync_master: bool = False,
+        force_refresh: bool = False,
     ):
         # 1. SSHT (Single Source of Truth) からの読み込みとオーバーライド
         self.hf_repo = hf_repo or CONFIG.HF_REPO
@@ -76,8 +77,8 @@ class CatalogManager:
         self.aggregation_map = {}
 
         # 6. Data Load (Lazy load も検討可能だが、現状は整合性維持のため即時ロード)
-        self.catalog_df = self.hf.load_parquet("catalog", clean_fn=self._clean_dataframe)
-        self.master_df = self.hf.load_parquet("master", clean_fn=self._clean_dataframe)
+        self.catalog_df = self.hf.load_parquet("catalog", clean_fn=self._clean_dataframe, force_download=force_refresh)
+        self.master_df = self.hf.load_parquet("master", clean_fn=self._clean_dataframe, force_download=force_refresh)
 
         logger.debug(f"CatalogManager Initialized (Scope: {self.scope}, SyncMaster: {sync_master})")
 
