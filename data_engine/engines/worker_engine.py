@@ -7,7 +7,7 @@ from loguru import logger
 
 from data_engine.core.config import ARIA_SCOPE, CONFIG, HF_WARNING_THRESHOLD, RAW_DIR, TEMP_DIR
 from data_engine.core.network_utils import patch_all_networking
-from data_engine.core.utils import normalize_code
+from data_engine.core.utils import normalize_code, parse_datetime
 from data_engine.engines.filtering_engine import FilteringEngine, ProcessVerdict, SkipReason
 from data_engine.engines.parsing.edinet.fs_tbl import get_fs_tbl
 
@@ -17,16 +17,7 @@ BATCH_PARALLEL_SIZE = CONFIG.BATCH_PARALLEL_SIZE
 RAW_BASE_DIR = RAW_DIR
 
 
-def parse_datetime(dt_str: str):
-    """EDINET の submitDateTime (YYYY-MM-DD HH:MM[:SS]) を堅牢にパースする"""
-    if not dt_str or not isinstance(dt_str, str):
-        return datetime.now()
-    try:
-        if len(dt_str) > 16:
-            return datetime.strptime(dt_str[:19], "%Y-%m-%d %H:%M:%S")
-        return datetime.strptime(dt_str[:16], "%Y-%m-%d %H:%M")
-    except Exception:
-        return datetime.now()
+
 
 
 def parse_worker(args):

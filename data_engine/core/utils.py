@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import pandas as pd
 
 
@@ -54,3 +56,15 @@ def get_edinet_repo_path(doc_id: str, submit_at: str, suffix: str = "zip") -> st
         return f"raw/edinet/year={y}/month={m}/day={day}/{suffix}/{doc_id}.{suffix}"
     except Exception:
         return f"raw/edinet/unknown/{doc_id}.{suffix}"
+
+
+def parse_datetime(dt_str: str):
+    """EDINET の submitDateTime (YYYY-MM-DD HH:MM[:SS]) を堅牢にパースする"""
+    if not dt_str or not isinstance(dt_str, str):
+        return datetime.now()
+    try:
+        if len(dt_str) > 16:
+            return datetime.strptime(dt_str[:19], "%Y-%m-%d %H:%M:%S")
+        return datetime.strptime(dt_str[:16], "%Y-%m-%d %H:%M")
+    except Exception:
+        return datetime.now()
