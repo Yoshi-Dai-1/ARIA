@@ -309,6 +309,45 @@ class IndexEvent(BaseModel):
     new_value: Optional[float] = None
 
 
+class FinancialValueRecord(BaseModel):
+    """財務数値データ (financial_values) のレコードモデル"""
+    docid: str
+    key: str
+    data_str: Optional[str] = None
+    context_ref: Optional[str] = None
+    decimals: Optional[str] = None
+    precision: Optional[str] = None
+    element_name: Optional[str] = None
+    unit: Optional[str] = None
+    period_type: Optional[str] = None
+    isTextBlock_flg: int = 0
+    abstract_flg: int = 0
+    period_start: Optional[str] = None
+    period_end: Optional[str] = None
+    instant_date: Optional[str] = None
+    end_date_pv: Optional[str] = None
+    instant_date_pv: Optional[str] = None
+    scenario: Optional[str] = None
+    AccountingStandardsDEI: Optional[str] = None
+
+class QualitativeTextRecord(BaseModel):
+    """定性情報テキスト (qualitative_text) のレコードモデル"""
+    docid: str
+    key: str
+    data_str: Optional[str] = None
+    context_ref: Optional[str] = None
+    element_name: Optional[str] = None
+    period_type: Optional[str] = None
+    isTextBlock_flg: int = 1
+    abstract_flg: int = 0
+    period_start: Optional[str] = None
+    period_end: Optional[str] = None
+    instant_date: Optional[str] = None
+    end_date_pv: Optional[str] = None
+    instant_date_pv: Optional[str] = None
+    scenario: Optional[str] = None
+    AccountingStandardsDEI: Optional[str] = None
+
 # =============================================================================
 # PyArrow Schema 自動導出 (Phase 3: 金型アーキテクチャ)
 # =============================================================================
@@ -349,10 +388,10 @@ def pydantic_to_pyarrow(model_class) -> pa.Schema:
                 py_type = args[0]
 
         # デフォルト値チェック (Nullable の補完)
-        if info.default is None or info.default_factory is None:
-            # 明示的にデフォルトが設定されていれば Nullable とみなす場合が多い
-            if not info.is_required():
-                nullable = True
+        if hasattr(info, 'default') and info.default is None:
+             nullable = True
+        elif not info.is_required():
+             nullable = True
 
         pa_type = _PYTHON_TO_PYARROW.get(py_type, pa.string())
         fields.append(pa.field(name, pa_type, nullable=nullable))
@@ -366,6 +405,8 @@ SCHEMA_MASTER = pydantic_to_pyarrow(StockMasterRecord)
 SCHEMA_LISTING = pydantic_to_pyarrow(ListingEvent)
 SCHEMA_NAME = pydantic_to_pyarrow(NameEvent)
 SCHEMA_INDEX = pydantic_to_pyarrow(IndexEvent)
+SCHEMA_FINANCIAL = pydantic_to_pyarrow(FinancialValueRecord)
+SCHEMA_TEXT = pydantic_to_pyarrow(QualitativeTextRecord)
 
 # キーベースのレジストリ (hf_storage / delta_manager が参照)
 ARIA_SCHEMAS = {
@@ -374,4 +415,6 @@ ARIA_SCHEMAS = {
     "listing": SCHEMA_LISTING,
     "name": SCHEMA_NAME,
     "indices": SCHEMA_INDEX,
+    "financial_values": SCHEMA_FINANCIAL,
+    "qualitative_text": SCHEMA_TEXT,
 }

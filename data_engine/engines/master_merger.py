@@ -82,23 +82,19 @@ class MasterMerger:
         # 3. 保存とアップロード
         local_file = self.data_path / f"master_bin{bin_id}_{master_type}.parquet"
 
-        for col in combined_df.columns:
-            if combined_df[col].dtype == "object":
-                # ブール値が含まれる場合は文字列化を避ける (None/NaN が混じっていても型を守る)
-                # s.apply(...) よりも s.isin([True, False]) の方が堅牢
-                has_bool = combined_df[col].isin([True, False]).any()
-                if not has_bool:
-                    combined_df[col] = combined_df[col].astype(str)
-                else:
-                    # 【世界標準】論理値型（Boolean）を維持
-                    # 表示ツールによっては true/false となるが、データ解析上の「整合性」「速度」を最優先する。
-                    # None を含む Nullable Boolean として保存。
-                    pass
+        # 【極限ガード】NULL 基底アーキテクチャの死守
+        # 全量文字列化を廃止し、型の誠実性を保つ
+        combined_df = combined_df.convert_dtypes()
 
         local_file.parent.mkdir(parents=True, exist_ok=True)
-        # 【Phase 3 注記】Bin ファイルは XBRL 由来の動的カラム構成のため、
-        # 固定 PyArrow スキーマの適用は不適切。dto 推論に委ねるのが正しい設計判断。
-        combined_df.to_parquet(local_file, compression="zstd", index=False)
+        
+        # 【Phase 7: Perfect Integrity】レジストリから金型を抽出し適用
+        from data_engine.core.models import ARIA_SCHEMAS
+        schema = ARIA_SCHEMAS.get(master_type)
+        
+        # ビンファイルはXBRLの動的拡張を含む可能性があるため、
+        # スキーマが既知の場合はそれを優先し、未知の場合は推論に委ねる（ただし真のNullは維持）
+        combined_df.to_parquet(local_file, compression="zstd", index=False, schema=schema)
 
         if self.api:
             # 【重要】defer=True の場合は、モードに関わらずコミットバッファに積む

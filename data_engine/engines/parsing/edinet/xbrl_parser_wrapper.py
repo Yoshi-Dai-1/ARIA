@@ -1,15 +1,17 @@
-import pandas as pd
-from arelle import Cntlr
-from arelle.ModelValue import qname
-from zipfile import ZipFile
 import json
 from pathlib import Path
 from typing import Annotated
+from zipfile import ZipFile
+
+import pandas as pd
 import pandera as pa
+from arelle import Cntlr
+from arelle.ModelValue import qname
 from pandera.typing import Series
 from pydantic import BaseModel
 from pydantic.functional_validators import BeforeValidator
-from .utils import get_columns_df, get_dtype_dict
+
+from .utils import get_columns_df
 # %% #################################################################
 #
 #            schima
@@ -163,18 +165,7 @@ def get_xbrl_wrapper(docid,zip_file:str,temp_dir:Path,out_path:Path,update_flg=F
         log_dict = {"is_xbrl_file":None, "is_xsd_file":None, "arelle_log_fname":None,"status":None,"error_message":None}
     
     
-    try:
-        already_exist_flg = (out_path / "xbrl_parsed.csv").exists()
-        if already_exist_flg and not update_flg:
-            log_dict["already_parse_xbrl"] = True
-            xbrl_parsed = pd.read_csv(
-                out_path / "xbrl_parsed.csv",
-                dtype=get_dtype_dict(xbrl_elm_schima)
-            )
-            return xbrl_elm_schima(xbrl_parsed), log_dict
-    except Exception as e:
-        already_exist_flg=False
-        pass
+    log_dict["already_parse_xbrl"] = False
     try:
         log_dict["already_parse_xbrl"] = False
         #data_dir_raw=PROJDIR / "data" / "1_raw"
@@ -200,12 +191,16 @@ def get_xbrl_wrapper(docid,zip_file:str,temp_dir:Path,out_path:Path,update_flg=F
                 log_dict["is_def_file"] = False
         xbrl_path=out_path / "XBRL" / "PublicDoc"
 
-        if (len(list(xbrl_path.glob("*.xbrl")))>0)&(len(list(xbrl_path.glob("*.xsd")))>0)&(len(list(xbrl_path.glob("*def.xml")))>0): # xbrl and xsd file exists
+        # xbrl and xsd and def files must exist
+        has_xbrl = len(list(xbrl_path.glob("*.xbrl"))) > 0
+        has_xsd = len(list(xbrl_path.glob("*.xsd"))) > 0
+        has_def = len(list(xbrl_path.glob("*def.xml"))) > 0
+
+        if has_xbrl and has_xsd and has_def:
             xbrl_filename=str(list(xbrl_path.glob("*.xbrl"))[0])
-            if (not already_exist_flg)|(update_flg==True):
+            if True: # Always parse since we removed CSV cache
                 (xbrl_path / "arelle.log").touch()
                 xbrl_parsed,log_dict=get_xbrl_df(xbrl_filename,log_dict,temp_dir)
-                xbrl_parsed.to_csv(out_path / "xbrl_parsed.csv",index=False)
             
                 log_dict=get_xbrl_dei_df(xbrl_filename,log_dict,temp_dir)
                 xbrl_parsed['AccountingStandardsDEI'] = log_dict['AccountingStandardsDEI']

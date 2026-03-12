@@ -70,6 +70,9 @@ class DeltaManager:
         if self._clean_fn:
             df = self._clean_fn(key, df)
 
+        # 【工学的主権】物理型を強制同期して型ブレ（object型）を最小化
+        df = df.convert_dtypes()
+
         # 【Phase 3: 金型アーキテクチャ】明示スキーマで型ブレを物理的に排除
         schema = ARIA_SCHEMAS.get(key)
         df.to_parquet(local_file, index=False, compression="zstd", schema=schema)
