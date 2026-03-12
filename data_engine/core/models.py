@@ -317,12 +317,11 @@ class IndexEvent(BaseModel):
 
 class FinancialValueRecord(BaseModel):
     """財務数値データ (financial_values) のレコードモデル"""
-    docid: str
-    key: str
+    key: Optional[str] = None
     data_str: Optional[str] = None
-    context_ref: Optional[str] = None
     decimals: Optional[str] = None
     precision: Optional[str] = None
+    context_ref: Optional[str] = None
     element_name: Optional[str] = None
     unit: Optional[str] = None
     period_type: Optional[str] = None
@@ -334,24 +333,27 @@ class FinancialValueRecord(BaseModel):
     end_date_pv: Optional[str] = None
     instant_date_pv: Optional[str] = None
     scenario: Optional[str] = None
-    AccountingStandardsDEI: Optional[str] = None
     role: Optional[str] = None
     label_jp: Optional[str] = None
     label_jp_long: Optional[str] = None
     label_en: Optional[str] = None
     label_en_long: Optional[str] = None
     order: Optional[float] = None
+    docid: str
     non_consolidated_flg: Optional[int] = None
     current_flg: Optional[int] = None
     prior_flg: Optional[int] = None
+    AccountingStandardsDEI: Optional[str] = None
 
 class QualitativeTextRecord(BaseModel):
     """定性情報テキスト (qualitative_text) のレコードモデル"""
-    docid: str
-    key: str
+    key: Optional[str] = None
     data_str: Optional[str] = None
+    decimals: Optional[str] = None
+    precision: Optional[str] = None
     context_ref: Optional[str] = None
     element_name: Optional[str] = None
+    unit: Optional[str] = None
     period_type: Optional[str] = None
     isTextBlock_flg: int = 1
     abstract_flg: int = 0
@@ -361,16 +363,17 @@ class QualitativeTextRecord(BaseModel):
     end_date_pv: Optional[str] = None
     instant_date_pv: Optional[str] = None
     scenario: Optional[str] = None
-    AccountingStandardsDEI: Optional[str] = None
     role: Optional[str] = None
     label_jp: Optional[str] = None
     label_jp_long: Optional[str] = None
     label_en: Optional[str] = None
     label_en_long: Optional[str] = None
     order: Optional[float] = None
+    docid: str
     non_consolidated_flg: Optional[int] = None
     current_flg: Optional[int] = None
     prior_flg: Optional[int] = None
+    AccountingStandardsDEI: Optional[str] = None
 
 # =============================================================================
 # PyArrow Schema 自動導出 (Phase 3: 金型アーキテクチャ)
