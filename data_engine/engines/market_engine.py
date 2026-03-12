@@ -217,8 +217,8 @@ class MarketDataEngine:
         events = []
 
         # 辞書化 {code: weight}
-        old_map = dict(zip(old_const["code"], old_const["weight"], strict=False)) if not old_const.empty else {}
-        new_map = dict(zip(new_const["code"], new_const["weight"], strict=False)) if not new_const.empty else {}
+        old_map = dict(zip(old_const["code"], old_const["weight"])) if not old_const.empty else {}
+        new_map = dict(zip(new_const["code"], new_const["weight"])) if not new_const.empty else {}
 
         old_keys = set(old_map.keys())
         new_keys = set(new_map.keys())

@@ -263,7 +263,7 @@ class CatalogManager:
             return
 
         # カタログ内の全レコードのステータスを辞書化
-        self._status_cache = dict(zip(self.catalog_df["doc_id"], self.catalog_df["processed_status"], strict=False))
+        self._status_cache = dict(zip(self.catalog_df["doc_id"], self.catalog_df["processed_status"]))
         # 成功・取下げ済みのIDをSet化 (O(1)検索用)
         self._processed_set = {
             doc_id for doc_id, status in self._status_cache.items() if status in ("success", "retracted")

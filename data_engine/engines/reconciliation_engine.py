@@ -119,11 +119,20 @@ class ReconciliationEngine:
         listing_events = []
         today = datetime.datetime.now().strftime("%Y-%m-%d")
 
-        master_dict = {
-            str(row["edinet_code"]): row.to_dict()
-            for _, row in self.cm.master_df.iterrows()
-            if pd.notna(row.get("edinet_code"))
-        }
+        master_dict = {}
+        for _, row in self.cm.master_df.iterrows():
+            m_rec = row.to_dict()
+            e_code = m_rec.get("edinet_code")
+            s_code = m_rec.get("code")
+            
+            # 物理的事実案: e_code または s_code をインデックスとして保持し、脱落を防止する
+            if e_code:
+                master_dict[str(e_code)] = m_rec
+            elif s_code:
+                master_dict[str(s_code)] = m_rec
+            else:
+                # どちらも無い場合は、ユニークな一時キーで保持 (脱落を許容しない)
+                master_dict[f"orphan_{id(m_rec)}"] = m_rec
 
         for e_code, ed_rec in self.cm.edinet_codes.items():
             is_listed_official = str(ed_rec.is_listed or "").strip() == "上場"
@@ -241,7 +250,15 @@ class ReconciliationEngine:
                 )
 
         if updated_count > 0 or aggregation_applied_count > 0 or not self.cm.master_df.empty:
-            new_df = pd.DataFrame(list(master_dict.values()))
+            # master_dict.values() に重複がある可能性があるため、id(rec) でユニーク化して抽出
+            unique_records = []
+            seen_ids = set()
+            for rec in master_dict.values():
+                if id(rec) not in seen_ids:
+                    unique_records.append(rec)
+                    seen_ids.add(id(rec))
+            
+            new_df = pd.DataFrame(unique_records)
 
             self.cm.master_df = self.cm._clean_dataframe("master", new_df)
 
