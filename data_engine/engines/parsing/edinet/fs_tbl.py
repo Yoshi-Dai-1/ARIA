@@ -58,7 +58,7 @@ class FsDataDf(pa.DataFrameModel):
     key: Series[str] = pa.Field(nullable=True)
     data_str: Series[str] = pa.Field(nullable=True)
     decimals: Series[str] = pa.Field(nullable=True)
-    #precision: Series[str] = pa.Field(nullable=True)
+    precision: Series[str] = pa.Field(nullable=True)
     context_ref: Series[str] = pa.Field(nullable=True)
     element_name: Series[str] = pa.Field(nullable=True)
     unit: Series[str] = pa.Field(nullable=True)
