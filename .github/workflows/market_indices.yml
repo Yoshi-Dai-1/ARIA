@@ -10,6 +10,9 @@ on:
   workflow_dispatch:
     # inputs: None (Target Date removed as per user request)
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   update_indices:
     runs-on: ubuntu-latest
