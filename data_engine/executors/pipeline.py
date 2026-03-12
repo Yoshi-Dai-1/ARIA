@@ -89,13 +89,9 @@ def run_full_discovery(catalog, run_id):
 
     logger.info(f"Consolidated Discovery 開始: {len(ranges)} pass(es), 全 {len(sorted_dates)} 日分")
 
-    # 判定用エンジンの準備 (WorkerEngine の判定ロジックを流用)
-    class MockArgs:
-        def __init__(self):
-            self.list_only = True
-            self.id_list = None
-            self.mode = "worker"
-    engine = WorkerEngine(MockArgs(), catalog.edinet, catalog, run_id, "discovery")
+    from data_engine.core.config import ARIA_SCOPE
+    from data_engine.engines.filtering_engine import FilteringEngine
+    filtering = FilteringEngine(aria_scope=ARIA_SCOPE)
     
     full_matrix_p_and_t = []
     full_matrix_retry = []
@@ -123,7 +119,7 @@ def run_full_discovery(catalog, run_id):
             doc_id = row.get("docID")
             is_processed = catalog.is_processed(doc_id)
             local_status = catalog.get_status(doc_id)
-            verdict, reason, indicators = engine.filtering.get_verdict(row, is_processed, local_status)
+            verdict, reason, indicators = filtering.get_verdict(row, is_processed, local_status)
 
             # 物理的指標による詳細ログ (Sovereign Log Format 準拠)
             i_doc = f"{indicators['doc']:>3}"
@@ -172,8 +168,9 @@ def run_full_discovery(catalog, run_id):
                     "ord": indicators['ord'],
                     "form": indicators['form']
                 }
-                submit_date = parse_datetime(row["submitDateTime"]).date()
-                if h_start_date and submit_date < h_start_date:
+                dt = parse_datetime(row["submitDateTime"])
+                submit_date = dt.date() if dt else None
+                if h_start_date and submit_date and submit_date < h_start_date:
                     full_matrix_retry.append(item)
                 else:
                     full_matrix_p_and_t.append(item)

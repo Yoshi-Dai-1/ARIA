@@ -146,6 +146,8 @@ class WorkerEngine:
                     try:
                         # 堅牢なパース関数の流用
                         dt_ope = parse_datetime(max_ope)
+                        if not dt_ope:
+                            raise ValueError(f"ope_date_time '{max_ope}' のパースに失敗しました。")
                         
                         # 時刻部分のみで計算が必要なため、一度ダミー日付で扱う
                         # max_ope が '2024-03-12 10:00:00' のような形式でも parse_datetime なら通る
@@ -330,13 +332,17 @@ class WorkerEngine:
 
             submit_date = parse_datetime(row["submitDateTime"])
             # ... (ディレクトリ作成ロジックは維持)
-            save_dir = (
-                RAW_BASE_DIR
-                / "edinet"
-                / f"year={submit_date.year}"
-                / f"month={submit_date.month:02d}"
-                / f"day={submit_date.day:02d}"
-            )
+            if submit_date:
+                save_dir = (
+                    RAW_BASE_DIR
+                    / "edinet"
+                    / f"year={submit_date.year}"
+                    / f"month={submit_date.month:02d}"
+                    / f"day={submit_date.day:02d}"
+                )
+            else:
+                logger.warning(f"Unparseable submitDateTime '{row['submitDateTime']}' for {doc_id}. Saving to unknown.")
+                save_dir = RAW_BASE_DIR / "edinet" / "unknown"
             zip_dir = save_dir / "zip"
             pdf_dir = save_dir / "pdf"
             raw_zip = zip_dir / f"{doc_id}.zip"
@@ -467,6 +473,8 @@ class WorkerEngine:
         checked_dirs = set()
         for row in all_meta:
             sd = parse_datetime(row.get("submitDateTime", ""))
+            if not sd:
+                continue
             day_dir = RAW_BASE_DIR / "edinet" / f"year={sd.year}" / f"month={sd.month:02d}" / f"day={sd.day:02d}"
             if day_dir not in checked_dirs and day_dir.exists():
                 checked_dirs.add(day_dir)

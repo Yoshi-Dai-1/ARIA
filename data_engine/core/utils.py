@@ -47,7 +47,7 @@ def get_edinet_repo_path(doc_id: str, submit_at: str, suffix: str = "zip") -> st
     """
     if not submit_at or len(str(submit_at)) < 10:
         # 日付不明な場合はフォールバック (基本的には発生しない想定)
-        return f"raw/edinet/unknown/{doc_id}.{suffix}"
+        return f"raw/edinet/unknown/{suffix}/{doc_id}.{suffix}"
 
     # 日付部分のみ抽出 (YYYY-MM-DD)
     d = str(submit_at)[:10]
@@ -55,16 +55,16 @@ def get_edinet_repo_path(doc_id: str, submit_at: str, suffix: str = "zip") -> st
         y, m, day = d.split("-")
         return f"raw/edinet/year={y}/month={m}/day={day}/{suffix}/{doc_id}.{suffix}"
     except Exception:
-        return f"raw/edinet/unknown/{doc_id}.{suffix}"
+        return f"raw/edinet/unknown/{suffix}/{doc_id}.{suffix}"
 
 
 def parse_datetime(dt_str: str):
     """EDINET の submitDateTime (YYYY-MM-DD HH:MM[:SS]) を堅牢にパースする"""
     if not dt_str or not isinstance(dt_str, str):
-        return datetime.now()
+        return None
     try:
         if len(dt_str) > 16:
             return datetime.strptime(dt_str[:19], "%Y-%m-%d %H:%M:%S")
         return datetime.strptime(dt_str[:16], "%Y-%m-%d %H:%M")
     except Exception:
-        return datetime.now()
+        return None
