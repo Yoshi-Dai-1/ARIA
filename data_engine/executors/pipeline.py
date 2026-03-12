@@ -101,12 +101,16 @@ def run_full_discovery(catalog, run_id):
     full_matrix_retry = []
     full_meta_cache = []
 
-    # 【実数カウント】逐次的なカウンタインクリメント
-    # 採用: 解析対象, 既処理: 既にDBに存在, コードなし: Scope外(証券コード起因), 取下げ: 取下げ済, 形式不正: 解析非対象
-    cnt = {"accept": 0, "processed": 0, "no_code": 0, "withdrawn": 0, "format_err": 0}
+    # 【実数カウント】逐次的なカウンタインクリメント (Semantic Alignment)
+    # [採用内訳] parse: 解析, save: 保存
+    # [スキップ内訳] processed: 既処理, no_code: 証券コードなし, withdrawn: 取下げ, format_err: 真の形式不正(コード長異常)
+    cnt = {
+        "parse": 0, "save": 0,
+        "processed": 0, "no_code": 0, "withdrawn": 0, "format_err": 0
+    }
 
-    # 2. 最小限のパスでフェッチと判定を実行
     from data_engine.engines.filtering_engine import ProcessVerdict, SkipReason
+    # 2. 最小限のパスでフェッチと判定を実行
     for r_start, r_end in ranges:
         s_str = r_start.strftime("%Y-%m-%d")
         e_str = r_end.strftime("%Y-%m-%d")
@@ -126,30 +130,25 @@ def run_full_discovery(catalog, run_id):
             log_msg = f"{log_prefix} {doc_id} | {doc_title}"
             logger.debug(f"{log_msg} -> {verdict} ({reason})")
 
-            # 実数カウントロジック (引算不可)
+            # --- 実数カウントロジック (引算一切不可) ---
             if verdict == ProcessVerdict.PARSE:
-                cnt["accept"] += 1
+                cnt["parse"] += 1
+                full_meta_cache.append(row)
+            elif verdict == ProcessVerdict.SAVE_RAW:
+                cnt["save"] += 1
                 full_meta_cache.append(row)
             elif verdict == ProcessVerdict.SKIP_PROCESSED:
                 cnt["processed"] += 1
             elif verdict == ProcessVerdict.SKIP_WITHDRAWN:
                 cnt["withdrawn"] += 1
-            elif verdict == ProcessVerdict.SKIP_OUT_OF_SCOPE:
-                no_sec_reasons = [
-                    SkipReason.NO_SEC_CODE,
-                    SkipReason.INVALID_CODE_LENGTH,
-                    SkipReason.HAS_SEC_CODE
-                ]
-                if reason in no_sec_reasons:
+                if reason == SkipReason.INVALID_CODE_LENGTH:
+                    cnt["format_err"] += 1
+                elif reason in [SkipReason.NO_SEC_CODE, SkipReason.HAS_SEC_CODE]:
                     cnt["no_code"] += 1
                 else:
-                    cnt["processed"] += 1  # status_statusStatus 2 等
-            elif verdict == ProcessVerdict.SAVE_RAW:
-                # 解析非対象の書類すべて
-                cnt["format_err"] += 1
-                full_meta_cache.append(row)
+                    cnt["processed"] += 1  # その他ステータス起因
 
-            # マトリックス用データの生成 (PARSE または SAVE_RAW)
+            # マトリックス用データの生成 (PARSE または SAVE_RAW は全て「採用」)
             if verdict in [ProcessVerdict.PARSE, ProcessVerdict.SAVE_RAW]:
                 item = {
                     "id": doc_id,
@@ -180,17 +179,21 @@ def run_full_discovery(catalog, run_id):
     print(f"JSON_MATRIX_PRIMARY: {json.dumps(unique_p)}")
     print(f"JSON_MATRIX_RETRY: {json.dumps(unique_r)}")
 
-    # 【100% 数学的精度】引き算を一切排除した物理カウントの報告
+    # 【100% 数学的精度】物理カウントの集計
+    total_adopted = cnt["parse"] + cnt["save"]
     total_skip = cnt["processed"] + cnt["no_code"] + cnt["withdrawn"] + cnt["format_err"]
-    total_all = cnt["accept"] + total_skip
-    detail_str = (
+    total_all = total_adopted + total_skip
+    
+    adopted_detail = f"解析: {cnt['parse']}, 保存: {cnt['save']}"
+    skip_detail = (
         f"既処理: {cnt['processed']}, 証券コードなし: {cnt['no_code']}, "
         f"取下げ: {cnt['withdrawn']}, 形式不正: {cnt['format_err']}"
     )
-
+    
     logger.info(
-        f"フィルタリング完了: {cnt['accept']}/{total_all} 件を抽出 "
-        f"(採用: {cnt['accept']} 件 | 総スキップ: {total_skip} 件 [{detail_str}])"
+        f"フィルタリング完了: {total_adopted}/{total_all} 件を抽出 "
+        f"(採用: {total_adopted} 件 [{adopted_detail}] | "
+        f"総スキップ: {total_skip} 件 [{skip_detail}])"
     )
     logger.info(f"Discovery統合完了: Primary+Today={len(unique_p)}件, Retry={len(unique_r)}件")
     return True
