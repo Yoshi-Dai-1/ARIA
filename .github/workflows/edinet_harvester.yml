@@ -91,6 +91,9 @@ jobs:
           PRIMARY=$(echo "$OUTPUT" | grep "^JSON_MATRIX_PRIMARY:" | cut -d':' -f2-)
           RETRY=$(echo "$OUTPUT" | grep "^JSON_MATRIX_RETRY:" | cut -d':' -f2-)
 
+          echo "$PRIMARY" > primary.json
+          echo "$RETRY" > retry.json
+
           python -c "
           import json, sys, os
           
@@ -110,8 +113,10 @@ jobs:
                   tasks.append({'ids': [x['id'] for x in items], 'weight': w})
               return tasks, sum(t['weight'] for t in tasks)
 
-          primary_json = r'''$PRIMARY'''
-          retry_json = r'''$RETRY'''
+          with open('primary.json', 'r') as f:
+              primary_json = f.read().strip() or '[]'
+          with open('retry.json', 'r') as f:
+              retry_json = f.read().strip() or '[]'
           
           tasks_p, weight_p = get_tasks(json.loads(primary_json))
           tasks_r, weight_r = get_tasks(json.loads(retry_json))
