@@ -23,6 +23,8 @@
 - **API V2 増分同期**: `opeDateTime` パラメータを活用し、差分のみを効率的に取得
 - **Market Data Pipeline**: EDINET とは独立した市場データ収集エンジン (Nikkei 225, TOPIX 対応)
 - **Global Namespacing (Nationality Tags)**: 全証券コードに `JP:` プレフィックスを強制。将来の海外市場展開への拡張性と技術的主権を担保
+- **Fact-based Reporting**: 診断ログに `[Doc, Ord, Form, XBRL]` といった物理コードを表示し、判定根拠を透明化
+- **Central Filtering Control**: `FilteringEngine` による解析スコープの一元管理（SSOT）
 - **Hugging Face Integration**: 単一リポジトリでの効率的なデータレイク管理
 
 ## アーキテクチャ (Monorepo)

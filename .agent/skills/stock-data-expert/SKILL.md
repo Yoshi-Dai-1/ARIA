@@ -29,6 +29,8 @@ ARIA における「証券データの真実」を管理するためのドメイ
 - **IPO Discovery**: JPX にのみ存在する JCN 不明銘柄に対し、直近 30 日間の書類一覧 API をスキャン。`secCode` が一致する書類から識別子を動的に抽出。
 - **Registration Guard**: 書類 API でも識別子が発見できない一般事業会社は、マスタへの登録を「保留（スキップ）」する。
 - **例外**: ETF / REIT / PRO Market は EDINET 名簿対象外のため、JPX 情報のみでの登録を許可。
+- **Centralized Judgement (Targeting SSOT)**:
+    - 市場監視における解析対象の選定は、[FilteringEngine](file:///Users/yoshi_dai/repos/ARIA/data_engine/engines/filtering_engine.py) の `TARGET_DOC_TYPES` 等の物理コード定義に基づき、ARIA 規格として一元的に実施すること。
 
 ## 4. 履歴の自己修復 (History Self-Healing)
 - **Status-based History**: `is_active` フラグの遷移に基づき、`LISTING` / `DELISTING` イベントを一貫して生成。

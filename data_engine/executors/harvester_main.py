@@ -1,8 +1,3 @@
-"""
-Integrated Disclosure Data Lakehouse 2.0
-CLI Entrypoint
-"""
-
 import argparse
 import os
 import sys
@@ -13,7 +8,11 @@ from loguru import logger
 
 from data_engine.catalog_manager import CatalogManager
 from data_engine.core.config import CONFIG
-from data_engine.executors.pipeline import run_merger, run_worker_pipeline
+from data_engine.executors.pipeline import (
+    run_full_discovery,
+    run_merger,
+    run_worker_pipeline,
+)
 
 
 # 共通設定 (SSOT 取得のため定数化不要)
@@ -38,6 +37,7 @@ def main():
     parser.add_argument(
         "--chunk-id", type=str, dest="chunk_id", default="default", help="Chunk ID for parallel workers"
     )
+    parser.add_argument("--full-discovery", action="store_true", help="Run multi-period discovery in one go")
 
     try:
         args = parser.parse_args()
@@ -71,11 +71,13 @@ def main():
     # Worker / list-only モードは HF 上の既存マスタを使用する
     # Discovery (list-only) モードでは、同期ラグを防ぐため最新カタログを強制取得する
     is_merger = args.mode == "merger"
-    is_list_only = getattr(args, "list_only", False)
+    is_list_only = getattr(args, "list_only", False) or getattr(args, "full_discovery", False)
     catalog = CatalogManager(sync_master=is_merger, force_refresh=is_list_only)
 
     if args.mode == "merger":
         success = run_merger(catalog, run_id)
+    elif getattr(args, "full_discovery", False):
+        success = run_full_discovery(catalog, run_id)
     else:
         success = run_worker_pipeline(args, catalog.edinet, catalog, run_id, chunk_id)
 

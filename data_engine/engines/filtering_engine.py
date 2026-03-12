@@ -8,7 +8,7 @@ class ProcessVerdict(str, Enum):
     """ARIA における書類処理の最終判定（司法判断）"""
 
     PARSE = "parse"  # フル解析対象（有報等）
-    SAVE_METADATA = "save_meta"  # メタデータ保存のみ（非解析対象）
+    SAVE_RAW = "save_raw"  # 解析はしないが、書類（ZIP/PDF）自体は保存する
     SKIP_PROCESSED = "skip_already_processed"  # 既処理によるスキップ
     SKIP_OUT_OF_SCOPE = "skip_out_of_scope"  # スコープ外（Listed/Unlisted設定）によるスキップ
     SKIP_WITHDRAWN = "skip_withdrawn"  # 取下げ済みによるスキップ
@@ -35,71 +35,76 @@ class FilteringEngine:
 
     def __init__(self, aria_scope: str = "All"):
         self.aria_scope = aria_scope
-        # 解析対象の定義 (将来的に別定義ファイルやDBへ移行可能)
-        self.PARSE_FORM_CODES = ["030000"]  # 有価証券報告書
-        self.PARSE_DOC_TYPE_CODES = ["120"]
-        self.PARSE_ORDINANCE_CODES = ["010"]  # 企業内容等の開示に関する内閣府令
+        # 【ARIA 解析対象の中央制御】 将来 140 等を追加する場合は以下のように配列を増やします
+        # 例: self.TARGET_DOC_TYPES = ["120", "140"]
+        self.TARGET_DOC_TYPES = ["120"]
+        self.TARGET_ORDINANCE = "010"
+        self.TARGET_FORMS = ["030000"]
 
     def get_verdict(
         self,
         row: Dict[str, Any],
         is_processed: bool = False,
         local_status: Optional[str] = None,
-    ) -> Tuple[ProcessVerdict, SkipReason]:
+    ) -> Tuple[ProcessVerdict, SkipReason, Dict[str, Any]]:
         """
-        書類メタデータを統合的に判定する。
-
-        Args:
-            row: EDINET/TDNet 等のメタデータ行
-            is_processed: 既にカタログに存在するかどうか
-            local_status: ローカル（カタログ）側でのステータス
-
-        Returns:
-            (ProcessVerdict, SkipReason)
+        書類メタデータを物理的事実（Triple: Doc, Ord, Form）に基づき判定する。
         """
+        form_code = row.get("formCode") or row.get("form") or "---"
+        doc_type = row.get("docTypeCode") or row.get("type") or "---"
+        ordinance = row.get("ordinanceCode") or row.get("ord") or "---"
+        xbrl_flag = str(row.get("xbrlFlag") or row.get("xbrl") or "0")
+
+        # 3つの物理的指標 (Facts for logging)
+        indicators = {
+            "doc": doc_type,
+            "ord": ordinance,
+            "form": form_code,
+            "xbrl": xbrl_flag == "1"
+        }
+
         # 1. 取下げチェック (物理的事実の優先)
         is_withdrawn = str(row.get("withdrawalStatus")) == "1"
 
         # 2. 既処理チェックと取下げ同期の特殊判定
         if is_processed:
-            # 取下げステータスの同期が必要な場合（APIで取下げだがローカルが未反映）はスキップしない
             if is_withdrawn and local_status != "retracted":
-                pass  # そのまま後続の判定へ（ステータス更新のため）
+                pass
             else:
-                return ProcessVerdict.SKIP_PROCESSED, SkipReason.ALREADY_PROCESSED
+                return ProcessVerdict.SKIP_PROCESSED, SkipReason.ALREADY_PROCESSED, indicators
 
         if is_withdrawn:
-            return ProcessVerdict.SKIP_WITHDRAWN, SkipReason.WITHDRAWN
+            return ProcessVerdict.SKIP_WITHDRAWN, SkipReason.WITHDRAWN, indicators
 
+        # 3. 修正済み書類の排除 (Fact: docInfoEditStatus == 2 は古い版)
+        if str(row.get("docInfoEditStatus")) == "2":
+            return ProcessVerdict.SKIP_OUT_OF_SCOPE, SkipReason.ALREADY_PROCESSED, indicators
+
+        # 4. スコープ判定
         if self.aria_scope == "Listed":
             norm_code = normalize_code(row.get("secCode"), nationality="JP")
             if not norm_code:
-                return ProcessVerdict.SKIP_OUT_OF_SCOPE, SkipReason.NO_SEC_CODE
-            
-            # プレフィックスを剥離して長さをチェック
+                return ProcessVerdict.SKIP_OUT_OF_SCOPE, SkipReason.NO_SEC_CODE, indicators
             core_code = norm_code.split(":", 1)[1] if ":" in norm_code else norm_code
             if len(core_code) < 4:
-                return ProcessVerdict.SKIP_OUT_OF_SCOPE, SkipReason.INVALID_CODE_LENGTH
+                return ProcessVerdict.SKIP_OUT_OF_SCOPE, SkipReason.INVALID_CODE_LENGTH, indicators
         elif self.aria_scope == "Unlisted":
             norm_code = normalize_code(row.get("secCode"), nationality="JP")
             if norm_code:
                 core_code = norm_code.split(":", 1)[1] if ":" in norm_code else norm_code
                 if len(core_code) >= 4:
-                    return ProcessVerdict.SKIP_OUT_OF_SCOPE, SkipReason.HAS_SEC_CODE
+                    return ProcessVerdict.SKIP_OUT_OF_SCOPE, SkipReason.HAS_SEC_CODE, indicators
 
-        # 4. 解析対象判定 (工場への仕振り)
-        # TODO: 将来的に edinet/tdnet/sec 別の判定クラスへ委譲する
-        form_code = row.get("formCode") or row.get("form")
-        doc_type = row.get("docTypeCode") or row.get("type")
-        ordinance = row.get("ordinanceCode") or row.get("ord")
-
-        is_yuho = (
-            doc_type in self.PARSE_DOC_TYPE_CODES
-            and form_code in self.PARSE_FORM_CODES
-            and ordinance in self.PARSE_ORDINANCE_CODES
+        # 5. 解析対象判定 (Fact: DocType, Ordinance, Form, XBRL)
+        is_parsing_target = (
+            doc_type in self.TARGET_DOC_TYPES
+            and ordinance == self.TARGET_ORDINANCE
+            and form_code in self.TARGET_FORMS
+            and indicators["xbrl"]
         )
 
-        if is_yuho:
-            return ProcessVerdict.PARSE, SkipReason.NONE
+        if is_parsing_target:
+            return ProcessVerdict.PARSE, SkipReason.NONE, indicators
 
-        return ProcessVerdict.SAVE_METADATA, SkipReason.NONE
+        # 解析非対象だが、書類(ZIP/PDF)とメタデータをレイクハウスへ保存する
+        return ProcessVerdict.SAVE_RAW, SkipReason.NONE, indicators

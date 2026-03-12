@@ -121,7 +121,10 @@ class WorkerEngine:
         patch_all_networking()
 
         # 起動情報の集約表示（工学的主権: 冗長性を排除し、重要な情報のみを提示）
-        logger.info(f"ARIA Execution Scope: {ARIA_SCOPE}")
+        # Chunk 0 または Merger/Discovery 起動時のみ表示
+        is_merger = self.args.mode == "merger"
+        if self.chunk_id in (0, "default", "primary-0", "retry-0") or is_merger:
+            logger.info(f"ARIA Execution Scope: {ARIA_SCOPE}")
 
     def run(self):
         """Workerモード (デフォルト): データの取得・解析・保存のパイプラインを実行する"""
@@ -150,12 +153,14 @@ class WorkerEngine:
                 max_ope = self.catalog.catalog_df["ope_date_time"].max()
                 if not pd.isna(max_ope) and str(max_ope).strip() != "":
                     try:
-                        dt_ope = datetime.strptime(max_ope, "%H:%M:%S")
-                        dt_buffer = dt_ope - pd.Timedelta(hours=1)
-                        if dt_buffer.day < dt_ope.day:
-                            last_ope_time = "00:00:00"
-                        else:
-                            last_ope_time = dt_buffer.strftime("%H:%M:%S")
+                        # 堅牢なパース関数の流用
+                        dt_ope = parse_datetime(max_ope)
+                        
+                        # 時刻部分のみで計算が必要なため、一度ダミー日付で扱う
+                        # max_ope が '2024-03-12 10:00:00' のような形式でも parse_datetime なら通る
+                        base_time = datetime(2000, 1, 1, dt_ope.hour, dt_ope.minute, dt_ope.second)
+                        dt_buffer = base_time - pd.Timedelta(hours=1)
+                        last_ope_time = dt_buffer.strftime("%H:%M:%S")
                         logger.info(f"増分同期チェックポイント: {max_ope} -> {last_ope_time} (1h Buffer適用)")
                     except Exception as e:
                         logger.warning(f"ope_date_time の計算に失敗しました: {e}")
@@ -191,19 +196,32 @@ class WorkerEngine:
                 local_status = self.catalog.get_status(doc_id)
 
                 # 【憲法の番人】判定エンジンへ委譲
-                verdict, reason = self.filtering.get_verdict(
+                verdict, reason, ind = self.filtering.get_verdict(
                     row, is_processed=is_processed, local_status=local_status
                 )
 
+                # 物理的指標による詳細ログ (DocType, Ordinance, Form)
+                i_doc = ind["doc"]
+                i_ord = ind["ord"]
+                i_form = ind["form"]
+                i_xbrl = "XBRL:1" if ind["xbrl"] else "XBRL:0"
+                
+                title = row.get("docDescription", "名称不明")
+                log_msg = f"[{i_doc}, {i_ord}, {i_form}, {i_xbrl}] {doc_id} | {title}"
+                
                 if verdict in [
                     ProcessVerdict.SKIP_OUT_OF_SCOPE,
                     ProcessVerdict.SKIP_PROCESSED,
                     ProcessVerdict.SKIP_WITHDRAWN,
                 ]:
+                    logger.debug(f"{log_msg} -> SKIP ({reason})")
                     if reason in skipped_reasons:
                         skipped_reasons[reason] += 1
                     continue
 
+                # 解析対象なら PARSE、対象外なら Saved (書類保存のみ) と表示
+                status_label = "PARSE" if verdict == ProcessVerdict.PARSE else "Saved"
+                logger.info(f"{log_msg} -> ACCEPT ({status_label})")
                 filtered_meta.append(row)
                 raw_sec_code = normalize_code(str(row.get("secCode", "")).strip(), nationality="JP")
                 matrix_data.append(
@@ -284,26 +302,34 @@ class WorkerEngine:
             # 【憲法の番人】判定エンジンへ委譲
             is_processed = self.catalog.is_processed(doc_id)
             local_status = self.catalog.get_status(doc_id)
-            verdict, reason = self.filtering.get_verdict(
+            verdict, reason, ind = self.filtering.get_verdict(
                 row, is_processed=is_processed, local_status=local_status
             )
+
+            # 物理的指標による詳細ログ (DocType, Ordinance, Form)
+            i_doc = ind["doc"]
+            i_ord = ind["ord"]
+            i_form = ind["form"]
+            i_xbrl = "XBRL:1" if ind["xbrl"] else "XBRL:0"
+            log_msg = f"[{i_doc}, {i_ord}, {i_form}, {i_xbrl}] {doc_id} | {title}"
 
             # 既処理・スコープ外スキップの明示的カウント
             if verdict == ProcessVerdict.SKIP_PROCESSED:
                 worker_stats["already_skipped"] += 1
-                logger.debug(f"スキップ（既処理）: {doc_id} | {title}")
+                logger.debug(f"{log_msg} -> SKIP (Already Processed)")
                 continue
             if verdict == ProcessVerdict.SKIP_OUT_OF_SCOPE:
-                # 本来 Discovery で排除されているはずだが、Drift 対策
-                logger.warning(f"スキップ（スコープ外）: {doc_id} | {title} | {reason}")
+                logger.debug(f"{log_msg} -> SKIP (Out of Scope: {reason})")
                 continue
             if verdict == ProcessVerdict.SKIP_WITHDRAWN:
-                # 取下げ済みの場合、ステータス更新のみ行うために後続へ進むか、
-                # すでにカタログが 'retracted' なら完全にスキップ
                 if local_status == "retracted":
+                    logger.debug(f"{log_msg} -> SKIP (Already Retracted)")
                     continue
-                # ステータス更新のために保存処理へ進む
-                logger.info(f"取下げステータス同期: {doc_id} | {title}")
+                logger.info(f"{log_msg} -> RETRACTION SYNC")
+            else:
+                # 解析対象なら PARSE、対象外なら Saved (書類保存完了) と表示
+                status_label = "PARSE" if verdict == ProcessVerdict.PARSE else "Saved"
+                logger.info(f"{log_msg} -> {status_label}")
 
             submit_date = parse_datetime(row["submitDateTime"])
             # ... (ディレクトリ作成ロジックは維持)

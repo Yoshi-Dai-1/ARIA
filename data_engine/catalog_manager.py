@@ -80,6 +80,12 @@ class CatalogManager:
         self.catalog_df = self.hf.load_parquet("catalog", clean_fn=self._clean_dataframe, force_download=force_refresh)
         self.master_df = self.hf.load_parquet("master", clean_fn=self._clean_dataframe, force_download=force_refresh)
 
+        # 7. Optimized Lookups (O(1))
+        # doc_id -> status の高速な引き当て用キャッシュ
+        self._status_cache: Dict[str, str] = {}
+        self._processed_set: set[str] = set()
+        self._rebuild_lookup_caches()
+
         logger.debug(f"CatalogManager Initialized (Scope: {self.scope}, SyncMaster: {sync_master})")
 
         if sync_master:
@@ -249,26 +255,31 @@ class CatalogManager:
     # ──────────────────────────────────────────────
     # Catalog / History Methods
     # ──────────────────────────────────────────────
+    def _rebuild_lookup_caches(self):
+        """カタログDFから高速ルックアップ用のキャッシュを再構築する"""
+        if self.catalog_df.empty:
+            self._status_cache = {}
+            self._processed_set = set()
+            return
+
+        # カタログ内の全レコードのステータスを辞書化
+        self._status_cache = dict(zip(self.catalog_df["doc_id"], self.catalog_df["processed_status"], strict=False))
+        # 成功・取下げ済みのIDをSet化 (O(1)検索用)
+        self._processed_set = {
+            doc_id for doc_id, status in self._status_cache.items() if status in ("success", "retracted")
+        }
+
     def is_processed(self, doc_id: str) -> bool:
         """
-        書類が「処理完了」かどうかを判定する。
+        書類が「処理完了」かどうかを判定する (O(1) ルックアップ)。
         【工学的主権】success / retracted のみを処理済みとし、
         failure / pending は「再処理対象」として残す（自己修復の起点）。
         """
-        if self.catalog_df.empty:
-            return False
-        matches = self.catalog_df[self.catalog_df["doc_id"] == doc_id]
-        if matches.empty:
-            return False
-        return matches.iloc[0]["processed_status"] in ("success", "retracted")
+        return doc_id in self._processed_set
 
     def get_status(self, doc_id: str) -> str:
-        if self.catalog_df.empty:
-            return "unknown"
-        row = self.catalog_df[self.catalog_df["doc_id"] == doc_id]
-        if not row.empty:
-            return str(row.iloc[0]["processed_status"])
-        return "unknown"
+        """書類の現在の処理ステータスを取得する (O(1) ルックアップ)。"""
+        return self._status_cache.get(doc_id, "unknown")
 
     def update_catalog(self, new_records: List[Dict]):
         if not new_records:
@@ -283,6 +294,7 @@ class CatalogManager:
             self.catalog_df = pd.concat([self.catalog_df, df_new], ignore_index=True)
             self.catalog_df.drop_duplicates(subset=["doc_id"], keep="last", inplace=True)
 
+        self._rebuild_lookup_caches()  # キャッシュ更新
         self.hf.save_and_upload("catalog", self.catalog_df, clean_fn=self._clean_dataframe, defer=True)
         logger.info(f"カタログを更新・コミットバッファに追加しました (全 {len(self.catalog_df)} 件)")
 

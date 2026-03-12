@@ -82,46 +82,14 @@ jobs:
           PYTHONPATH: .
         run: |
           mkdir -p data/meta
-          # 3段階のリストアップ
-          python -m data_engine.executors.harvester_main --list-only --start "${{ steps.set-dates.outputs.start_date }}" --end "${{ steps.set-dates.outputs.end_date }}" | grep "^JSON_MATRIX_DATA:" | cut -d':' -f2- > data/meta/list_primary.json
-          mv data/meta/discovery_metadata.json data/meta/disc_primary.json || echo "[]" > data/meta/disc_primary.json
-
-          python -m data_engine.executors.harvester_main --list-only --start "${{ steps.set-dates.outputs.today }}" --end "${{ steps.set-dates.outputs.today }}" | grep "^JSON_MATRIX_DATA:" | cut -d':' -f2- > data/meta/list_today.json
-          mv data/meta/discovery_metadata.json data/meta/disc_today.json || echo "[]" > data/meta/disc_today.json
-
-          RETRY_START="${{ steps.set-dates.outputs.retry_start }}"
-          if [[ -n "$RETRY_START" ]]; then
-            python -m data_engine.executors.harvester_main --list-only --start "$RETRY_START" --end "${{ steps.set-dates.outputs.retry_end }}" | grep "^JSON_MATRIX_DATA:" | cut -d':' -f2- > data/meta/list_retry.json
-            mv data/meta/discovery_metadata.json data/meta/disc_retry.json || echo "[]" > data/meta/disc_retry.json
-          else
-            echo "[]" > data/meta/list_retry.json
-            echo "[]" > data/meta/disc_retry.json
-          fi
+          # ハイブリッド・ディスカバリ (性能・整合性の極限追求)
+          OUTPUT=$(python -m data_engine.executors.harvester_main --full-discovery)
+          
+          PRIMARY=$(echo "$OUTPUT" | grep "^JSON_MATRIX_PRIMARY:" | cut -d':' -f2-)
+          RETRY=$(echo "$OUTPUT" | grep "^JSON_MATRIX_RETRY:" | cut -d':' -f2-)
 
           python -c "
           import json, sys, os
-          def load_j(p): 
-              try:
-                  with open(p, 'r') as f: return json.load(f)
-              except: return []
-          
-          history = load_j('data/meta/list_primary.json')
-          today = load_j('data/meta/list_today.json')
-          retry = load_j('data/meta/list_retry.json')
-
-          d_p = load_j('data/meta/disc_primary.json')
-          d_t = load_j('data/meta/disc_today.json')
-          d_r = load_j('data/meta/disc_retry.json')
-          with open('data/meta/discovery_metadata.json', 'w') as out:
-              json.dump(d_p + d_t + d_r, out, ensure_ascii=False, indent=2)
-
-          full_primary = history + today
-          seen_ids = set()
-          unique_primary = []
-          for x in full_primary:
-              if x['id'] not in seen_ids:
-                  unique_primary.append(x)
-                  seen_ids.add(x['id'])
           
           def get_tasks(data):
               if not data: return [], 0
@@ -133,22 +101,24 @@ jobs:
               for group_key, items in group_map.items():
                   w = 10
                   for x in items:
-                      is_yuho = x.get('type') == '120' and x.get('ord') == '010' and x.get('form') == '030000'
-                      w += 50 if is_yuho else 2
+                      # ARIA 解析対象判定基準 (現在は 120, 010, 030000 のみ)
+                      is_target = x.get('type') == '120' and x.get('ord') == '010' and x.get('form') == '030000'
+                      w += 100 if is_target else 2
                   tasks.append({'ids': [x['id'] for x in items], 'weight': w})
               return tasks, sum(t['weight'] for t in tasks)
 
-          tasks_p, weight_p = get_tasks(unique_primary)
-          tasks_r, weight_r = get_tasks(retry)
-          total_w = weight_p + weight_r
+          primary_json = r'''$PRIMARY'''
+          retry_json = r'''$RETRY'''
           
-          # 【工学的主権】リソース最大分配 (将来の拡張性を考慮し定数化)
+          tasks_p, weight_p = get_tasks(json.loads(primary_json))
+          tasks_r, weight_r = get_tasks(json.loads(retry_json))
+          
+          total_w = weight_p + weight_r
           TOTAL_SLOTS = 20
           
           if total_w == 0:
               n_jobs_p, n_jobs_r = 0, 0
           elif weight_p > 0 and weight_r > 0:
-              # 比例配分しつつ、最低1ジョブを保証
               n_jobs_p = max(1, min(TOTAL_SLOTS - 1, round(TOTAL_SLOTS * weight_p / total_w)))
               n_jobs_r = TOTAL_SLOTS - n_jobs_p
           else:
