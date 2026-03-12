@@ -125,10 +125,21 @@ def run_full_discovery(catalog, run_id):
             local_status = catalog.get_status(doc_id)
             verdict, reason, indicators = engine.filtering.get_verdict(row, is_processed, local_status)
 
-            # 【工学的配慮】詳細は DEBUG
-            log_prefix = f"[{indicators['doc']}, {indicators['ord']}, {indicators['form']}, XBRL:{indicators['xbrl']}]"
+            # 物理的指標による詳細ログ (Sovereign Log Format 準拠)
+            i_doc = f"{indicators['doc']:>3}"
+            i_ord = f"{indicators['ord']:>3}"
+            i_form = f"{indicators['form']:>6}"
+            i_xbrl = "XBRL:1" if indicators["xbrl"] else "XBRL:0"
+            raw_code = str(row.get("secCode", "")).strip()
+            norm_code = normalize_code(raw_code, nationality="JP") if raw_code else ""
+            i_code = f"[{norm_code:5}]" if norm_code else "[     ]"
+            
+            # プレフィックスの構築
             doc_title = (row.get('docDescription') or 'Unknown').strip()
-            log_msg = f"{log_prefix} {doc_id} | {doc_title}"
+            log_prefix_facts = f"[{i_doc}, {i_ord}, {i_form}, {i_xbrl}] {i_code} {doc_id:8}"
+            log_msg = f"{log_prefix_facts} | {doc_title}"
+
+            # 【工学的配慮】詳細は DEBUG
             logger.debug(f"{log_msg} -> {verdict} ({reason})")
 
             # --- 実数カウントロジック (引算一切不可) ---
@@ -142,6 +153,7 @@ def run_full_discovery(catalog, run_id):
                 cnt["processed"] += 1
             elif verdict == ProcessVerdict.SKIP_WITHDRAWN:
                 cnt["withdrawn"] += 1
+            elif verdict == ProcessVerdict.SKIP_OUT_OF_SCOPE:
                 if reason == SkipReason.INVALID_CODE_LENGTH:
                     cnt["format_err"] += 1
                 elif reason in [SkipReason.NO_SEC_CODE, SkipReason.HAS_SEC_CODE]:

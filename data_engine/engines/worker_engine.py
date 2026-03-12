@@ -297,30 +297,38 @@ class WorkerEngine:
                 row, is_processed=is_processed, local_status=local_status
             )
 
-            # 物理的指標による詳細ログ (DocType, Ordinance, Form)
-            i_doc = ind["doc"]
-            i_ord = ind["ord"]
-            i_form = ind["form"]
+            # 物理的指標による詳細ログ (Sovereign Log Format)
+            i_doc = f"{ind['doc']:>3}"
+            i_ord = f"{ind['ord']:>3}"
+            i_form = f"{ind['form']:>6}"
             i_xbrl = "XBRL:1" if ind["xbrl"] else "XBRL:0"
-            log_msg = f"[{i_doc}, {i_ord}, {i_form}, {i_xbrl}] {doc_id} | {title}"
+            raw_code = str(row.get("secCode", "")).strip()
+            norm_code = normalize_code(raw_code, nationality="JP") if raw_code else ""
+            i_code = f"[{norm_code:5}]" if norm_code else "[     ]"
+            
+            # プレフィックスの構築 (物理的事実の垂直整列)
+            log_prefix_facts = f"[{i_doc}, {i_ord}, {i_form}, {i_xbrl}] {i_code} {doc_id:8}"
+            log_msg = f"{log_prefix_facts} | {title}"
 
             # 既処理・スコープ外スキップの明示的カウント
             if verdict == ProcessVerdict.SKIP_PROCESSED:
                 worker_stats["already_skipped"] += 1
-                logger.debug(f"{log_msg} -> SKIP (Already Processed)")
+                logger.debug(f"[Skipped] {log_msg} -> Already Processed")
                 continue
             if verdict == ProcessVerdict.SKIP_OUT_OF_SCOPE:
-                logger.debug(f"{log_msg} -> SKIP (Out of Scope: {reason})")
+                logger.debug(f"[Skipped] {log_msg} -> Out of Scope: {reason}")
                 continue
             if verdict == ProcessVerdict.SKIP_WITHDRAWN:
                 if local_status == "retracted":
-                    logger.debug(f"{log_msg} -> SKIP (Already Retracted)")
+                    logger.debug(f"[Skipped] {log_msg} -> Already Retracted")
                     continue
-                logger.info(f"{log_msg} -> RETRACTION SYNC")
+                logger.info(f"[Retract] {log_msg} -> SYNC REQUIRED")
+            elif verdict == ProcessVerdict.PARSE:
+                # 定例の出力（PARSEのみ）は重複回避のため DEBUG 
+                logger.debug(f"[PARSE  ] {log_msg} (Pending)")
             else:
-                # 解析対象なら PARSE、対象外なら Saved (書類保存完了) と表示
-                status_label = "PARSE" if verdict == ProcessVerdict.PARSE else "Saved"
-                logger.info(f"{log_msg} -> {status_label}")
+                # SAVE_RAW 等の「保存のみ」
+                logger.info(f"[Saved  ] {log_msg}")
 
             submit_date = parse_datetime(row["submitDateTime"])
             # ... (ディレクトリ作成ロジックは維持)
@@ -439,7 +447,7 @@ class WorkerEngine:
                     tasks.append((doc_id, row, loaded_acc[ty], raw_zip, quant_roles, "financial_values"))
                     tasks.append((doc_id, row, loaded_acc[ty], raw_zip, text_roles, "qualitative_text"))
                     parsing_target_ids.add(doc_id)
-                    logger.info(f"【解析対象】: {doc_id} | 事業年度: {ty} | {title}")
+                    logger.info(f"[PARSE  ] {log_msg} | FY: {ty}")
                 except Exception as e:
                     logger.error(f"【解析中止】タクソノミ判定失敗 ({doc_id}): {e}")
                     record["processed_status"] = "failure"
