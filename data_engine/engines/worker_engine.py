@@ -288,8 +288,6 @@ class WorkerEngine:
             found_target_ids.add(doc_id)
             title = row.get("docDescription", "名称不明")
 
-            title = row.get("docDescription", "名称不明")
-
             # 【憲法の番人】判定エンジンへ委譲
             is_processed = self.catalog.is_processed(doc_id)
             local_status = self.catalog.get_status(doc_id)

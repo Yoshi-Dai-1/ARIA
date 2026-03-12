@@ -172,8 +172,6 @@ class DataReconciliationEngine:
 
                 # 【工学的主権】APIの意図(フラグ)に基づき期待値を算出。NaNトラップをpd.isnaで回避。
                 # has_xbrl/has_pdf が None の場合は、既存レコードとの互換性のためパスの有無で判定
-                import pandas as pd
-
                 should_have_zip = row.get("has_xbrl")
                 if should_have_zip is True:
                     expected_zips[doc_id] = utils.get_edinet_repo_path(doc_id, submit_date_str, suffix="zip")
