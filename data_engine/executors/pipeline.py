@@ -103,7 +103,8 @@ def run_full_discovery(catalog, run_id):
 
     # 【実数カウント】逐次的なカウンタインクリメント (Semantic Alignment)
     # [採用内訳] parse: 解析, save: 保存
-    # [スキップ内訳] processed: 既処理, no_code: 証券コードなし, withdrawn: 取下げ, format_err: 真の形式不正(コード長異常)
+    # [スキップ内訳] processed: 既処理, no_code: 証券コードなし, withdrawn: 取下げ
+    #               format_err: 真の形式不正(コード長異常)
     cnt = {
         "parse": 0, "save": 0,
         "processed": 0, "no_code": 0, "withdrawn": 0, "format_err": 0

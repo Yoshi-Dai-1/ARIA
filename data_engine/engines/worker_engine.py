@@ -450,7 +450,7 @@ class WorkerEngine:
                         shutil.rmtree(detect_dir)
             else:
                 worker_stats["metadata_saved"] += 1
-                if verdict == ProcessVerdict.SAVE_METADATA:
+                if verdict == ProcessVerdict.SAVE_RAW:
                     logger.debug(f"非解析対象保存: {doc_id} | {title}")
                 elif verdict == ProcessVerdict.PARSE and not zip_ok:
                     logger.error(f"保存失敗（有報）: {doc_id} | {title}")
