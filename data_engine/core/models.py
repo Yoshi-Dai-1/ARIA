@@ -335,6 +335,15 @@ class FinancialValueRecord(BaseModel):
     instant_date_pv: Optional[str] = None
     scenario: Optional[str] = None
     AccountingStandardsDEI: Optional[str] = None
+    role: Optional[str] = None
+    label_jp: Optional[str] = None
+    label_jp_long: Optional[str] = None
+    label_en: Optional[str] = None
+    label_en_long: Optional[str] = None
+    order: Optional[float] = None
+    non_consolidated_flg: Optional[int] = None
+    current_flg: Optional[int] = None
+    prior_flg: Optional[int] = None
 
 class QualitativeTextRecord(BaseModel):
     """定性情報テキスト (qualitative_text) のレコードモデル"""
@@ -353,6 +362,15 @@ class QualitativeTextRecord(BaseModel):
     instant_date_pv: Optional[str] = None
     scenario: Optional[str] = None
     AccountingStandardsDEI: Optional[str] = None
+    role: Optional[str] = None
+    label_jp: Optional[str] = None
+    label_jp_long: Optional[str] = None
+    label_en: Optional[str] = None
+    label_en_long: Optional[str] = None
+    order: Optional[float] = None
+    non_consolidated_flg: Optional[int] = None
+    current_flg: Optional[int] = None
+    prior_flg: Optional[int] = None
 
 # =============================================================================
 # PyArrow Schema 自動導出 (Phase 3: 金型アーキテクチャ)
