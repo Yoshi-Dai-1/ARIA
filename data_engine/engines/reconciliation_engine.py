@@ -22,6 +22,8 @@ from data_engine.core.utils import normalize_code
 
 class ReconciliationEngine:
     """名寄せ・属性解決エンジン"""
+    
+    SPECIAL_MARKET_KEYWORDS = ["ETF", "REIT", "PRO MARKET"]
 
     def __init__(self, catalog_manager):
         """
@@ -310,7 +312,7 @@ class ReconciliationEngine:
                 # 現行マスタの特殊銘柄かつアクティブなもの
                 def is_jpx_managed(row):
                     market = str(row.get("market") or "").upper()
-                    is_special = any(x in market for x in ["ETF", "REIT", "PRO MARKET"])
+                    is_special = any(x in market for x in self.SPECIAL_MARKET_KEYWORDS)
                     is_preferred = str(row.get("code") or "")[-1:] != "0"
                     return is_special or is_preferred
 
@@ -356,8 +358,8 @@ class ReconciliationEngine:
 
                 if not rec.get("edinet_code") or not rec.get("jcn"):
                     market = str(rec.get("market") or "").upper()
-                    is_special = any(x in market for x in ["ETF", "REIT", "PRO MARKET"])
-                    is_preferred = sec_code[4] != "0"
+                    is_special = any(x in market for x in self.SPECIAL_MARKET_KEYWORDS)
+                    is_preferred = str(sec_code)[-1] != "0"
 
                     if not self.cm.master_df.empty:
                         # プレフィックス耐性のある検索
@@ -407,8 +409,11 @@ class ReconciliationEngine:
         listing_events = []
         today = pd.Timestamp.now().strftime("%Y-%m-%d")
 
-        group_cols = ["edinet_code", "code"]
-        for _, group in all_states.groupby(group_cols, dropna=False):
+        # 【Structural Reform】名寄せの主キーを「国籍付証券コード」に統一し、属性のアイソレーションを解消する。
+        # code が存在しない（非上場）場合は edinet_code でグルーピングする。
+        all_states["identity_key"] = all_states["code"].fillna(all_states["edinet_code"])
+        
+        for _, group in all_states.groupby("identity_key", dropna=False):
             code_vals = group["code"].dropna().unique()
             code = code_vals[0] if len(code_vals) > 0 else None
 
@@ -425,6 +430,15 @@ class ReconciliationEngine:
                 "edinet_code",
                 "parent_code",
                 "former_edinet_codes",
+                "company_name_en",
+                "submitter_name_kana",
+                "submitter_type",
+                "address",
+                "industry_edinet",
+                "industry_edinet_en",
+                "capital",
+                "settlement_date",
+                "is_consolidated",
             ]:
                 if attr == "former_edinet_codes":
                     all_formers = set()
@@ -437,6 +451,7 @@ class ReconciliationEngine:
                 else:
                     val = resolve_attr(sorted_group, attr)
                     if val is not None:
+                        # JPX 由来の更新では法令上の上場フラグは上書きしない
                         if attr == "is_listed_edinet" and is_jpx_update:
                             continue
                         latest_rec[attr] = val

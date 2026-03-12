@@ -372,7 +372,8 @@ class edinet_response_metadata():
             business_class = pd.read_excel(
                 sector_file_path,header=0,index_col=None,dtype={'コード':str}
                 ).rename(columns={'日付':'date','コード':'secCode','33業種コード':'sector_code_33','33業種区分':'sector_label_33','17業種コード':'sector_code_17','17業種区分':'sector_label_17'})[['date','secCode','sector_code_33','sector_code_17','sector_label_33','sector_label_17']]
-            business_class.secCode = business_class.secCode.str.ljust(5,'0')
+            from data_engine.core.utils import normalize_code
+            business_class.secCode = business_class.secCode.apply(lambda x: normalize_code(x, nationality="JP"))
             df_f = pd.merge(
                 df_f,
                 business_class[['secCode','sector_label_33']],

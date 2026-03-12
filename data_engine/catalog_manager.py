@@ -304,23 +304,26 @@ class CatalogManager:
             # 今回登録された各コードの最新提出日時
             latest_submits = df_new.dropna(subset=["code", "submit_at"]).groupby("code")["submit_at"].max().to_dict()
 
-            # プレフィックス耐性のあるルックアップ用辞書の構築 (新旧双方のキーでアクセス可能にする)
+            # プレフィックス耐性のあるルックアップ用辞書の構築
+            # edinet_code を主キーとしつつ、code (新旧双方) でも引けるようにする
             master_dict = {}
             for _, row in self.master_df.iterrows():
-                m_code = row.get("code")
-                if pd.isna(m_code):
-                    continue
                 m_rec = row.to_dict()
-                m_code_str = str(m_code)
-                master_dict[m_code_str] = m_rec
-                if ":" not in m_code_str:
-                    # プレフィックスがない既存レコードに対し、JP: 付きでも引けるようにする
-                    master_dict[f"JP:{m_code_str}"] = m_rec
-                else:
-                    # プレフィックスがある場合、プレフィックスなしでも引けるようにする (念視)
-                    core = m_code_str.split(":", 1)[1]
-                    if core not in master_dict:
-                        master_dict[core] = m_rec
+                e_code = m_rec.get("edinet_code")
+                m_code = m_rec.get("code")
+                
+                if e_code:
+                    master_dict[e_code] = m_rec
+                
+                if pd.notna(m_code) and str(m_code).strip():
+                    m_code_str = str(m_code)
+                    master_dict[m_code_str] = m_rec
+                    if ":" not in m_code_str:
+                        master_dict[f"JP:{m_code_str}"] = m_rec
+                    else:
+                        core = m_code_str.split(":", 1)[1]
+                        if core not in master_dict:
+                            master_dict[core] = m_rec
 
             for code, submit_time in latest_submits.items():
                 if not code or str(code).strip() == "":

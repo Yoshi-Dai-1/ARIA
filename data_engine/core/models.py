@@ -138,6 +138,12 @@ class CatalogRecord(BaseModel):
     # 6. API V2 Lifecycle (増分同期・運用メタデータ)
     ope_date_time: Optional[str] = None  # 操作日時 (API V2 の核心項目)
 
+    @field_validator("code", mode="before")
+    @classmethod
+    def normalize_sec_code(cls, v: Optional[str]) -> Optional[str]:
+        from data_engine.core.utils import normalize_code
+        return normalize_code(v, nationality="JP")
+
     @field_validator(
         "jcn",
         "edinet_code",
