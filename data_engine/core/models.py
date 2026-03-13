@@ -92,10 +92,11 @@ class EdinetCodeRecord(BaseModel):
 
 
 class CatalogRecord(BaseModel):
-    """統合ドキュメントカタログ (documents_index.parquet) のレコードモデル (30カラム構成)"""
+    """統合ドキュメントカタログ (documents_index.parquet) のレコードモデル (33カラム構成)"""
 
     # 1. Identifiers (識別子・基本情報)
     doc_id: str
+    bin_id: Optional[str] = None  # 物理パーティションID (分析用 Bin 分割キー)
     jcn: Optional[str] = None  # 法人番号 (Japan Corporate Number)
     code: Optional[str] = None  # 証券コード (5桁)
     company_name: str

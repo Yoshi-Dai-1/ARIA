@@ -514,7 +514,7 @@ class WorkerEngine:
                                     worker_stats["parsing_failure"] += 1
                             elif res_df is not None:
                                 if target_rec.get("processed_status") != "failure":
-                                    target_rec["processed_status"] = "success"
+                                    target_rec["processed_status"] = "parsed"
 
                                 if t_type == "financial_values":
                                     worker_stats["parsing_success"] += 1
@@ -541,17 +541,18 @@ class WorkerEngine:
                                 )
                     logger.info(f"解析進捗: {min(i + BATCH_PARALLEL_SIZE, len(tasks))} / {len(tasks)} tasks 完了")
 
+        # 【工学的主権】全てのカタログレコードに bin_id を付与し、アクセス経路を統一する
+        for record in potential_catalog_records.values():
+            # MasterMerger のロジックを用いて不変の分散キー(bin)を決定する
+            bridge_row = {"jcn": record.get("jcn"), "edinet_code": record.get("edinet_code")}
+            record["bin_id"] = self.merger.get_bin_id(bridge_row)
+
         all_success = True
+        bin_failures = set() # 失敗した Bin を記録
+
         processed_df = pd.DataFrame(processed_infos)
         if not processed_df.empty:
-            # 【極限統一】MasterMerger のロジックを用いて不変の分散キー(bin)を決定する
-            def _get_row_bin(docid):
-                meta = next(m for m in all_meta if m["docID"] == docid)
-                # MasterMerger が期待するキー名 (小文字/スネークケース) にマッピング
-                bridge_row = {"jcn": meta.get("JCN"), "edinet_code": meta.get("edinetCode")}
-                return self.merger.get_bin_id(bridge_row)
-
-            processed_df["bin"] = processed_df["docID"].apply(_get_row_bin)
+            processed_df["bin"] = processed_df["docID"].apply(lambda did: potential_catalog_records[did]["bin_id"])
             bins = processed_df["bin"].unique()
 
             if all_quant_dfs:
@@ -561,7 +562,7 @@ class WorkerEngine:
                         bin_docids = processed_df[processed_df["bin"] == b_val]["docID"].tolist()
                         sec_quant = full_quant_df[full_quant_df["docid"].isin(bin_docids)]
                         if not sec_quant.empty:
-                            self.merger.merge_and_upload(
+                            ok = self.merger.merge_and_upload(
                                 b_val,
                                 "financial_values",
                                 sec_quant,
@@ -571,6 +572,9 @@ class WorkerEngine:
                                 chunk_id=self.chunk_id,
                                 defer=True,
                             )
+                            if not ok:
+                                bin_failures.add(b_val)
+                                all_success = False
                 except Exception as e:
                     logger.error(f"Quant merge failed: {e}")
                     all_success = False
@@ -582,7 +586,7 @@ class WorkerEngine:
                         bin_docids = processed_df[processed_df["bin"] == b_val]["docID"].tolist()
                         sec_text = full_text_df[full_text_df["docid"].isin(bin_docids)]
                         if not sec_text.empty:
-                            self.merger.merge_and_upload(
+                            ok = self.merger.merge_and_upload(
                                 b_val,
                                 "qualitative_text",
                                 sec_text,
@@ -592,9 +596,22 @@ class WorkerEngine:
                                 chunk_id=self.chunk_id,
                                 defer=True,
                             )
+                            if not ok:
+                                bin_failures.add(b_val)
+                                all_success = False
                 except Exception as e:
                     logger.error(f"Text merge failed: {e}")
                     all_success = False
+
+        # 【Transactional Integrity】解析済み (parsed) レコードを成功 (success) に昇格させる
+        for record in potential_catalog_records.values():
+            if record["processed_status"] == "parsed":
+                b_id = record["bin_id"]
+                if b_id not in bin_failures:
+                    record["processed_status"] = "success"
+                else:
+                    record["processed_status"] = "failure"
+                    logger.warning(f"Bin {b_id} の保存失敗によりステータスを failure に設定: {record['doc_id']}")
 
         final_catalog_records = list(potential_catalog_records.values())
         if final_catalog_records:

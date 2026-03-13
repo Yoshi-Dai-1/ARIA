@@ -17,12 +17,16 @@ class MasterMerger:
 
     def get_bin_id(self, row: dict) -> str:
         """物理的事実に基き、不変の分散キー (JCN or EDINET Code) を導出する"""
-        jcn_val = str(row.get("jcn") or "")
-        if jcn_val and len(jcn_val) >= 2 and jcn_val != "None" and jcn_val != "nan":
+        jcn_raw = row.get("jcn") or ""
+        jcn_val = str(jcn_raw).strip()
+        
+        if jcn_val and len(jcn_val) >= 2 and jcn_val.lower() not in ["none", "nan", "null"]:
             return f"J{jcn_val[-2:]}"
 
-        e_code = str(row.get("edinet_code") or "")
-        if e_code and len(e_code) >= 2 and e_code != "None" and e_code != "nan":
+        e_raw = row.get("edinet_code") or ""
+        e_code = str(e_raw).strip()
+        
+        if e_code and len(e_code) >= 2 and e_code.lower() not in ["none", "nan", "null"]:
             return f"E{e_code[-2:]}"
 
         return "No"

@@ -57,7 +57,7 @@ financial-lakehouse/
 │           ├── zip/                # ZIPアーカイブ（1万ファイル制限対応）
 │           └── pdf/                # PDF書類（1万ファイル制限対応）
 ├── catalog/                        # ドキュメントインデックス
-│   └── documents_index.parquet     # 32カラム構成。全書類のメタデータ SSOT (codeは `JP:XXXXX` 形式)
+│   └── documents_index.parquet     # 33カラム構成。全書類のメタデータ SSOT (codeは `JP:XXXXX` 形式)
 ├── meta/                           # システムメタデータ
 │   ├── stocks_master.parquet       # 銘柄マスタ (EDINETコードリスト+JPX属性。codeは `JP:XXXXX` 形式)
 │   ├── listing_history.parquet     # 上場・廃止・再上場イベント履歴
@@ -110,6 +110,20 @@ python -m data_engine.executors.harvester_main --mode merger --run-id <RUN_ID>
 - **Status Sync (取下検知)**: 最新 API で「取下」が検知された場合、カタログを遡及的に更新。
 - **Self-healing (Auto-retry)**: 過去の失敗・未完了書類を自動救済。
 - **Extreme Integrity Audit**: 5層（スキーマ / 物理ファイル / 分析マスタ / API カタログ / 指数履歴）にわたるデータの自己治癒。HF のコミット履歴を活用したロールバックと、再解析によるハイブリッドな復旧を提供。
+
+## カタログ・ライフサイクルとステータス管理
+
+ARIA は `processed_status` を用いて、各書類の処理フェーズを厳密に管理し、原子性を担保しています。
+
+| ステータス | 意味 | 役割・挙動 |
+| :--- | :--- | :--- |
+| `pending` | **未処理** | Discovery ジョブによって登録された初期状態。Worker による解析対象。 |
+| `parsed` | **解析完了（一時持受）** | XBRLのパースが成功し、メモリ/ローカル上に Delta が作成された状態。まだマスター（HF）には未反映。 |
+| `success` | **処理成功（確定）** | 財務データ（Bin）の保存成功が物理的に確認され、カタログと共にアトミックにコミットされた最終状態。 |
+| `failure` | **処理失敗** | 解析エラーまたは保存失敗。次回の Harvester 実行時に**自動的に再解析の対象**となる。 |
+| `retracted` | **取下済** | 書類提出者によって取り下げられた書類。解析および利用の対象外。 |
+
+**自己修復（Self-healing）**: `CatalogManager.is_processed()` は `success` と `retracted` 以外をすべて「未完了」と判定します。これにより、処理途中のクラッシュや `parsed` ステータスでの中断が起きても、次回の実行で漏れなく救済される冪等性を確保しています。
 
 
 ### 3. データ基盤の監査と自己修復 (Integrity Audit)
