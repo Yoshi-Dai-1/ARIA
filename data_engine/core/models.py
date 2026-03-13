@@ -318,63 +318,75 @@ class IndexEvent(BaseModel):
 
 class FinancialValueRecord(BaseModel):
     """財務数値データ (financial_values) のレコードモデル"""
+    # 1. Identity (誰のデータか)
+    docid: str
+    # 2. Core Data (何の値か)
     key: Optional[str] = None
+    label_jp: Optional[str] = None
     data_str: Optional[str] = None
-    decimals: Optional[str] = None
-    precision: Optional[str] = None
-    context_ref: Optional[str] = None
-    element_name: Optional[str] = None
     unit: Optional[str] = None
-    period_type: Optional[str] = None
-    isTextBlock_flg: int = 0
-    abstract_flg: int = 0
+    # 3. Pivot & Filter Flags (比較・抽出軸)
+    current_flg: Optional[int] = None
+    non_consolidated_flg: Optional[int] = None
+    prior_flg: Optional[int] = None
+    # 4. Context (いつの状態か)
     period_start: Optional[str] = None
     period_end: Optional[str] = None
     instant_date: Optional[str] = None
     end_date_pv: Optional[str] = None
     instant_date_pv: Optional[str] = None
-    scenario: Optional[str] = None
+    # 5. Taxonomy Details (詳細属性)
     role: Optional[str] = None
-    label_jp: Optional[str] = None
-    label_jp_long: Optional[str] = None
     label_en: Optional[str] = None
+    label_jp_long: Optional[str] = None
     label_en_long: Optional[str] = None
-    order: Optional[float] = None
-    docid: str
-    non_consolidated_flg: Optional[int] = None
-    current_flg: Optional[int] = None
-    prior_flg: Optional[int] = None
     AccountingStandardsDEI: Optional[str] = None
+    # 6. Technical Metadata (システム・XBRL用)
+    isTextBlock_flg: int = 0
+    abstract_flg: int = 0
+    decimals: Optional[str] = None
+    precision: Optional[str] = None
+    context_ref: Optional[str] = None
+    element_name: Optional[str] = None
+    period_type: Optional[str] = None
+    scenario: Optional[str] = None
+    order: Optional[float] = None
 
 class QualitativeTextRecord(BaseModel):
     """定性情報テキスト (qualitative_text) のレコードモデル"""
+    # 1. Identity (誰のデータか)
+    docid: str
+    # 2. Core Data (何の値か)
     key: Optional[str] = None
+    label_jp: Optional[str] = None
     data_str: Optional[str] = None
-    decimals: Optional[str] = None
-    precision: Optional[str] = None
-    context_ref: Optional[str] = None
-    element_name: Optional[str] = None
     unit: Optional[str] = None
-    period_type: Optional[str] = None
-    isTextBlock_flg: int = 1
-    abstract_flg: int = 0
+    # 3. Pivot & Filter Flags (比較・抽出軸)
+    current_flg: Optional[int] = None
+    non_consolidated_flg: Optional[int] = None
+    prior_flg: Optional[int] = None
+    # 4. Context (いつの状態か)
     period_start: Optional[str] = None
     period_end: Optional[str] = None
     instant_date: Optional[str] = None
     end_date_pv: Optional[str] = None
     instant_date_pv: Optional[str] = None
-    scenario: Optional[str] = None
+    # 5. Taxonomy Details (詳細属性)
     role: Optional[str] = None
-    label_jp: Optional[str] = None
-    label_jp_long: Optional[str] = None
     label_en: Optional[str] = None
+    label_jp_long: Optional[str] = None
     label_en_long: Optional[str] = None
-    order: Optional[float] = None
-    docid: str
-    non_consolidated_flg: Optional[int] = None
-    current_flg: Optional[int] = None
-    prior_flg: Optional[int] = None
     AccountingStandardsDEI: Optional[str] = None
+    # 6. Technical Metadata (システム・XBRL用)
+    isTextBlock_flg: int = 1
+    abstract_flg: int = 0
+    decimals: Optional[str] = None
+    precision: Optional[str] = None
+    context_ref: Optional[str] = None
+    element_name: Optional[str] = None
+    period_type: Optional[str] = None
+    scenario: Optional[str] = None
+    order: Optional[float] = None
 
 # =============================================================================
 # PyArrow Schema 自動導出 (Phase 3: 金型アーキテクチャ)

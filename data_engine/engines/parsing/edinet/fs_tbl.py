@@ -55,34 +55,39 @@ class FsDataDf(pa.DataFrameModel):
     'child_key':
     'docid':
     """
+    # 1. Identity (誰のデータか)
+    docid: Series[str] = pa.Field(nullable=True)
+    # 2. Core Data (何の値か)
     key: Series[str] = pa.Field(nullable=True)
+    label_jp: Series[str] = pa.Field(nullable=True)
     data_str: Series[str] = pa.Field(nullable=True)
-    decimals: Series[str] = pa.Field(nullable=True)
-    precision: Series[str] = pa.Field(nullable=True)
-    context_ref: Series[str] = pa.Field(nullable=True)
-    element_name: Series[str] = pa.Field(nullable=True)
     unit: Series[str] = pa.Field(nullable=True)
-    period_type: Series[str] = pa.Field(isin=['instant','duration'],nullable=True) # 'instant','duration'
-    isTextBlock_flg: Series[int] = pa.Field(isin=[0,1],nullable=True) # 0,1
-    abstract_flg: Series[int] = pa.Field(isin=[0,1],nullable=True) # 0,1
+    # 3. Pivot & Filter Flags (比較・抽出軸)
+    current_flg: Series[int] = pa.Field(isin=[0,1],nullable=True)
+    non_consolidated_flg: Series[int] = pa.Field(isin=[0,1],nullable=True)
+    prior_flg: Series[int] = pa.Field(isin=[0,1],nullable=True)
+    # 4. Context (いつの状態か)
     period_start: Series[str] = pa.Field(nullable=True)
     period_end: Series[str] = pa.Field(nullable=True)
     instant_date: Series[str] = pa.Field(nullable=True)
     end_date_pv: Series[str] = pa.Field(nullable=True)
     instant_date_pv: Series[str] = pa.Field(nullable=True)
-    scenario: Series[str] = pa.Field(nullable=True)
+    # 5. Taxonomy Details (詳細属性)
     role: Series[str] = pa.Field(nullable=True)
-    label_jp: Series[str] = pa.Field(nullable=True)
-    label_jp_long: Series[str] = pa.Field(nullable=True)
     label_en: Series[str] = pa.Field(nullable=True)
+    label_jp_long: Series[str] = pa.Field(nullable=True)
     label_en_long: Series[str] = pa.Field(nullable=True)
-    order: Series[float] = pa.Field(nullable=True)
-    #child_key: Series[str] = pa.Field(nullable=True)
-    docid: Series[str] = pa.Field(nullable=True)
-    non_consolidated_flg: Series[int] = pa.Field(isin=[0,1],nullable=True) # 0,1
-    current_flg: Series[int] = pa.Field(isin=[0,1],nullable=True) # 0,1
-    prior_flg: Series[int] = pa.Field(isin=[0,1],nullable=True) # 0,1
     AccountingStandardsDEI: Series[str] = pa.Field(nullable=True)
+    # 6. Technical Metadata (システム・XBRL用)
+    isTextBlock_flg: Series[int] = pa.Field(isin=[0,1],nullable=True)
+    abstract_flg: Series[int] = pa.Field(isin=[0,1],nullable=True)
+    decimals: Series[str] = pa.Field(nullable=True)
+    precision: Series[str] = pa.Field(nullable=True)
+    context_ref: Series[str] = pa.Field(nullable=True)
+    element_name: Series[str] = pa.Field(nullable=True)
+    period_type: Series[str] = pa.Field(isin=['instant','duration'],nullable=True)
+    scenario: Series[str] = pa.Field(nullable=True)
+    order: Series[float] = pa.Field(nullable=True)
 
 
 
