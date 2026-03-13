@@ -16,7 +16,7 @@ dependencies = [
 [tool.ruff]
 # 除外設定: 外部ライブラリやフロントエンド、解析用ノートブックを除外
 exclude = [
-    "edinet_xbrl_prep",
+    "data_engine/engines/parsing/edinet",
     "web_frontend",
     "node_modules",
     "*.ipynb",
