@@ -138,7 +138,7 @@ class CatalogManager:
             logger.info("マスタファイルが空です。初期構築を行います。")
             self.edinet_codes, self.aggregation_map = self.sync_edinet_code_lists()
             if self.edinet_codes:
-                self.reconciliation.update_master_from_edinet_codes()
+                self.reconciliation.sync_master_from_edinet_codes()
                 self.hf.push_commit("Initial Master Build from EDINET")
 
         # 1. 完全一致で検索 (JP:12340 等)

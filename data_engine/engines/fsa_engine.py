@@ -6,7 +6,9 @@ import pandas as pd
 import requests
 from loguru import logger
 
+from data_engine.engines.parsing.edinet.link_base_file_analyzer import account_list_common
 from data_engine.core.models import EdinetCodeRecord
+from data_engine.core.utils import normalize_code
 from data_engine.core.network_utils import GLOBAL_ROBUST_SESSION
 
 
@@ -100,6 +102,10 @@ class FsaEngine:
                 # API側の "0" という異常な証券コードを排除
                 if sec_code in ("0", "0000", "00000"):
                     sec_code = None
+                
+                # 【ARIA 強制正規化】EDINET取得時点で 5 桁化・プレフィックス付与を行う
+                if sec_code:
+                    sec_code = normalize_code(sec_code, nationality="JP")
 
                 jcn = self._safe_int_str(row.get("提出者法人番号"))
                 ind_en = en_industry_map.get(e_code)

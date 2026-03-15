@@ -221,15 +221,20 @@ class StockMasterRecord(BaseModel):
     address: Optional[str] = Field(None, description="所在地")
 
     # --- 3. 業界・市場属性 (Industry & Market / JPX系) ---
-    sector_jpx_33: Optional[str] = Field(None, description="JPX 33業種区分")
-    sector_jpx_17: Optional[str] = Field(None, description="JPX 17業種区分")
+    sector_jpx_33: Optional[str] = Field(None, description="JPX 33業種区分名")
+    sector_33_code: Optional[str] = Field(None, description="JPX 33業種コード")
+    sector_jpx_17: Optional[str] = Field(None, description="JPX 17業種区分名")
+    sector_17_code: Optional[str] = Field(None, description="JPX 17業種コード")
     industry_edinet: Optional[str] = Field(None, description="EDINET業種区分 (和文)")
     industry_edinet_en: Optional[str] = Field(None, description="EDINET業種区分 (英文)")
     market: Optional[str] = Field(None, description="上場市場名")
+    size_code: Optional[str] = Field(None, description="規模コード")
+    size_category: Optional[str] = Field(None, description="規模区分名")
 
     # --- 4. 状態とライフサイクル (Status & Lifecycle) ---
-    is_active: bool = Field(True, description="ARIA 収集・追跡対象フラグ (運用の真実)")
+    is_active: bool = Field(True, description="ARIA 収集・追跡対象フラグ(運用の真実)")
     is_listed_edinet: bool = Field(False, description="EDINET公式名簿 上場フラグ (法令の真実)")
+    is_disappeared: bool = Field(False, description="全ソース（EDINET/JPX）から消失した銘柄フラグ")
     last_submitted_at: Optional[str] = Field(None, description="最終書類提出日時")
     former_edinet_codes: Optional[str] = Field(None, description="旧EDINETコード (集約ブリッジ用)")
 
@@ -242,13 +247,18 @@ class StockMasterRecord(BaseModel):
         "settlement_date",
         "address",
         "sector_jpx_33",
+        "sector_33_code",
         "sector_jpx_17",
+        "sector_17_code",
         "industry_edinet",
         "industry_edinet_en",
         "market",
+        "size_code",
+        "size_category",
         "last_submitted_at",
         "former_edinet_codes",
         "is_consolidated",
+        "is_disappeared",
         mode="before",
     )
     @classmethod

@@ -7,7 +7,10 @@ description: 日本の証券データ（JPX/EDINET）のドメイン知識と、
 ARIA における「証券データの真実」を管理するためのドメイン知識とツールを提供します。
 
 ## 1. 証券コードの 5 桁正規化と SICC ルール
-あらゆる入力ソースからの証券コードを 5 桁に統一し、SICC（証券コード協議会）の採番ルールに基づいて親子関係を定義します。
+あらゆる入力ソースからの証券コードを 5 桁に統一し、SICC（### 1. Identity Bridging (証券コードと EDINET コードの架け橋)
+- **原則**: EDINET コードリストを主軸とし、JPX 証券コードを Bridge Fill 処理で紐付ける。
+- **名寄せキー**: `edinet_code.fillna(code)` を `identity_key` として使用し、物理的なレコード統合を強制する。詳細は [stock-master-reconciler](file:///Users/yoshi_dai/repos/ARIA/.agent/skills/stock-master-reconciler/SKILL.md) を参照。
+）の採番ルールに基づいて親子関係を定義します。
 - **5 桁正規化 & 国籍プレフィックス**: 4 桁コードには末尾に `0` を付与し、さらに「国籍プレフィックス（例: `JP:`）」を強制付与する。これは全 Pydantic モデル（生データ、マスタ、履歴）のバリデータとして物理的に強制される。英文字を含むコード（例：`145A0`）も同様に扱う。
 - **親子紐付け (Preferred Stock Linkage)**: 
     - 5 桁目が `0` 以外（5, 6, 7, 8, 3, 4）の銘柄は「種類株」と判定。
@@ -20,6 +23,8 @@ ARIA における「証券データの真実」を管理するためのドメイ
 
 ## 2. 属性解決とリコンシリエーション (Hierarchy of Truth)
 [ReconciliationEngine.update_stocks_master](file:///Users/yoshi_dai/repos/ARIA/data_engine/reconciliation_engine.py) の実装に基づき、以下の優先順位を遵守します。
+- [stock-master-reconciler](file:///Users/yoshi_dai/repos/ARIA/.agent/skills/stock-master-reconciler/SKILL.md): マスタ統合と名寄せの「5つの鉄則」の統治。
+- [company-name-historian](file:///Users/yoshi_dai/repos/ARIA/.agent/skills/company-name-historian/SKILL.md): 漢字商号の変遷管理。
 1. **EDINET Document API (Real-time)**: IPO 銘柄の `secCode` から `edinetCode/jcn` を逆引きする最優先ソース。
 2. **EDINET / Catalog (Regulatory)**: 会社名および公的ステータスの正解。
 3. **JPX Master (Market)**: 業種区分および市場名の補完ソース。

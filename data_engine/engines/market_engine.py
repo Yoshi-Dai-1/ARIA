@@ -194,14 +194,35 @@ class MarketDataEngine:
             columns={
                 "コード": "code",
                 "銘柄名": "company_name",
+                "33業種コード": "sector_33_code",
                 "33業種区分": "sector_jpx_33",
+                "17業種コード": "sector_17_code",
                 "17業種区分": "sector_jpx_17",
                 "市場・商品区分": "market",
+                "規模コード": "size_code",
+                "規模区分": "size_category",
             }
         )
+        # 数値カラムのゴミ（"-" 等）を処理
+        for col in ["sector_33_code", "sector_17_code", "size_code"]:
+            if col in df.columns:
+                df[col] = df[col].astype(str).str.strip().replace("-", None)
+
         df["code"] = df["code"].astype(str).str.strip().apply(lambda x: normalize_code(x, nationality="JP"))
 
-        return df[["code", "company_name", "sector_jpx_33", "sector_jpx_17", "market"]]
+        return df[
+            [
+                "code",
+                "company_name",
+                "sector_jpx_33",
+                "sector_33_code",
+                "sector_jpx_17",
+                "sector_17_code",
+                "market",
+                "size_code",
+                "size_category",
+            ]
+        ]
 
     def fetch_index_data(self, index_name: str) -> pd.DataFrame:
         """指数データの取得 (Retry付き)"""
