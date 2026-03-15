@@ -63,7 +63,12 @@ class AriaConfig:
         self.RAW_DIR = self.DATA_PATH / "raw"
         self.TEMP_DIR = self.DATA_PATH / "temp"
 
-        # 8. グローバルな実行環境の統制 (CI/静寂性)
+        # 8. ディレクトリの存在保証 (CI環境等のクリーンスタート対策)
+        self.DATA_PATH.mkdir(parents=True, exist_ok=True)
+        self.RAW_DIR.mkdir(parents=True, exist_ok=True)
+        self.TEMP_DIR.mkdir(parents=True, exist_ok=True)
+
+        # 9. グローバルな実行環境の統制 (CI/静寂性)
         os.environ["TQDM_DISABLE"] = "1"
         os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
         os.environ["LOG_LEVEL"] = os.getenv("LOG_LEVEL", "INFO").upper()

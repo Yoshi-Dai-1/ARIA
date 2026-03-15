@@ -138,6 +138,17 @@ class ReconciliationEngine:
         # 1. まず JCN > EDINET > Code の優先順位で解決を試みる
         all_states["identity_key"] = all_states["jcn"].fillna(all_states["edinet_code"]).fillna(all_states["code"])
 
+        # 【堅牢化】識別子が一切存在しない不正レコードを物理的に排除 (Null Identity Key ガード)
+        invalid_mask = all_states["identity_key"].isna()
+        if invalid_mask.any():
+            invalid_count = invalid_mask.sum()
+            logger.warning(f"識別子を持たない不正レコードが {invalid_count} 件検出されました。除外します。")
+            all_states = all_states[~invalid_mask].copy()
+
+        if all_states.empty:
+            logger.warning("有効な銘柄レコードが存在しません。マスタ更新を中断します。")
+            return True
+
         # 2. 複数の識別子が混在する場合、最も権威ある ID (JCN) に集約して統合
         # (例: JP:13010 のみの古いレコードと、JCN(13桁)/JP:13010 を持つ新しいレコードを統合)
         def resolve_canonical_id(group):
@@ -154,6 +165,7 @@ class ReconciliationEngine:
             return str(ids[0]) if len(ids) > 0 else None
 
         mask = (all_states["code"].notna()) | (all_states["edinet_code"].notna()) | (all_states["jcn"].notna())
+        # transform 内での Nan 発生を抑止するため、mask された範囲のみで処理
         all_states.loc[mask, "identity_key"] = (
             all_states[mask].groupby("code")["identity_key"].transform(resolve_canonical_id)
         )
@@ -171,11 +183,12 @@ class ReconciliationEngine:
         # タイブレーカー用にソースの鮮度フラグを付与 (incoming=1, current=0)
         # これにより、日付が同じ（または無い）場合に新規データを優先する
         all_states["_priority"] = 0
-        all_states.iloc[len(current_m):, all_states.columns.get_loc("_priority")] = 1
+        all_states.loc[all_states.index[len(current_m):], "_priority"] = 1
         jpx_defs: List[Dict[str, str]] = []
         best_records: List[Dict[str, Any]] = []
 
-        for _, group in all_states.groupby("identity_key", dropna=False):
+        # 【要点】dropna=True (デフォルト) にすることで、万一 identity_key が Null の行があっても無視される
+        for _, group in all_states.groupby("identity_key", dropna=True):
             # 時系列ソート (最新優先、日付が同じなら新規優先)
             sorted_group = group.sort_values(
                 ["last_submitted_at", "_priority"], 

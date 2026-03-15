@@ -183,6 +183,7 @@ class MarketDataEngine:
         # 保存して読み込む (Excel形式のため)
         from data_engine.core.config import CONFIG
 
+        CONFIG.TEMP_DIR.mkdir(parents=True, exist_ok=True)
         xls_path = CONFIG.TEMP_DIR / "jpx_master.xls"
         with xls_path.open("wb") as f:
             for chunk in r.iter_content(1024):

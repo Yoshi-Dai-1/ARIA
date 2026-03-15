@@ -364,6 +364,7 @@ class edinet_response_metadata():
         df = self.get_metadata_pandas_df()
         df_f = df.query("docTypeCode=='120' and ordinanceCode == '010' and formCode == '030000' and docInfoEditStatus !='2'")
         if self.tse_sector_url:
+            self.tmp_path.mkdir(parents=True, exist_ok=True)
             r = requests.get(self.tse_sector_url, stream=True)
             sector_file_path = self.tmp_path / "sector_file.xls"
             with sector_file_path.open(mode="wb") as f:
@@ -452,6 +453,7 @@ def request_doc(api_key: str, docid: str, out_filename_str: str, session: Option
         res = session.get(EDINET_API_url, params=params.export(), timeout=(20, 90))
         if res.status_code == 200:
             result_temp["status"] = "success"
+            out_filename_path.parent.mkdir(parents=True, exist_ok=True)
             with open(out_filename_path, 'wb') as f:
                 for chunk in res.iter_content(chunk_size=1024 * 64):
                     f.write(chunk)
