@@ -504,7 +504,7 @@ class ReconciliationEngine:
 
     def reconstruct_name_history(self, code: str) -> pd.DataFrame:
         """
-        特定の銘柄について、全書類から社名の変遷（漢字・カナ・英語）を再構成する。
+        特定の銘柄について、カタログ（documents_index.parquet）から社名の変遷（漢字名のみ）を再構成する。
         【工学的主権】取得順に依存せず、常に日付順の隣接比較で境界を検知する。
         """
         catalog_df = self.cm.catalog_df
@@ -516,17 +516,6 @@ class ReconciliationEngine:
         if len(docs) < 2:
             return pd.DataFrame()
 
-        # 現在のマスタ情報を取得 (カナ・英語名の補完用)
-        master_info = {}
-        if not self.cm.master_df.empty:
-            m_row = self.cm.master_df[self.cm.master_df["code"] == code]
-            if m_row.empty and ":" in str(code):
-                core = str(code).split(":", 1)[1]
-                m_row = self.cm.master_df[self.cm.master_df["code"] == core]
-            
-            if not m_row.empty:
-                master_info = m_row.iloc[0].to_dict()
-
         events = []
         prev_row = docs.iloc[0]
 
@@ -536,28 +525,13 @@ class ReconciliationEngine:
 
             # 正規化して比較 (株式会社 などの揺れを排除)
             if self.normalize_company_name(curr_name) != self.normalize_company_name(prev_name):
-                # 基本イベント
+                # イベントの生成 (漢字名のみ)
                 event = {
                     "code": code,
                     "old_name": prev_name,
                     "new_name": curr_name,
                     "change_date": str(row["submit_at"])[:10],
-                    "old_name_kana": None,
-                    "new_name_kana": master_info.get("submitter_name_kana")
-                    if curr_name == master_info.get("company_name")
-                    else None,
-                    "old_name_en": None,
-                    "new_name_en": master_info.get("company_name_en")
-                    if curr_name == master_info.get("company_name")
-                    else None,
                 }
-
-                # 過去のイベントがあればカナ・英語を引き継ぐ
-                if events:
-                    last_event = events[-1]
-                    if last_event["new_name"] == prev_name:
-                        event["old_name_kana"] = last_event["new_name_kana"]
-                        event["old_name_en"] = last_event["new_name_en"]
 
                 events.append(event)
                 prev_row = row

@@ -61,7 +61,7 @@ financial-lakehouse/
 ├── meta/                           # システムメタデータ
 │   ├── stocks_master.parquet       # 銘柄マスタ (EDINETコードリスト+JPX属性。codeは `JP:XXXXX` 形式)
 │   ├── listing_history.parquet     # 上場・廃止・再上場イベント履歴
-│   ├── name_history.parquet        # 社名変更履歴 (漢字・カナ・英語の三位一体)
+│   ├── name_history.parquet        # 社名変更履歴 (漢字名のみの履歴追跡)
 │   └── backfill_cursor.json        # バックフィル進行状況 (保全優先カーソル)
 ├── master/                         # 分析用主データ
 │   ├── financial_values/           # 財務数値（BS, PL, CF, SS）

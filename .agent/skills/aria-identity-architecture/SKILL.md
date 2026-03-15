@@ -20,7 +20,7 @@ ARIA が「企業の同一性」をどのように追跡・保証するかを定
 
 | シナリオ | JCN | EDINET Code | 証券コード | ARIA の対応 |
 |:---------|:---:|:-----------:|:----------:|:-----------|
-| 商号変更 | 不変 | 不変 | 不変 | `name_history` に三位一体（漢字・カナ・英語）で記録し、将来のグローバル検索性を保証 |
+| 商号変更 | 不変 | 不変 | 不変 | `name_history` に漢字名で記録し、カタログ上の提出情報の変遷を保証 |
 | EDINET集約 | 不変 | **変更** | 不変 | `aggregation_map` で自動マッピング |
 | 合併吸収 | **閉鎖** | **変更** | **変更** | `former_edinet_codes` に旧コード保持 |
 | 新設合併 | **新規** | **新規** | **新規** | 旧法人のRAWは旧JCN bin に不変のまま保存 |
@@ -32,7 +32,8 @@ ARIA が「企業の同一性」をどのように追跡・保証するかを定
 ARIA は、将来的に `US:AAPL` のような海外市場データを混在させることを前提としているため、全ての証券コードに国籍プレフィックスを強制する。
 
 - **標準形式**: `[国籍コード]:[証券コード]` (例: `JP:37780`)
-- **工学的実装**: `data_engine.core.utils.normalize_code(code, nationality='JP')` を通じて強制される。
+- **全レイヤーでの物理強制 (All-Model Enforcement)**: 単なる命名規則ではなく、`models.py` 内の全 Pydantic モデル（`EdinetDocument`, `EdinetCodeRecord`, `CatalogRecord`, `ListingEvent` 等）のバリデータとして実装し、システムへの流入時点で物理的に強制する。
+- **工学的実装**: `data_engine.core.utils.normalize_code(code, nationality='JP')` を通じてバリデータ内で実行される。
 - **プレフィックス耐性 (Prefix Tolerance)**: 既存のプレフィックスなしコードとの前方互換性を保つため、`CatalogManager` はプレフィックスを無視した「コア・マッチング」をフォールバックとして備える。
 
 ## 4. 集約ブリッジの検知メカニズム

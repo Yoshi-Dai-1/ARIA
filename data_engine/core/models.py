@@ -40,6 +40,12 @@ class EdinetDocument(BaseModel):
     csvFlag: str = "0"
     legalStatus: str = "0"
 
+    @field_validator("secCode", mode="before")
+    @classmethod
+    def normalize_sec_code(cls, v: Optional[str]) -> Optional[str]:
+        from data_engine.core.utils import normalize_code
+        return normalize_code(v, nationality="JP")
+
 
 class EdinetCodeRecord(BaseModel):
     """金融庁公表のEDINETコードリストレコード (13項目 + 英語版補完情報)"""
@@ -89,6 +95,12 @@ class EdinetCodeRecord(BaseModel):
             if s_v == "無":
                 return False
         return v
+
+    @field_validator("sec_code", mode="before")
+    @classmethod
+    def normalize_sec_code(cls, v: Optional[str]) -> Optional[str]:
+        from data_engine.core.utils import normalize_code
+        return normalize_code(v, nationality="JP")
 
 
 class CatalogRecord(BaseModel):
@@ -291,18 +303,26 @@ class ListingEvent(BaseModel):
     type: str  # LISTING, DELISTING
     event_date: str
 
+    @field_validator("code", mode="before")
+    @classmethod
+    def normalize_sec_code(cls, v: Optional[str]) -> Optional[str]:
+        from data_engine.core.utils import normalize_code
+        return normalize_code(v, nationality="JP")
+
 
 class NameEvent(BaseModel):
-    """社名変更の記録モデル (漢字・カナ・英語の三位一体追跡)"""
+    """社名変更の記録モデル (漢字のみの追跡)"""
 
     code: str
     old_name: str
     new_name: str
-    old_name_kana: Optional[str] = None
-    new_name_kana: Optional[str] = None
-    old_name_en: Optional[str] = None
-    new_name_en: Optional[str] = None
     change_date: str
+
+    @field_validator("code", mode="before")
+    @classmethod
+    def normalize_sec_code(cls, v: Optional[str]) -> Optional[str]:
+        from data_engine.core.utils import normalize_code
+        return normalize_code(v, nationality="JP")
 
 
 class IndexEvent(BaseModel):
@@ -314,6 +334,12 @@ class IndexEvent(BaseModel):
     type: str  # ADD, REMOVE, UPDATE
     old_value: Optional[float] = None
     new_value: Optional[float] = None
+
+    @field_validator("code", mode="before")
+    @classmethod
+    def normalize_sec_code(cls, v: Optional[str]) -> Optional[str]:
+        from data_engine.core.utils import normalize_code
+        return normalize_code(v, nationality="JP")
 
 
 class FinancialValueRecord(BaseModel):
