@@ -26,15 +26,22 @@ class IdentityResolver:
         if not is_jpx_update or not self.cm.edinet_codes:
             return incoming_data
 
-        # 証券コード -> EDINET コード の逆引き辞書
-        sec_to_edinet = {
-            v.code: k for k, v in self.cm.edinet_codes.items() if v.code and v.code.startswith("JP:")
-        }
+        # 証券コード -> EDINET コード の逆引き辞書 (Pydanticモデルと辞書の両方に対応)
+        sec_to_edinet = {}
+        for k, v in self.cm.edinet_codes.items():
+            c = getattr(v, "code", None) if hasattr(v, "code") else v.get("code")
+            if c and str(c).startswith("JP:"):
+                sec_to_edinet[c] = k
+
+        if not sec_to_edinet:
+            logger.warning("EDINETコードの逆引き辞書が空です。補完をスキップします。")
+            return incoming_data
 
         def fill_fn(row):
-            if not row.get("edinet_code") and row.get("code") in sec_to_edinet:
+            e_code = row.get("edinet_code")
+            if (pd.isna(e_code) or e_code is None) and row.get("code") in sec_to_edinet:
                 return sec_to_edinet[row["code"]]
-            return row.get("edinet_code")
+            return e_code
 
         incoming_data["edinet_code"] = incoming_data.apply(fill_fn, axis=1)
         return incoming_data

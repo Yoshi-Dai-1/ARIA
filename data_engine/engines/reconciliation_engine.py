@@ -296,7 +296,9 @@ class ReconciliationEngine:
         if jpx_defs:
             df_defs = pd.DataFrame(jpx_defs).drop_duplicates(subset=["type", "code"])
             # カラム順序を定義に合わせる (金型ガード)
-            df_defs = df_defs[["type", "code", "name"]].dropna(subset=["code"])
+            if "description" not in df_defs.columns:
+                df_defs["description"] = None
+            df_defs = df_defs[["type", "code", "name", "description"]].dropna(subset=["code"])
             self.cm.hf.save_and_upload("jpx_definitions", df_defs, defer=True)
 
         if listing_events:
