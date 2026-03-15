@@ -29,7 +29,7 @@ class LifecycleManager:
         events = []
         today = datetime.datetime.now().strftime("%Y-%m-%d")
         code = latest_rec.get("code")
-        if not code:
+        if not code or pd.isna(code):
             return events
 
         # is_active の現在値

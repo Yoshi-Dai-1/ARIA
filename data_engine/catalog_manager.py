@@ -326,7 +326,7 @@ class CatalogManager:
                             master_dict[core] = m_rec
 
             for code, submit_time in latest_submits.items():
-                if not code or str(code).strip() == "":
+                if not code or pd.isna(code) or str(code).strip() == "":
                     continue
                 if code in master_dict:
                     m_rec = master_dict[code]
@@ -353,7 +353,7 @@ class CatalogManager:
         # 【工学的主権】更新された銘柄の社名変更履歴を再構成
         unique_codes = df_new["code"].unique()
         for code in unique_codes:
-            if not code:
+            if not code or pd.isna(code):
                 continue
             history_df = self.reconciliation.reconstruct_name_history(code)
             if not history_df.empty:
