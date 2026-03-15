@@ -128,7 +128,7 @@ class ReconciliationEngine:
                 "sector_jpx_33", "sector_33_code", "sector_jpx_17", "sector_17_code",
                 "market", "size_code", "size_category", "jcn", "edinet_code", 
                 "parent_code", "former_edinet_codes", "company_name_en", 
-                "submitter_name_kana", "submitter_type", "address", 
+                "company_name_kana", "submitter_type", "address", 
                 "industry_edinet", "industry_edinet_en", "capital", "settlement_date",
                 "is_consolidated"
             ]:

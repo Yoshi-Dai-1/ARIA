@@ -147,6 +147,11 @@ class HfStorage:
 
         # 【Phase 3: 金型アーキテクチャ】明示スキーマで型ブレを物理的に排除
         schema = ARIA_SCHEMAS.get(key)
+        if schema and df.empty:
+            # カラムが欠落している場合、スキーマ定義から物理カラムを復元して KeyError を防ぐ
+            # (バリデーション失敗等で空になった場合のフェイルセーフ)
+            df = pd.DataFrame(columns=schema.names)
+
         df.to_parquet(local_file, index=False, compression="zstd", schema=schema)
 
         if self.api:

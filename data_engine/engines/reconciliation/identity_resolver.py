@@ -18,7 +18,7 @@ class IdentityResolver:
 
         # 証券コード -> EDINET コード の逆引き辞書
         sec_to_edinet = {
-            v.sec_code: k for k, v in self.cm.edinet_codes.items() if v.sec_code and v.sec_code.startswith("JP:")
+            v.code: k for k, v in self.cm.edinet_codes.items() if v.code and v.code.startswith("JP:")
         }
 
         def fill_fn(row):

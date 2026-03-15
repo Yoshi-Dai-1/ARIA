@@ -52,30 +52,30 @@ class EdinetCodeRecord(BaseModel):
 
     edinet_code: str
     submitter_type: Optional[str] = None  # 提出者種別
-    is_listed: Optional[str] = None  # 上場区分 (上場/非上場)
+    is_listed_edinet: Optional[str] = None  # 上場区分 (上場/非上場)
     is_consolidated: Optional[bool] = None  # 連結の有無 (True/False)
     capital: Optional[float] = None  # 資本金
     settlement_date: Optional[str] = None  # 決算日
-    submitter_name: str  # 提出者名 (和文)
-    submitter_name_en: Optional[str] = None  # 提出者名 (和文/英字)
-    submitter_name_kana: Optional[str] = None  # 提出者名 (ヨミ)
+    company_name: str  # 提出者名 (和文)
+    company_name_en: Optional[str] = None  # 提出者名 (和文/英字)
+    company_name_kana: Optional[str] = None  # 提出者名 (ヨミ)
     address: Optional[str] = None  # 所在地
     industry_edinet: Optional[str] = None  # 提出者業種 (和文)
     industry_edinet_en: Optional[str] = None  # 提出者業種 (英文/英語版リストより取得)
-    sec_code: Optional[str] = None  # 証券コード (5桁)
+    code: Optional[str] = None  # 証券コード (5桁)
     jcn: Optional[str] = None  # 提出者法人番号 (JCN)
 
     @field_validator(
         "submitter_type",
-        "is_listed",
+        "is_listed_edinet",
         "is_consolidated",
         "settlement_date",
-        "submitter_name_en",
-        "submitter_name_kana",
+        "company_name_en",
+        "company_name_kana",
         "address",
         "industry_edinet",
         "industry_edinet_en",
-        "sec_code",
+        "code",
         "jcn",
         mode="before",
     )
@@ -96,7 +96,7 @@ class EdinetCodeRecord(BaseModel):
                 return False
         return v
 
-    @field_validator("sec_code", mode="before")
+    @field_validator("code", mode="before")
     @classmethod
     def normalize_sec_code(cls, v: Optional[str]) -> Optional[str]:
         from data_engine.core.utils import normalize_code
@@ -212,7 +212,7 @@ class StockMasterRecord(BaseModel):
     # --- 2. 基本属性 (Basic Attributes / EDINET系) ---
     company_name: str = Field(..., description="提出者名 (和文)")
     company_name_en: Optional[str] = Field(None, description="提出者名 (英文)")
-    submitter_name_kana: Optional[str] = Field(None, description="提出者名 (ヨミ)")
+    company_name_kana: Optional[str] = Field(None, description="提出者名 (ヨミ)")
     submitter_type: Optional[str] = Field(None, description="提出者種別")
     # --- 財務属性 ---
     is_consolidated: Optional[bool] = Field(None, description="連結の有無 (有/無 -> True/False)")
@@ -242,7 +242,7 @@ class StockMasterRecord(BaseModel):
         "edinet_code",
         "jcn",
         "company_name_en",
-        "submitter_name_kana",
+        "company_name_kana",
         "submitter_type",
         "settlement_date",
         "address",
@@ -334,6 +334,12 @@ class NameEvent(BaseModel):
         from data_engine.core.utils import normalize_code
         return normalize_code(v, nationality="JP")
 
+
+class JpxDefinitionRecord(BaseModel):
+    """JPX 業種・規模区分名等の定義マスタレコードモデル"""
+    type: str # sector_33, sector_17, size
+    code: str
+    name: str
 
 class IndexEvent(BaseModel):
     """指数構成銘柄の変更イベント記録モデル"""
@@ -490,6 +496,7 @@ ARIA_SCHEMAS = {
     "master": SCHEMA_MASTER,
     "listing": SCHEMA_LISTING,
     "name": SCHEMA_NAME,
+    "jpx_definitions": pydantic_to_pyarrow(JpxDefinitionRecord),
     "indices": SCHEMA_INDEX,
     "financial_values": SCHEMA_FINANCIAL,
     "qualitative_text": SCHEMA_TEXT,

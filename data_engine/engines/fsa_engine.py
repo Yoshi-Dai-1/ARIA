@@ -114,17 +114,17 @@ class FsaEngine:
                     edinet_code=e_code,
                     jcn=jcn,
                     submitter_type=row.get("提出者種別"),
-                    is_listed=row.get("上場区分"),
+                    is_listed_edinet=row.get("上場区分"),
                     is_consolidated=row.get("連結の有無"),
                     capital=self._safe_int_str(row.get("資本金")),
                     settlement_date=str(row.get("決算日") or "").strip() or None,
-                    submitter_name=str(row.get("提出者名") or "").strip() or None,
-                    submitter_name_en=str(row.get("提出者名（英字）") or "").strip() or None,
-                    submitter_name_kana=str(row.get("提出者名（ヨミ）") or "").strip() or None,
+                    company_name=str(row.get("提出者名") or "").strip() or None,
+                    company_name_en=str(row.get("提出者名（英字）") or "").strip() or None,
+                    company_name_kana=str(row.get("提出者名（ヨミ）") or "").strip() or None,
                     address=str(row.get("所在地") or "").strip() or None,
                     industry_edinet=str(row.get("提出者業種") or "").strip() or None,
                     industry_edinet_en=ind_en,
-                    sec_code=sec_code,
+                    code=sec_code,
                 )
 
             logger.success(f"EDINETコードリスト同期完了: {len(results)} 件")
