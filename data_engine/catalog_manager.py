@@ -14,6 +14,7 @@ from data_engine.core.config import CONFIG
 from data_engine.core.models import EdinetCodeRecord
 from data_engine.engines.edinet_engine import EdinetEngine
 from data_engine.engines.fsa_engine import FsaEngine
+from data_engine.engines.market_engine import MarketDataEngine
 from data_engine.engines.master_merger import MasterMerger
 from data_engine.engines.reconciliation_engine import ReconciliationEngine
 from data_engine.storage.delta_manager import DeltaManager
@@ -49,7 +50,7 @@ class CatalogManager:
             "master": "meta/stocks_master.parquet",
             "listing": "meta/listing_history.parquet",
             "name": "meta/name_history.parquet",
-            "indices": "meta/index_history.parquet",
+            "jpx_definitions": "meta/jpx_definitions.parquet",
         }
 
         # 3. Foundation Layer (Storage & Merger)
@@ -70,6 +71,7 @@ class CatalogManager:
             logger.info("EdinetEngine はスキップされました (Market-only mode)。")
 
         self.fsa = FsaEngine()
+        self.market = MarketDataEngine(self.data_path)
 
         # 5. Runtime State
         self._snapshots = {}
@@ -92,13 +94,26 @@ class CatalogManager:
             # 整合性チェックと最新スキーマへのアップグレード
             self._retrospective_cleanse()
 
-            # 起動時にEDINETコードリストを同期しマスタに反映
+            # 起動時に各ソースからマスタを同期
             self.edinet_codes, self.aggregation_map = self.sync_edinet_code_lists()
-            if self.edinet_codes:
-                self.reconciliation.update_master_from_edinet_codes()
-                if self.hf.has_pending_operations:
-                    logger.info("初期マスター構築を検知しました。直ちに Hugging Face に保存します。")
-                    self.hf.push_commit("Initial Master Build from EDINET")
+            
+            # JPX 銘柄一覧（data_j.xls）の同期
+            try:
+                jpx_master = self.market.fetch_jpx_master()
+            except Exception as e:
+                logger.error(f"JPXマスタの取得に失敗しました: {e}")
+                jpx_master = pd.DataFrame()
+
+            # Unified Master Sync
+            self.reconciliation.sync_master_from_sources(
+                edinet_codes=self.edinet_codes,
+                aggregation_map=self.aggregation_map,
+                jpx_master=jpx_master
+            )
+            
+            if self.hf.has_pending_operations:
+                logger.info("マスタの更新（Unified Sync）を検知しました。直ちに Hugging Face に保存します。")
+                self.hf.push_commit("Unified Master Sync from multiple sources")
         else:
             logger.debug("マスタ同期をスキップしました (sync_master=False)。HF上の既存データを使用します。")
 
@@ -292,7 +307,7 @@ class CatalogManager:
             self.catalog_df = df_new
         else:
             self.catalog_df = pd.concat([self.catalog_df, df_new], ignore_index=True)
-            self.catalog_df.drop_duplicates(subset=["doc_id"], keep="last", inplace=True)
+        self.catalog_df.drop_duplicates(subset=["doc_id"], keep="last", inplace=True)
 
         self._rebuild_lookup_caches()  # キャッシュ更新
         self.hf.save_and_upload("catalog", self.catalog_df, clean_fn=self._clean_dataframe, defer=True)
@@ -382,3 +397,4 @@ class CatalogManager:
 
     def get_name_history(self) -> pd.DataFrame:
         return self.hf.load_parquet("name")
+

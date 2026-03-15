@@ -25,8 +25,8 @@ from tqdm import tqdm
 # Allowing None str type
 StrOrNone = Annotated[str, BeforeValidator(lambda x: x or "")]
 
-def get_columns(schima):
-    return list(schima.model_json_schema()['properties'].keys())
+def get_columns(schema):
+    return list(schema.model_json_schema()['properties'].keys())
 
 class EdinetResponse(BaseModel):
     """書類一覧APIのレスポンススキーマ
@@ -98,7 +98,7 @@ class EdinetResponse(BaseModel):
 
 class EdinetResponseList(BaseModel):
     """書類一覧APIのレスポンススキーマのリスト
-    以下からなるedinet_response_schimaのリスト
+    以下からなるedinet_response_schemaのリスト
         access_date: アクセス日
         seqNumber: 同日に提出された書類に提出時間順につく番号 YYYY/MM/DD-senCumberが提出順序情報になる
         docID: filename

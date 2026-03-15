@@ -221,12 +221,21 @@ class linkbasefile():
         self.account_tbl_role_dict = account_tbl_role_dict
 
     def make_account_label_org(self):
-        df=self.label_tbl_jp.query("role == 'label'").set_index("key").rename(columns={"text":"label_jp"})
-        df.join([
-            self.label_tbl_jp.query("role == 'verboseLabel'").set_index("key")[['text']].rename(columns={"text":"label_jp_long"}),
-            self.label_tbl_eng.query("role == 'label'").set_index("key")[['text']].rename(columns={"text":"label_en"}),
-            self.label_tbl_eng.query("role == 'verboseLabel'").set_index("key")[['text']].rename(columns={"text":"label_en_long"})
-        ],how="left")
+        df = self.label_tbl_jp.query("role == 'label'").set_index("key").rename(columns={"text": "label_jp"})
+        df = df.join(
+            [
+                self.label_tbl_jp.query("role == 'verboseLabel'").set_index("key")[["text"]].rename(
+                    columns={"text": "label_jp_long"}
+                ),
+                self.label_tbl_eng.query("role == 'label'").set_index("key")[["text"]].rename(
+                    columns={"text": "label_en"}
+                ),
+                self.label_tbl_eng.query("role == 'verboseLabel'").set_index("key")[["text"]].rename(
+                    columns={"text": "label_en_long"}
+                ),
+            ],
+            how="left",
+        )
         return df
     
     def make_summary_tbl(self):
@@ -239,7 +248,7 @@ class linkbasefile():
             )
 
     def detect_account_list_year(self):
-        head_list = list(set(self.get_presentation_account_list_obj.export_account_list_df().schima_taxonomi_head))
+        head_list = list(set(self.get_presentation_account_list_obj.export_account_list_df().schema_taxonomi_head))
         
         # 判定用マッピング (日付 -> 年代版)
         taxo_map = {

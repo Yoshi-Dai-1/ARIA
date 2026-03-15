@@ -14,11 +14,11 @@ from pydantic.functional_validators import BeforeValidator
 from .utils import get_columns_df
 # %% #################################################################
 #
-#            schima
+#            schema
 #
 ######################################################################
 
-class xbrl_elm_schima(pa.DataFrameModel):
+class xbrl_elm_schema(pa.DataFrameModel):
     """
         key:prefix+":"+element_name
         data_str
@@ -117,7 +117,7 @@ def get_fact_data(fact)->ArreleFact:
     return fact_data
 
 
-def get_xbrl_dei_df(xbrl_filename:str,log_dict,temp_dir)->(xbrl_elm_schima,dict):
+def get_xbrl_dei_df(xbrl_filename:str,log_dict,temp_dir)->(xbrl_elm_schema,dict):
     if log_dict['arelle_log_fname'] is None:
         log_dict['arelle_log_fname'] = str(temp_dir / "arelle.log")
 
@@ -137,7 +137,7 @@ def get_xbrl_dei_df(xbrl_filename:str,log_dict,temp_dir)->(xbrl_elm_schima,dict)
     return log_dict
 
 
-def get_xbrl_df(xbrl_filename:str,log_dict,temp_dir)->(xbrl_elm_schima,dict):
+def get_xbrl_df(xbrl_filename:str,log_dict,temp_dir)->(xbrl_elm_schema,dict):
     """
     arelle.ModelInstanceObject - Arelle
         https://arelle.readthedocs.io/en/2.18.0/apidocs/arelle/arelle.ModelInstanceObject.html#arelle.ModelInstanceObject.ModelFact
@@ -150,7 +150,7 @@ def get_xbrl_df(xbrl_filename:str,log_dict,temp_dir)->(xbrl_elm_schima,dict):
     if len(model_xbrl.facts)==0:
         log_dict['xbrl_load_status']="failure"
         ctrl.close()
-        return pd.DataFrame(columns=get_columns_df(xbrl_elm_schima)),log_dict
+        return pd.DataFrame(columns=get_columns_df(xbrl_elm_schema)),log_dict
     else:
         log_dict['xbrl_load_status']="success"
         fact_dict_list = []
@@ -221,7 +221,7 @@ def get_xbrl_wrapper(docid,zip_file:str,temp_dir:Path,out_path:Path,update_flg=F
             out_filename=str(xbrl_path / "log_dict.json")
             with open(out_filename, mode="wt", encoding="utf-8") as f:
                 json.dump(log_dict, f, ensure_ascii=False, indent=2)
-            return pd.DataFrame(columns=get_columns_df(xbrl_elm_schima)),log_dict
+            return pd.DataFrame(columns=get_columns_df(xbrl_elm_schema)),log_dict
     except Exception as e:
         log_dict["get_xbrl_status"] = "failure"
         log_dict["get_xbrl_error_message"] = e
@@ -229,4 +229,4 @@ def get_xbrl_wrapper(docid,zip_file:str,temp_dir:Path,out_path:Path,update_flg=F
         with open(out_filename, mode="wt", encoding="utf-8") as f:
             json.dump(log_dict, f, ensure_ascii=False, indent=2)
             
-        return pd.DataFrame(columns=get_columns_df(xbrl_elm_schima)),log_dict
+        return pd.DataFrame(columns=get_columns_df(xbrl_elm_schema)),log_dict

@@ -8,15 +8,23 @@ class LifecycleManager:
     def __init__(self, catalog_manager):
         self.cm = catalog_manager
 
-    def track_disappearance(self, new_master_df: pd.DataFrame, current_codes_in_run: set) -> pd.DataFrame:
+    def track_disappearance(self, new_master_df: pd.DataFrame, current_ids_in_run: set) -> pd.DataFrame:
         """【Tracking】消失銘柄の判定とフラグ設定"""
         if self.cm.master_df.empty:
             return new_master_df
 
+        # identity_key の生成 (edinet_code優先) 
+        # ※master_df は更新前、new_master_df は今回の統合結果
+        if "identity_key" not in self.cm.master_df.columns:
+            self.cm.master_df["identity_key"] = self.cm.master_df["edinet_code"].fillna(self.cm.master_df["code"])
+        
+        if "identity_key" not in new_master_df.columns:
+            new_master_df["identity_key"] = new_master_df["edinet_code"].fillna(new_master_df["code"])
+
         # 以前は存在したが、今回の入力（EDINET/JPX）のどちらにも現れなかった銘柄を特定
         disappeared_mask = (
-            new_master_df["code"].isin(self.cm.master_df["code"]) & 
-            ~new_master_df["code"].isin(current_codes_in_run)
+            new_master_df["identity_key"].isin(self.cm.master_df["identity_key"]) & 
+            ~new_master_df["identity_key"].isin(current_ids_in_run)
         )
         # 既に disappeared なものは維持、新規消失分をマーク
         new_master_df.loc[disappeared_mask, "is_disappeared"] = True

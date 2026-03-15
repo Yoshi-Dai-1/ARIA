@@ -10,7 +10,6 @@ Layer 4: APIカタログ照合（10年枠内のメタデータ不一致検証）
 """
 
 import json
-import logging
 import os
 import re
 import sys
@@ -20,14 +19,12 @@ from pathlib import Path
 from typing import Any, Dict
 
 import pandas as pd
+from loguru import logger
 
 from data_engine.catalog_manager import CatalogManager
 from data_engine.core import utils
-
 # ARIA モジュール
 from data_engine.core.models import CatalogRecord, ListingEvent, StockMasterRecord
-
-logger = logging.getLogger(__name__)
 
 
 class DataReconciliationEngine:
@@ -739,12 +736,7 @@ def main():
 
     load_dotenv()
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-
-    # 外部ライブラリ（httpx, urllib3）の過剰なINFOログ（HTTPリクエストごとのトレース）を抑制する
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    # Loguru は標準で詳細な出力を提供するため、logging.basicConfig は不要
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--save-report", action="store_true", help="Save the reconciliation report to JSON")

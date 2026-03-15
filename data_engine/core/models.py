@@ -197,49 +197,53 @@ class CatalogRecord(BaseModel):
 
 class StockMasterRecord(BaseModel):
     """
-    ARIA 銘柄マスタレコード (Perfect Integrity)
-    識別子、属性、業界、状態の論理的順序で構成。
+    ARIA 銘銘マスタレコード (Perfect Integrity)
+    識別子、属性、業界、状態の論理的順序で構成。ウェブアプリでの利用を最適化。
     """
 
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
-    # --- 1. 識別子 (Identifiers) ---
-    edinet_code: Optional[str] = Field(None, description="EDINETコード")
-    code: Optional[str] = Field(None, description="証券コード (5桁正規化)")
-    parent_code: Optional[str] = Field(None, description="親銘柄コード (優先株などの場合)")
-    jcn: Optional[str] = Field(None, description="法人番号 (13桁)")
+    # --- 1. Essential Web Identity (Primary Keys) ---
+    identity_key: str = Field(..., description="ARIA ユニーク識別子 (JCN or EDINET_CODE or CODE)")
+    edinet_code: Optional[str] = Field(None, description="EDINETコード (EXXXXX)")
+    code: Optional[str] = Field(None, description="証券コード (5桁正規化: JP:XXXX0)")
 
-    # --- 2. 基本属性 (Basic Attributes / EDINET系) ---
+    # --- 2. Identity Attributes (Searchable) ---
     company_name: str = Field(..., description="提出者名 (和文)")
     company_name_en: Optional[str] = Field(None, description="提出者名 (英文)")
     company_name_kana: Optional[str] = Field(None, description="提出者名 (ヨミ)")
-    submitter_type: Optional[str] = Field(None, description="提出者種別")
-    # --- 財務属性 ---
-    is_consolidated: Optional[bool] = Field(None, description="連結の有無 (有/無 -> True/False)")
-    capital: Optional[float] = Field(None, description="資本金 (単位: 百万円)")
-    settlement_date: Optional[str] = Field(None, description="決算期末")
-    address: Optional[str] = Field(None, description="所在地")
 
-    # --- 3. 業界・市場属性 (Industry & Market / JPX系) ---
+    # --- 3. Lifecycle & Tracking (Operational Metadata) ---
+    is_active: bool = Field(True, description="ARIA 収集・追跡対象フラグ(運用の真実)")
+    is_disappeared: bool = Field(False, description="全ソース（EDINET/JPX）から消失した銘柄フラグ")
+    is_listed_edinet: bool = Field(False, description="EDINET公式名簿 上場フラグ (法令の真実)")
+    last_submitted_at: Optional[str] = Field(None, description="最終書類提出日時")
+
+    # --- 4. Industry & Market Classification (Normalized) ---
+    market: Optional[str] = Field(None, description="上場市場名")
     sector_jpx_33: Optional[str] = Field(None, description="JPX 33業種区分名")
     sector_33_code: Optional[str] = Field(None, description="JPX 33業種コード")
     sector_jpx_17: Optional[str] = Field(None, description="JPX 17業種区分名")
     sector_17_code: Optional[str] = Field(None, description="JPX 17業種コード")
     industry_edinet: Optional[str] = Field(None, description="EDINET業種区分 (和文)")
     industry_edinet_en: Optional[str] = Field(None, description="EDINET業種区分 (英文)")
-    market: Optional[str] = Field(None, description="上場市場名")
     size_code: Optional[str] = Field(None, description="規模コード")
     size_category: Optional[str] = Field(None, description="規模区分名")
 
-    # --- 4. 状態とライフサイクル (Status & Lifecycle) ---
-    is_active: bool = Field(True, description="ARIA 収集・追跡対象フラグ(運用の真実)")
-    is_listed_edinet: bool = Field(False, description="EDINET公式名簿 上場フラグ (法令の真実)")
-    is_disappeared: bool = Field(False, description="全ソース（EDINET/JPX）から消失した銘柄フラグ")
-    last_submitted_at: Optional[str] = Field(None, description="最終書類提出日時")
+    # --- 5. Financial & Corporate Attributes ---
+    jcn: Optional[str] = Field(None, description="法人番号 (13桁)")
+    parent_code: Optional[str] = Field(None, description="親銘柄コード (優先株などの場合)")
     former_edinet_codes: Optional[str] = Field(None, description="旧EDINETコード (集約ブリッジ用)")
+    submitter_type: Optional[str] = Field(None, description="提出者種別")
+    is_consolidated: Optional[bool] = Field(None, description="連結の有無 (True/False)")
+    capital: Optional[float] = Field(None, description="資本金 (単位: 百万円)")
+    settlement_date: Optional[str] = Field(None, description="決算期末")
+    address: Optional[str] = Field(None, description="所在地")
 
     @field_validator(
+        "identity_key",
         "edinet_code",
+        "code",
         "jcn",
         "company_name_en",
         "company_name_kana",
@@ -336,10 +340,11 @@ class NameEvent(BaseModel):
 
 
 class JpxDefinitionRecord(BaseModel):
-    """JPX 業種・規模区分名等の定義マスタレコードモデル"""
-    type: str # sector_33, sector_17, size
-    code: str
-    name: str
+    """JPX 業種・規模区分名等の定義マスタレコードモデル (Web API 正規化用)"""
+    type: str = Field(..., description="区分種別 (sector_33, sector_17, size)")
+    code: str = Field(..., description="区分コード")
+    name: str = Field(..., description="区分名称 (和文)")
+    description: Optional[str] = Field(None, description="区分の詳細解説 (Web/UI用)")
 
 class IndexEvent(BaseModel):
     """指数構成銘柄の変更イベント記録モデル"""

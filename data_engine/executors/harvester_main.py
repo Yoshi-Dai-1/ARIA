@@ -18,8 +18,6 @@ from data_engine.executors.pipeline import (
 # 共通設定 (SSOT 取得のため定数化不要)
 def main():
     # グローバル設定の適用 (LOG_LEVEL 等)
-    log_level = os.environ.get("LOG_LEVEL", "INFO")
-
     # ログレベルの設定
     log_level = os.getenv("LOG_LEVEL", "INFO").upper()
     logger.remove()

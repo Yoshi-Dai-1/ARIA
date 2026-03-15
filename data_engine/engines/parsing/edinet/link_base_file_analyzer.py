@@ -19,12 +19,12 @@ FloatOrNone = Annotated[float, BeforeValidator(lambda x: x or 0.0)]
 
 # %% #################################################################
 #
-#            schima
+#            schema
 #
 ######################################################################
 
-#def get_columns_df(schima:pa.DataFrameModel)->list:
-#    return list(schima.to_schema().columns.keys())
+#def get_columns_df(schema:pa.DataFrameModel)->list:
+#    return list(schema.to_schema().columns.keys())
 
 
 class GetCalLog(BaseModel):
@@ -49,8 +49,8 @@ class ParentChildLink(pa.DataFrameModel):
         parent_taxonomi_tag: jppfs_cor_accountname
         child_taxonomi_tag: jppfs_cor_accountname
         
-            taxonomi_tag <- locators_df.schima_taxonomi.str.lower()
-            schima_taxonomi <- attr_sr[attr_sr.index.str.contains('href')].values[0].split('#')[1]
+            taxonomi_tag <- locators_df.schema_taxonomi.str.lower()
+            schema_taxonomi <- attr_sr[attr_sr.index.str.contains('href')].values[0].split('#')[1]
     """
     parent_key: Series[str]# = pa.Column(str, checks=pa.Check.str_contains(':'), regex=True, nullable=True)
     child_key: Series[str]# = pa.Column(str, checks=pa.Check.str_contains(':'), regex=True, nullable=True)
@@ -64,8 +64,8 @@ class CalParentChildLink(pa.DataFrameModel):
         parent_taxonomi_tag: jppfs_cor_accountname
         child_taxonomi_tag: jppfs_cor_accountname
         
-            taxonomi_tag <- locators_df.schima_taxonomi.str.lower()
-            schima_taxonomi <- attr_sr[attr_sr.index.str.contains('href')].values[0].split('#')[1]
+            taxonomi_tag <- locators_df.schema_taxonomi.str.lower()
+            schema_taxonomi <- attr_sr[attr_sr.index.str.contains('href')].values[0].split('#')[1]
     """
 
     parent_key: Series[str]
@@ -80,16 +80,16 @@ class OriginalAccountList(pa.DataFrameModel):
         label: 
         key: jpcrp030000-asr_E37207-000:IncreaseDecreaseInIncomeTaxesPayableOpeCF
         role: 
-        (schima_taxonomi: schima_taxonomi like)
+        (schema_taxonomi: schema_taxonomi like)
             jpcrp030000-asr_E37207-000_IncreaseDecreaseInIncomeTaxesPayableOpeCF
             sepalated it by '#' and get later part that is jpcrp030000-asr-001_E37207-000_2023-06-30_01_2023-09-29.xsd#jpcrp030000-asr_E37207-000_IncreaseDecreaseInIncomeTaxesPayableOpeCF
             (from xlink:href in pre.xml file) 
     """
-    #schima_taxonomi: Series[str]
+    #schema_taxonomi: Series[str]
     label: Series[str]
     key: Series[str]
     role: Series[str]
-    schima_taxonomi_head: Series[str]
+    schema_taxonomi_head: Series[str]
 
 class AccountLabel(pa.DataFrameModel):
     #OriginalAccountList
@@ -97,12 +97,12 @@ class AccountLabel(pa.DataFrameModel):
         label: 
         key: jpcrp030000-asr_E37207-000:IncreaseDecreaseInIncomeTaxesPayableOpeCF
         role: 
-        (schima_taxonomi: schima_taxonomi like)
+        (schema_taxonomi: schema_taxonomi like)
             jpcrp030000-asr_E37207-000_IncreaseDecreaseInIncomeTaxesPayableOpeCF
             sepalated it by '#' and get later part that is jpcrp030000-asr-001_E37207-000_2023-06-30_01_2023-09-29.xsd#jpcrp030000-asr_E37207-000_IncreaseDecreaseInIncomeTaxesPayableOpeCF
             (from xlink:href in pre.xml file) 
     """
-    #schima_taxonomi: Series[str]
+    #schema_taxonomi: Series[str]
     label: Series[str]
     key: Series[str]
     text: Series[str]
@@ -120,13 +120,13 @@ def safe_attr_get(attr_sr, pattern, default=None):
 
 class PreLocator(BaseModel):
     role: StrOrNone = None
-    schima_taxonomi: StrOrNone = None
+    schema_taxonomi: StrOrNone = None
     label: StrOrNone = None
-    schima_taxonomi_head: StrOrNone = None
+    schema_taxonomi_head: StrOrNone = None
 
 class Locator(BaseModel):
     role: StrOrNone = None
-    schima_taxonomi: StrOrNone = None
+    schema_taxonomi: StrOrNone = None
     label: StrOrNone = None
 
 class Arc(BaseModel):
@@ -274,7 +274,7 @@ class get_presentation_account_list():
         order:
         role is given to edge
     """
-    def __init__(self,zip_file_str:str,temp_path_str:str,doc_type:str='public'):#->(parent_child_link_schima,,dict,dict):
+    def __init__(self,zip_file_str:str,temp_path_str:str,doc_type:str='public'):#->(parent_child_link_schema,,dict,dict):
         
         self.log_dict = {
             #'docID':docid,
@@ -331,14 +331,14 @@ class get_presentation_account_list():
             attr_sr_p = pd.Series(child.attrib)
             role = attr_sr_p[attr_sr_p.index.str.contains('role')].item()
             for child_of_child in child:
-                locator = {'role':role,'schima_taxonomi':None,'label':None,'schima_taxonomi_head':None}
+                locator = {'role':role,'schema_taxonomi':None,'label':None,'schema_taxonomi_head':None}
                 arc = {'parent':None,'child':None,'child_order':None,'role':role}
 
                 attr_sr = pd.Series(child_of_child.attrib)
                 attr_type = attr_sr[attr_sr.index.str.contains('type')].item()
                 if attr_type=='locator':
-                    locator['schima_taxonomi_head'] = attr_sr[attr_sr.index.str.contains('href')].item().split('#')[0]
-                    locator['schima_taxonomi'] = attr_sr[attr_sr.index.str.contains('href')].item().split('#')[1]
+                    locator['schema_taxonomi_head'] = attr_sr[attr_sr.index.str.contains('href')].item().split('#')[0]
+                    locator['schema_taxonomi'] = attr_sr[attr_sr.index.str.contains('href')].item().split('#')[1]
                     locator['label'] = attr_sr[attr_sr.index.str.contains('label')].item()
                     locators.append(PreLocator(**locator))
                 elif attr_type=='arc':
@@ -352,18 +352,18 @@ class get_presentation_account_list():
 
     def _make_label_to_taxonomi_dict(self):
         
-        locators_df = pd.DataFrame([locator.model_dump() for locator in self.locators]).dropna(subset=['schima_taxonomi'])
+        locators_df = pd.DataFrame([locator.model_dump() for locator in self.locators]).dropna(subset=['schema_taxonomi'])
         locators_df = locators_df.assign(
             role=locators_df.role.str.split('/',expand=True).iloc[:,-1],
-            key=locators_df.schima_taxonomi.apply(format_taxonomi)
+            key=locators_df.schema_taxonomi.apply(format_taxonomi)
             )
         self.label_to_taxonomi_dict = locators_df.set_index('label')['key'].to_dict()
 
     def export_account_list_df(self)->OriginalAccountList:
-        locators_df = pd.DataFrame([locator.model_dump() for locator in self.locators]).dropna(subset=['schima_taxonomi'])
+        locators_df = pd.DataFrame([locator.model_dump() for locator in self.locators]).dropna(subset=['schema_taxonomi'])
         locators_df = locators_df.assign(
             role=locators_df.role.str.split('/',expand=True).iloc[:,-1],
-            key=locators_df.schima_taxonomi.apply(format_taxonomi)
+            key=locators_df.schema_taxonomi.apply(format_taxonomi)
                                     )
         pre_detail_list = OriginalAccountList(locators_df[get_columns_df(OriginalAccountList)])
         return pre_detail_list
@@ -433,12 +433,12 @@ class get_calc_edge_list():
             attr_sr_p=pd.Series(child.attrib)
             role=attr_sr_p[attr_sr_p.index.str.contains('role')].item()
             for child_of_child in child:
-                locator={'schima_taxonomi':None,'label':None,'role':role}
+                locator={'schema_taxonomi':None,'label':None,'role':role}
                 arc={'parent':None,'child':None,'child_order':None,'weight':None,'role':role}
                 attr_sr=pd.Series(child_of_child.attrib)
                 attr_type=attr_sr[attr_sr.index.str.contains('type')].item() 
                 if attr_type=='locator':
-                    locator['schima_taxonomi']=attr_sr[attr_sr.index.str.contains('href')].item().split('#')[1]
+                    locator['schema_taxonomi']=attr_sr[attr_sr.index.str.contains('href')].item().split('#')[1]
                     locator['label']=attr_sr[attr_sr.index.str.contains('label')].item()
                     locators.append(Locator(**locator))
 
@@ -454,18 +454,18 @@ class get_calc_edge_list():
 
     def _make_label_to_taxonomi_dict(self):
 
-        locators_df = pd.DataFrame([locator.model_dump() for locator in self.locators]).dropna(subset=['schima_taxonomi'])
+        locators_df = pd.DataFrame([locator.model_dump() for locator in self.locators]).dropna(subset=['schema_taxonomi'])
         locators_df = locators_df.assign(
             role=locators_df.role.str.split('/',expand=True).iloc[:,-1],
-            key=locators_df.schima_taxonomi.apply(format_taxonomi)
+            key=locators_df.schema_taxonomi.apply(format_taxonomi)
             )
         self.label_to_taxonomi_dict = locators_df.set_index('label')['key'].to_dict()
 
     def export_account_list_df(self)->OriginalAccountList:
-        locators_df = pd.DataFrame([locator.model_dump() for locator in self.locators]).dropna(subset=['schima_taxonomi'])
+        locators_df = pd.DataFrame([locator.model_dump() for locator in self.locators]).dropna(subset=['schema_taxonomi'])
         locators_df = locators_df.assign(
             role=locators_df.role.str.split('/',expand=True).iloc[:,-1],
-            key=locators_df.schima_taxonomi.apply(format_taxonomi)
+            key=locators_df.schema_taxonomi.apply(format_taxonomi)
             )
         cal_detail_list = OriginalAccountList(locators_df[get_columns_df(OriginalAccountList)])
         return cal_detail_list
@@ -941,7 +941,7 @@ class account_list_common():
 class get_presentation_common():
     """
     """
-    def __init__(self,file_str:str):#->(parent_child_link_schima,,dict,dict):
+    def __init__(self,file_str:str):#->(parent_child_link_schema,,dict,dict):
         
         self.log_dict = {
             #'docID':docid,
@@ -962,14 +962,14 @@ class get_presentation_common():
             attr_sr_p = pd.Series(child.attrib)
             role = attr_sr_p[attr_sr_p.index.str.contains('role')].item()
             for child_of_child in child:
-                locator = {'role':role,'schima_taxonomi':None,'label':None,'schima_taxonomi_head':None}
+                locator = {'role':role,'schema_taxonomi':None,'label':None,'schema_taxonomi_head':None}
                 arc = {'parent':None,'child':None,'child_order':None,'role':role}
 
                 attr_sr = pd.Series(child_of_child.attrib)
                 attr_type = attr_sr[attr_sr.index.str.contains('type')].item()
                 if attr_type=='locator':
-                    locator['schima_taxonomi_head'] = attr_sr[attr_sr.index.str.contains('href')].item().split('#')[0]
-                    locator['schima_taxonomi'] = attr_sr[attr_sr.index.str.contains('href')].item().split('#')[1]
+                    locator['schema_taxonomi_head'] = attr_sr[attr_sr.index.str.contains('href')].item().split('#')[0]
+                    locator['schema_taxonomi'] = attr_sr[attr_sr.index.str.contains('href')].item().split('#')[1]
                     locator['label'] = attr_sr[attr_sr.index.str.contains('label')].item()
                     locators.append(PreLocator(**locator))
                 elif attr_type=='arc':
@@ -983,18 +983,18 @@ class get_presentation_common():
 
     def _make_label_to_taxonomi_dict(self)->dict:
         
-        locators_df = pd.DataFrame([locator.model_dump() for locator in self.locators]).dropna(subset=['schima_taxonomi'])
+        locators_df = pd.DataFrame([locator.model_dump() for locator in self.locators]).dropna(subset=['schema_taxonomi'])
         locators_df = locators_df.assign(
             role=locators_df.role.str.split('/',expand=True).iloc[:,-1],
-            key=locators_df.schima_taxonomi.apply(format_taxonomi)
+            key=locators_df.schema_taxonomi.apply(format_taxonomi)
             )
         self.label_to_taxonomi_dict = locators_df.set_index('label')['key'].to_dict()
 
     def export_account_list_df(self)->OriginalAccountList:
-        locators_df = pd.DataFrame([locator.model_dump() for locator in self.locators]).dropna(subset=['schima_taxonomi'])
+        locators_df = pd.DataFrame([locator.model_dump() for locator in self.locators]).dropna(subset=['schema_taxonomi'])
         locators_df = locators_df.assign(
             role=locators_df.role.str.split('/',expand=True).iloc[:,-1],
-            key=locators_df.schima_taxonomi.apply(format_taxonomi)
+            key=locators_df.schema_taxonomi.apply(format_taxonomi)
                                     )
         pre_detail_list = OriginalAccountList(locators_df[get_columns_df(OriginalAccountList)])
         return pre_detail_list

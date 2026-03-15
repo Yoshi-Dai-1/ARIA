@@ -5,12 +5,12 @@ from loguru import logger
 
 
 
-def get_columns_df(schima: pa.DataFrameModel) -> list:
-    return list(schima.to_schema().columns.keys())
+def get_columns_df(schema: pa.DataFrameModel) -> list:
+    return list(schema.to_schema().columns.keys())
 
 
-def get_dtype_dict(schima: pa.DataFrameModel) -> dict:
-    return {name: col.dtype for name, col in schima.to_schema().columns.items()}
+def get_dtype_dict(schema: pa.DataFrameModel) -> dict:
+    return {name: col.dtype for name, col in schema.to_schema().columns.items()}
 
 
 def remove_empty_lists(lst):

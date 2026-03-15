@@ -396,6 +396,8 @@ class WorkerEngine:
                 "jcn": (row.get("JCN") or "").strip() or None,
                 "code": sec_code,
                 "company_name": (row.get("filerName") or "").strip() or "Unknown",
+                "company_name_en": (row.get("filerNameEn") or "").strip() or None,
+                "company_name_kana": (row.get("filerNameKana") or "").strip() or None,
                 "edinet_code": (row.get("edinetCode") or "").strip() or None,
                 "issuer_edinet_code": (row.get("issuerEdinetCode") or "").strip() or None,
                 "subject_edinet_code": (row.get("subjectEdinetCode") or "").strip() or None,
