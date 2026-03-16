@@ -205,6 +205,7 @@ class StockMasterRecord(BaseModel):
 
     # --- 1. Essential Web Identity (Primary Keys) ---
     identity_key: str = Field(..., description="ARIA ユニーク識別子 (JCN or EDINET_CODE or CODE)")
+    jcn: Optional[str] = Field(None, description="法人番号 (13桁)")
     edinet_code: Optional[str] = Field(None, description="EDINETコード (EXXXXX)")
     code: Optional[str] = Field(None, description="証券コード (5桁正規化: JP:XXXX0)")
 
@@ -231,9 +232,8 @@ class StockMasterRecord(BaseModel):
     size_category: Optional[str] = Field(None, description="規模区分名")
 
     # --- 5. Financial & Corporate Attributes ---
-    jcn: Optional[str] = Field(None, description="法人番号 (13桁)")
     parent_code: Optional[str] = Field(None, description="親銘柄コード (優先株などの場合)")
-    former_edinet_codes: Optional[str] = Field(None, description="旧EDINETコード (集約ブリッジ用)")
+    former_edinet_codes: Optional[str] = Field(None, description="旧EDINETコード履歴 (カンマ区切り)")
     submitter_type: Optional[str] = Field(None, description="提出者種別")
     is_consolidated: Optional[bool] = Field(None, description="連結の有無 (True/False)")
     capital: Optional[float] = Field(None, description="資本金 (単位: 百万円)")

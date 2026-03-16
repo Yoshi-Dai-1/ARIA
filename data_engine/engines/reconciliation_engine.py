@@ -41,11 +41,42 @@ class ReconciliationEngine:
         # 1. EDINET コードリストを DataFrame 化 (IdentityResolver へ委譲)
         df_edinet = self.resolver.resolve_master_from_edinet(edinet_codes)
 
-        # 2. 集約一覧 (ESE140190.csv) に基づく既存マスタの付け替え
-        if aggregation_map and not self.cm.master_df.empty:
-            logger.info(f"集約一覧に基づき既存マスタのコードを付け替えます: {len(aggregation_map)} 件対象")
-            # 既存マスタの edinet_code を置換
-            self.cm.master_df["edinet_code"] = self.cm.master_df["edinet_code"].replace(aggregation_map)
+        # 2. 集約一覧 (ESE140190.csv) に基づく付け替え
+        if aggregation_map:
+            logger.info(f"集約一覧に基づきコードの付け替えを適用します: {len(aggregation_map)} 件対象")
+            
+            # ヘルパー: コード置換と履歴保持
+            def apply_agg(df, col_name="edinet_code"):
+                if df.empty or col_name not in df.columns:
+                    return df
+                
+                # 置換対象を抽出
+                target_mask = df[col_name].isin(aggregation_map.keys())
+                if target_mask.any():
+                    # 履歴の追加 (カンマ区切り)
+                    def append_former(row):
+                        old_c = row[col_name]
+                        existing = row.get("former_edinet_codes")
+                        if pd.isna(existing) or existing is None:
+                            existing_str = ""
+                        else:
+                            existing_str = str(existing)
+                        
+                        if existing_str:
+                            if old_c not in existing_str.split(","):
+                                return f"{existing_str},{old_c}"
+                            return existing_str
+                        return old_c
+
+                    df.loc[target_mask, "former_edinet_codes"] = df[target_mask].apply(append_former, axis=1)
+                    # 実際のコード置換
+                    df[col_name] = df[col_name].replace(aggregation_map)
+                return df
+
+            # 既存マスタと新規データの双方に適用
+            if not self.cm.master_df.empty:
+                self.cm.master_df = apply_agg(self.cm.master_df)
+            df_edinet = apply_agg(df_edinet)
 
         # 3. JPX マスタを統合 (EDINET に存在しない ETF/REIT 等を補完)
         if not jpx_master.empty:
@@ -125,7 +156,10 @@ class ReconciliationEngine:
             try:
                 # StockMasterRecord による金型ガード
                 master_rec = StockMasterRecord(**rec)
-                processed_records.append(master_rec.model_dump())
+                d = master_rec.model_dump()
+                # 統合ロジックに必要な内部フラグ (source_jpx) を維持
+                d["source_jpx"] = rec.get("source_jpx", False)
+                processed_records.append(d)
             except Exception as e:
                 logger.error(f"銘柄バリデーション失敗 (code: {sec_code}): {e}")
 
@@ -226,6 +260,15 @@ class ReconciliationEngine:
 
         # 5. 【Tracking】消失銘柄の判定
         new_master_df = pd.DataFrame(best_records)
+        
+        # 【物理的整律】StockMasterRecord の定義に従ってカラム順序を固定
+        master_cols = list(StockMasterRecord.model_fields.keys())
+        # マスタに存在しない内部フラグ等は除外、必要なものだけ並べ替え
+        existing_cols = [c for c in master_cols if c in new_master_df.columns]
+        # 追加のカラム（内部フラグなど）があれば末尾へ
+        remaining_cols = [c for c in new_master_df.columns if c not in master_cols]
+        new_master_df = new_master_df[existing_cols + remaining_cols]
+
         new_master_df = self.lifecycle.track_disappearance(new_master_df, current_codes_in_run)
 
         # 6. 【Event Detection】上場・廃止イベントの一括検知
@@ -299,6 +342,10 @@ class ReconciliationEngine:
             if "description" not in df_defs.columns:
                 df_defs["description"] = None
             df_defs = df_defs[["type", "code", "name", "description"]].dropna(subset=["code"])
+            
+            # 【工学的美点】視認性の向上のためソート
+            df_defs = df_defs.sort_values(["type", "code"])
+            
             self.cm.hf.save_and_upload("jpx_definitions", df_defs, defer=True)
 
         if listing_events:

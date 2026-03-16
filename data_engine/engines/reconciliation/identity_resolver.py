@@ -1,6 +1,6 @@
 import pandas as pd
 from loguru import logger
-from data_engine.core.utils import normalize_code
+
 
 class IdentityResolver:
     """証券コードと EDINET コードの架け橋（Bridging）および破棄ルールを担当"""
@@ -72,6 +72,6 @@ class IdentityResolver:
             # ログの肥大化を防ぎつつ、透明性を確保するため、最初の20件を表示
             sample_size = 20
             sample = discarded_details[:sample_size]
-            logger.info(f"破棄銘柄例: {', '.join(sample)}{' ...' if len(discarded_details) > sample_size else ''}")
-            
+            logger.info(f"破棄銘柄: {', '.join(sample)}{' ...' if len(discarded_details) > sample_size else ''}")
+
         return pd.DataFrame(filtered_list)
