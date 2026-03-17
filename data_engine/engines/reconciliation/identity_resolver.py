@@ -1,5 +1,6 @@
 import pandas as pd
 from loguru import logger
+from data_engine.core.utils import normalize_code
 
 
 class IdentityResolver:
@@ -29,9 +30,13 @@ class IdentityResolver:
         # 証券コード -> EDINET コード の逆引き辞書 (Pydanticモデルと辞書の両方に対応)
         sec_to_edinet = {}
         for k, v in self.cm.edinet_codes.items():
-            c = getattr(v, "code", None) if hasattr(v, "code") else v.get("code")
-            if c and str(c).startswith("JP:"):
-                sec_to_edinet[c] = k
+            # 【ARIA 正規化の徹底】EdinetCodeRecord 生成時に正規化されているはずだが、
+            # 万一の漏れや型不一致を防ぐためここで再度 normalize_code を通す
+            raw_c = getattr(v, "code", None) if hasattr(v, "code") else v.get("code")
+            if raw_c:
+                norm_c = normalize_code(raw_c, nationality="JP")
+                if norm_c:
+                    sec_to_edinet[norm_c] = k
 
         if not sec_to_edinet:
             logger.warning("EDINETコードの逆引き辞書が空です。補完をスキップします。")
@@ -39,8 +44,10 @@ class IdentityResolver:
 
         def fill_fn(row):
             e_code = row.get("edinet_code")
-            if (pd.isna(e_code) or e_code is None) and row.get("code") in sec_to_edinet:
-                return sec_to_edinet[row["code"]]
+            # row["code"] も normalize 済みであることを前提とする（reconciliation_engine で実施済）
+            sec_code = row.get("code")
+            if (pd.isna(e_code) or e_code is None) and sec_code in sec_to_edinet:
+                return sec_to_edinet[sec_code]
             return e_code
 
         incoming_data["edinet_code"] = incoming_data.apply(fill_fn, axis=1)
@@ -58,10 +65,14 @@ class IdentityResolver:
             market = str(row.get("market") or "").upper()
             is_special = any(x in market for x in self.SPECIAL_MARKET_KEYWORDS)
             sec_code = str(row.get("code") or "")
+            # 正規化済み証券コードの5桁目（末尾0）以外を優先株と判定
             is_preferred = sec_code and sec_code[-1] != "0"
-            has_edinet = pd.notna(row.get("edinet_code"))
+            
+            # EDINETコードの存否を確認
+            has_edinet = pd.notna(row.get("edinet_code")) and row.get("edinet_code") is not None
 
             # 普通株式 (5桁目0) かつ EDINET未登録 かつ 特殊でない銘柄は破棄
+            # (理由: JPXデータのみに存在する普通株は、ARIAの収集対象外であるため)
             if not is_special and not is_preferred and not has_edinet:
                 discarded_details.append(f"{sec_code} ({row.get('company_name')})")
                 continue

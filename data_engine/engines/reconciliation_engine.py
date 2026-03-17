@@ -184,7 +184,6 @@ class ReconciliationEngine:
             return True
 
         # 2. 複数の識別子が混在する場合、最も権威ある ID (JCN) に集約して統合
-        # (例: JP:13010 のみの古いレコードと、JCN(13桁)/JP:13010 を持つ新しいレコードを統合)
         def resolve_canonical_id(group):
             ids = group.dropna().unique()
             # 1. JCN (13桁の数字文字列) を最優先
@@ -198,21 +197,18 @@ class ReconciliationEngine:
             # 3. それ以外 (Security Code等)
             return str(ids[0]) if len(ids) > 0 else None
 
-        mask = (all_states["code"].notna()) | (all_states["edinet_code"].notna()) | (all_states["jcn"].notna())
-        # transform 内での Nan 発生を抑止するため、mask された範囲のみで処理
-        all_states.loc[mask, "identity_key"] = (
-            all_states[mask].groupby("code")["identity_key"].transform(resolve_canonical_id)
-        )
-        # さらに EDINETコードベースでも寄せを行う (証券コードがない実体用)
-        mask_e = all_states["edinet_code"].notna()
-        all_states.loc[mask_e, "identity_key"] = (
-            all_states[mask_e].groupby("edinet_code")["identity_key"].transform(resolve_canonical_id)
-        )
-        # さらに JCNベースでも寄せを行う (SSOT: Japan Corporate Number)
-        mask_j = all_states["jcn"].notna()
-        all_states.loc[mask_j, "identity_key"] = (
-            all_states[mask_j].groupby("jcn")["identity_key"].transform(resolve_canonical_id)
-        )
+        # 【Transitive Identity Resolution】連鎖的な名寄せ
+        # JCN, EDINETコード, 証券コードの連鎖を辿って、最も権威あるIDに収束させる
+        # 各物理キーを順次 groupby の対象とし、そのグループ内で最も権威ある ID を全メンバーに波及 (Propagate) させる
+        for key_col in ["jcn", "edinet_code", "code"]:
+            mask = all_states[key_col].notna()
+            if mask.any():
+                all_states.loc[mask, "identity_key"] = (
+                    all_states[mask].groupby(key_col, dropna=True)["identity_key"].transform(resolve_canonical_id)
+                )
+
+        # 最終パス: identity_key 自体でグループ化し、収束を確定させる
+        all_states["identity_key"] = all_states.groupby("identity_key", dropna=False)["identity_key"].transform(resolve_canonical_id)
         
         # タイブレーカー用にソースの鮮度フラグを付与 (incoming=1, current=0)
         # これにより、日付が同じ（または無い）場合に新規データを優先する
@@ -247,11 +243,14 @@ class ReconciliationEngine:
             # Rule 4: is_active および is_listed_edinet の判定基準
             # is_listed_edinet: EDINET 上場区分が「上場」であるか
             # is_active: 上記 OR JPX データに存在する（ETF/REIT/PRO Market 等を含む）か
-            listed_edinet = sorted_group["is_listed_edinet"].any()
+            # 【監査事実】df_edinet["is_listed_edinet"] は "上場", "非上場", または NaN の文字列
+            listed_edinet_vals = sorted_group["is_listed_edinet"].dropna().astype(str).tolist()
+            is_listed_edinet = any(v == "上場" for v in listed_edinet_vals)
+            
             from_jpx = sorted_group.get("source_jpx", pd.Series([False])).any()
             
-            latest_rec["is_listed_edinet"] = listed_edinet
-            latest_rec["is_active"] = listed_edinet or from_jpx
+            latest_rec["is_listed_edinet"] = is_listed_edinet
+            latest_rec["is_active"] = is_listed_edinet or from_jpx
 
             # JPX 定義の収集 (Dimension Table)
             self._collect_jpx_defs(latest_rec, jpx_defs)
