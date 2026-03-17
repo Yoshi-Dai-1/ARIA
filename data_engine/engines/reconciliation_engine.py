@@ -45,38 +45,48 @@ class ReconciliationEngine:
         if aggregation_map:
             logger.info(f"集約一覧に基づきコードの付け替えを適用します: {len(aggregation_map)} 件対象")
             
-            # ヘルパー: コード置換と履歴保持
-            def apply_agg(df, col_name="edinet_code"):
+            # ヘルパー: 逆方向名寄せ (継続コードに対し廃止コードを履歴付与)
+            def apply_backward_agg(df, col_name="edinet_code"):
                 if df.empty or col_name not in df.columns:
                     return df
                 
-                # 置換対象を抽出
-                target_mask = df[col_name].isin(aggregation_map.keys())
+                # aggregation_map: {old_code: new_code}
+                # 逆引きマップ: {new_code: [old_code1, old_code2]} を作成
+                from collections import defaultdict
+                reverse_map = defaultdict(list)
+                for old_c, new_c in aggregation_map.items():
+                    reverse_map[new_c].append(old_c)
+                    
+                target_mask = df[col_name].isin(reverse_map.keys())
                 if target_mask.any():
-                    # 履歴の追加 (カンマ区切り)
-                    def append_former(row):
-                        old_c = row[col_name]
-                        existing = row.get("former_edinet_codes")
-                        if pd.isna(existing) or existing is None:
-                            existing_str = ""
-                        else:
-                            existing_str = str(existing)
+                    def append_former_backward(row):
+                        new_c = row[col_name]
+                        old_codes = reverse_map.get(new_c, [])
+                        if not old_codes:
+                            return row.get("former_edinet_codes")
                         
-                        if existing_str:
-                            if old_c not in existing_str.split(","):
-                                return f"{existing_str},{old_c}"
-                            return existing_str
-                        return old_c
-
-                    df.loc[target_mask, "former_edinet_codes"] = df[target_mask].apply(append_former, axis=1)
-                    # 実際のコード置換
-                    df[col_name] = df[col_name].replace(aggregation_map)
+                        existing = row.get("former_edinet_codes")
+                        # "None"、"nan"、空文字などのゴミを徹底排除し、カンマで正しく分割
+                        if pd.isna(existing) or existing is None or str(existing).strip().lower() in ("", "none", "nan"):
+                            existing_list = []
+                        else:
+                            existing_list = [x.strip() for x in str(existing).split(",") if x.strip()]
+                            
+                        # 新しい旧コードを履歴に追記 (重複回避・複数保持対応)
+                        for oc in old_codes:
+                            if oc not in existing_list:
+                                existing_list.append(oc)
+                                
+                        return ",".join(existing_list)
+                    
+                    df.loc[target_mask, "former_edinet_codes"] = df[target_mask].apply(append_former_backward, axis=1)
+                
                 return df
 
             # 既存マスタと新規データの双方に適用
             if not self.cm.master_df.empty:
-                self.cm.master_df = apply_agg(self.cm.master_df)
-            df_edinet = apply_agg(df_edinet)
+                self.cm.master_df = apply_backward_agg(self.cm.master_df)
+            df_edinet = apply_backward_agg(df_edinet)
 
         # 3. JPX マスタを統合 (EDINET に存在しない ETF/REIT 等を補完)
         if not jpx_master.empty:
@@ -242,15 +252,22 @@ class ReconciliationEngine:
 
             # Rule 4: is_active および is_listed_edinet の判定基準
             # is_listed_edinet: EDINET 上場区分が「上場」であるか
-            # is_active: 上記 OR JPX データに存在する（ETF/REIT/PRO Market 等を含む）か
+            # is_active: JPXに存在すれば基本的にTrueとし全件包摂するが、EDINETが「非上場」と明記している場合のみ、絶対にFalseとする (EDINET第一優先)
             # 【監査事実】df_edinet["is_listed_edinet"] は "上場", "非上場", または NaN の文字列
             listed_edinet_vals = sorted_group["is_listed_edinet"].dropna().astype(str).tolist()
             is_listed_edinet = any(v == "上場" for v in listed_edinet_vals)
+            is_explicitly_unlisted_edinet = any(v == "非上場" for v in listed_edinet_vals)
             
             from_jpx = sorted_group.get("source_jpx", pd.Series([False])).any()
             
             latest_rec["is_listed_edinet"] = is_listed_edinet
-            latest_rec["is_active"] = is_listed_edinet or from_jpx
+            
+            if is_explicitly_unlisted_edinet:
+                # EDINET「非上場」銘柄の場合、JPX保有であっても絶対に is_active=False とする
+                latest_rec["is_active"] = False
+            else:
+                # それ以外（EDINET上場、あるいはEDINET未登録のETF等）は通常通り判定
+                latest_rec["is_active"] = is_listed_edinet or from_jpx
 
             # JPX 定義の収集 (Dimension Table)
             self._collect_jpx_defs(latest_rec, jpx_defs)
@@ -336,16 +353,59 @@ class ReconciliationEngine:
     def _save_metadata(self, jpx_defs, listing_events):
         """マスタ付随メタデータの保存"""
         if jpx_defs:
-            df_defs = pd.DataFrame(jpx_defs).drop_duplicates(subset=["type", "code"])
-            # カラム順序を定義に合わせる (金型ガード)
-            if "description" not in df_defs.columns:
-                df_defs["description"] = None
-            df_defs = df_defs[["type", "code", "name", "description"]].dropna(subset=["code"])
+            from datetime import date, timedelta
+            today_str = date.today().isoformat()
+            yesterday_str = (date.today() - timedelta(days=1)).isoformat()
             
-            # 【工学的美点】視認性の向上のためソート
-            df_defs = df_defs.sort_values(["type", "code"])
+            df_defs = pd.DataFrame(jpx_defs).drop_duplicates(subset=["type", "code"]).dropna(subset=["code"])
             
-            self.cm.hf.save_and_upload("jpx_definitions", df_defs, defer=True)
+            if not df_defs.empty:
+                try:
+                    existing_defs = self.cm.hf.load_parquet("jpx_definitions", force_download=False)
+                except Exception:
+                    existing_defs = pd.DataFrame()
+                
+                if existing_defs.empty:
+                    df_defs["valid_from"] = today_str
+                    df_defs["valid_to"] = None
+                    final_defs = df_defs
+                else:
+                    # 既存スキーママイグレーション (descriptionの削除とvalid_from/toの追加)
+                    if "description" in existing_defs.columns:
+                        existing_defs = existing_defs.drop(columns=["description"])
+                    if "valid_from" not in existing_defs.columns:
+                        existing_defs["valid_from"] = "2000-01-01"
+                    if "valid_to" not in existing_defs.columns:
+                        existing_defs["valid_to"] = None
+                        
+                    new_records = []
+                    # 既存の最新定義 (valid_to is null) を取得
+                    active_existing = existing_defs[existing_defs["valid_to"].isna()]
+                    
+                    for _, row in df_defs.iterrows():
+                        t, c, n = row["type"], row["code"], row["name"]
+                        mask = (active_existing["type"] == t) & (active_existing["code"] == c)
+                        matched = active_existing[mask]
+                        
+                        if matched.empty:
+                            new_records.append({"type": t, "code": c, "name": n, "valid_from": today_str, "valid_to": None})
+                        elif matched.iloc[0]["name"] != n:
+                            # SCD Type 2: 名称が変更されたため、既存レコードの valid_to を昨日(yesterday)で締め、今日から新レコードを追加する
+                            # これにより valid_from と valid_to が同一日になるという日付重複の論理的破綻を防止し、事実を工学的に反映する
+                            existing_defs.loc[(existing_defs["type"] == t) & (existing_defs["code"] == c) & (existing_defs["valid_to"].isna()), "valid_to"] = yesterday_str
+                            new_records.append({"type": t, "code": c, "name": n, "valid_from": today_str, "valid_to": None})
+                            
+                    if new_records:
+                        new_df = pd.DataFrame(new_records)
+                        # pd.concat のため警告回避と一貫性の担保
+                        final_defs = pd.concat([existing_defs, new_df], ignore_index=True)
+                    else:
+                        final_defs = existing_defs
+                
+                # JpxDefinitionRecord の順序に合わせる
+                final_cols = ["type", "code", "name", "valid_from", "valid_to"]
+                final_defs = final_defs[[c for c in final_cols if c in final_defs.columns]].sort_values(["type", "code", "valid_from"])    
+                self.cm.hf.save_and_upload("jpx_definitions", final_defs, defer=True)
 
         if listing_events:
             events_df = pd.DataFrame(listing_events).drop_duplicates(subset=["code", "type"])

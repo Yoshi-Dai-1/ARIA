@@ -44,6 +44,7 @@ class EdinetDocument(BaseModel):
     @classmethod
     def normalize_sec_code(cls, v: Optional[str]) -> Optional[str]:
         from data_engine.core.utils import normalize_code
+
         return normalize_code(v, nationality="JP")
 
 
@@ -100,6 +101,7 @@ class EdinetCodeRecord(BaseModel):
     @classmethod
     def normalize_sec_code(cls, v: Optional[str]) -> Optional[str]:
         from data_engine.core.utils import normalize_code
+
         return normalize_code(v, nationality="JP")
 
 
@@ -110,27 +112,29 @@ class CatalogRecord(BaseModel):
     doc_id: str
     bin_id: Optional[str] = None  # 物理パーティションID (分析用 Bin 分割キー)
     jcn: Optional[str] = None  # 法人番号 (Japan Corporate Number)
+    edinet_code: Optional[str] = None
     code: Optional[str] = None  # 証券コード (5桁)
     company_name: str
-    edinet_code: Optional[str] = None
+
+    # 2. Timeline & Main Content (Web UI 最適化による前寄せ)
+    submit_at: str
+    title: Optional[str] = None
+    doc_type: Optional[str] = None
+
+    # 3. Supplemental Identifiers
     issuer_edinet_code: Optional[str] = None  # 発行者EDINETコード
     subject_edinet_code: Optional[str] = None  # 公開買付対象者EDINETコード
     subsidiary_edinet_code: Optional[str] = None  # 子会社EDINETコード (カンマ区切り)
     fund_code: Optional[str] = None  # ファンドコード (投資信託等)
 
-    # 2. Timeline (時間軸)
-    submit_at: str
-
-    # 3. Domain/Fiscal (決算・期間属性)
+    # 4. Domain/Fiscal (決算・期間属性)
     fiscal_year: Optional[int] = None
     period_start: Optional[str] = None
     period_end: Optional[str] = None
     num_months: Optional[int] = None
     accounting_standard: Optional[str] = None  # 会計基準 (J-GAAP, IFRS, etc.)
 
-    # 4. Document Details (書類詳細特性)
-    doc_type: Optional[str] = None
-    title: Optional[str] = None
+    # 5. Document Details (書類詳細特性)
     form_code: Optional[str] = None
     ordinance_code: Optional[str] = None
     is_amendment: bool = False
@@ -142,19 +146,20 @@ class CatalogRecord(BaseModel):
     has_xbrl: Optional[bool] = None  # XBRL(ZIP)が本来存在するはずか (APIフラグ)
     has_pdf: Optional[bool] = None  # PDFが本来存在するはずか (APIフラグ)
 
-    # 5. Infrastructure (システム管理情報)
+    # 6. Infrastructure (システム管理情報)
     raw_zip_path: Optional[str] = None
     pdf_path: Optional[str] = None
     processed_status: Optional[str] = "success"
     source: str = "EDINET"
 
-    # 6. API V2 Lifecycle (増分同期・運用メタデータ)
+    # 7. API V2 Lifecycle (増分同期・運用メタデータ)
     ope_date_time: Optional[str] = None  # 操作日時 (API V2 の核心項目)
 
     @field_validator("code", mode="before")
     @classmethod
     def normalize_sec_code(cls, v: Optional[str]) -> Optional[str]:
         from data_engine.core.utils import normalize_code
+
         return normalize_code(v, nationality="JP")
 
     @field_validator(
@@ -321,6 +326,7 @@ class ListingEvent(BaseModel):
     @classmethod
     def normalize_sec_code(cls, v: Optional[str]) -> Optional[str]:
         from data_engine.core.utils import normalize_code
+
         return normalize_code(v, nationality="JP")
 
 
@@ -336,15 +342,19 @@ class NameEvent(BaseModel):
     @classmethod
     def normalize_sec_code(cls, v: Optional[str]) -> Optional[str]:
         from data_engine.core.utils import normalize_code
+
         return normalize_code(v, nationality="JP")
 
 
 class JpxDefinitionRecord(BaseModel):
     """JPX 業種・規模区分名等の定義マスタレコードモデル (Web API 正規化用)"""
+
     type: str = Field(..., description="区分種別 (sector_33, sector_17, size)")
     code: str = Field(..., description="区分コード")
     name: str = Field(..., description="区分名称 (和文)")
-    description: Optional[str] = Field(None, description="区分の詳細解説 (Web/UI用)")
+    valid_from: str = Field(..., description="適用開始日 (YYYY-MM-DD)")
+    valid_to: Optional[str] = Field(None, description="適用終了日 (YYYY-MM-DD/現在有効ならNull)")
+
 
 class IndexEvent(BaseModel):
     """指数構成銘柄の変更イベント記録モデル"""
@@ -360,11 +370,13 @@ class IndexEvent(BaseModel):
     @classmethod
     def normalize_sec_code(cls, v: Optional[str]) -> Optional[str]:
         from data_engine.core.utils import normalize_code
+
         return normalize_code(v, nationality="JP")
 
 
 class FinancialValueRecord(BaseModel):
     """財務数値データ (financial_values) のレコードモデル"""
+
     # 1. Identity (誰のデータか)
     docid: str
     # 2. Core Data (何の値か)
@@ -399,8 +411,10 @@ class FinancialValueRecord(BaseModel):
     scenario: Optional[str] = None
     order: Optional[float] = None
 
+
 class QualitativeTextRecord(BaseModel):
     """定性情報テキスト (qualitative_text) のレコードモデル"""
+
     # 1. Identity (誰のデータか)
     docid: str
     # 2. Core Data (何の値か)
@@ -434,6 +448,7 @@ class QualitativeTextRecord(BaseModel):
     period_type: Optional[str] = None
     scenario: Optional[str] = None
     order: Optional[float] = None
+
 
 # =============================================================================
 # PyArrow Schema 自動導出 (Phase 3: 金型アーキテクチャ)
@@ -475,10 +490,10 @@ def pydantic_to_pyarrow(model_class) -> pa.Schema:
                 py_type = args[0]
 
         # デフォルト値チェック (Nullable の補完)
-        if hasattr(info, 'default') and info.default is None:
-             nullable = True
+        if hasattr(info, "default") and info.default is None:
+            nullable = True
         elif not info.is_required():
-             nullable = True
+            nullable = True
 
         pa_type = _PYTHON_TO_PYARROW.get(py_type, pa.string())
         fields.append(pa.field(name, pa_type, nullable=nullable))
