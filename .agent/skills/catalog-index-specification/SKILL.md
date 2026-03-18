@@ -58,11 +58,11 @@ UI最適化のため、Identifiers -> Timeline -> Identifiers (Supplemental) -> 
 | `disclosure_status` | string | 開示不開示区分 (0:通常, 1:不開示開始, 2:不開示書類, 3:不開示解除) | EDINET |
 | `legal_status` | string | 縦覧区分 (1:縦覧中, 2:延長期間中, 0:期間満了) | EDINET |
 | `current_report_reason` | string | 臨時報告書の提出理由 | EDINET |
-| `has_xbrl` | bool | XBRL(ZIP)が本来存在するはずかを示すAPIフラグ | EDINET |
-| `has_pdf` | bool | PDFが本来存在するはずかを示すAPIフラグ | EDINET |
-| `has_csv` | bool | CSV有無を示すAPIフラグ | EDINET |
-| `has_english` | bool | 英文ファイル有無を示すAPIフラグ | EDINET |
-| `has_attachment` | bool | 代替書面・添付文書有無を示すAPIフラグ | EDINET |
+| `xbrl_flag` | bool | EDINET XBRL(ZIP) 提供可否 (API xbrlFlag) | EDINET |
+| `pdf_flag` | bool | EDINET PDF 提供可否 (API pdfFlag) | EDINET |
+| `csv_flag` | bool | EDINET CSV 提供可否 (API csvFlag) | EDINET |
+| `english_flag` | bool | EDINET 英文ファイル提供可否 (API englishDocFlag) | EDINET |
+| `attachment_flag` | bool | EDINET 代替書面・添付文書提供可否 (API attachDocFlag) | EDINET |
 
 ### 6) Infrastructure & API Lifecycle (システム・運用管理)
 | カラム名 | 型 | 役割・ロジック | 情報源 |

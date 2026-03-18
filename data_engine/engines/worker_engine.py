@@ -350,15 +350,15 @@ class WorkerEngine:
             zip_dir.mkdir(parents=True, exist_ok=True)
             pdf_dir.mkdir(parents=True, exist_ok=True)
 
-            has_xbrl = row.get("xbrlFlag") == "1"
-            has_pdf = row.get("pdfFlag") == "1"
+            xbrl_flag = row.get("xbrlFlag") == "1"
+            pdf_flag = row.get("pdfFlag") == "1"
 
             zip_ok = False
-            if has_xbrl:
+            if xbrl_flag:
                 zip_ok = self.edinet.download_doc(doc_id, raw_zip, 1)
 
             pdf_ok = False
-            if has_pdf:
+            if pdf_flag:
                 pdf_ok = self.edinet.download_doc(doc_id, raw_pdf, 2)
 
             dtc = row.get("docTypeCode")
@@ -421,11 +421,11 @@ class WorkerEngine:
                 "disclosure_status": (row.get("disclosureStatus") or "").strip() or None,
                 "legal_status": (row.get("legalStatus") or "").strip() or None,
                 "current_report_reason": (row.get("currentReportReason") or "").strip() or None,
-                "has_xbrl": row.get("xbrlFlag") == "1",
-                "has_pdf": row.get("pdfFlag") == "1",
-                "has_csv": row.get("csvFlag") == "1",
-                "has_english": row.get("englishDocFlag") == "1",
-                "has_attachment": row.get("attachDocFlag") == "1",
+                "xbrl_flag": row.get("xbrlFlag") == "1",
+                "pdf_flag": row.get("pdfFlag") == "1",
+                "csv_flag": row.get("csvFlag") == "1",
+                "english_flag": row.get("englishDocFlag") == "1",
+                "attachment_flag": row.get("attachDocFlag") == "1",
                 "raw_zip_path": rel_zip_path,
                 "pdf_path": rel_pdf_path,
                 "processed_status": final_status,

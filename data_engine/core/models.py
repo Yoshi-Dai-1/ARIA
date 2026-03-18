@@ -145,11 +145,11 @@ class CatalogRecord(BaseModel):
     disclosure_status: Optional[str] = None  # 開示ステータス (1:OK, 2:修正 etc.)
     legal_status: Optional[str] = None  # 縦覧区分 (1:縦覧中, 2:延長期間中, 0:期間満了)
     current_report_reason: Optional[str] = None  # 臨時報告書の提出理由
-    has_xbrl: Optional[bool] = None  # XBRL(ZIP)が本来存在するはずか (APIフラグ)
-    has_pdf: Optional[bool] = None  # PDFが本来存在するはずか (APIフラグ)
-    has_csv: Optional[bool] = None  # CSV有無 (APIフラグ)
-    has_english: Optional[bool] = None  # 英文ファイル有無 (APIフラグ)
-    has_attachment: Optional[bool] = None  # 代替書面・添付文書有無 (APIフラグ)
+    xbrl_flag: Optional[bool] = None  # EDINET XBRL(ZIP) 提供可否 (API xbrlFlag)
+    pdf_flag: Optional[bool] = None  # EDINET PDF 提供可否 (API pdfFlag)
+    csv_flag: Optional[bool] = None  # EDINET CSV 提供可否 (API csvFlag)
+    english_flag: Optional[bool] = None  # EDINET 英文ファイル提供可否 (API englishDocFlag)
+    attachment_flag: Optional[bool] = None  # EDINET 代替書面・添付文書提供可否 (API attachDocFlag)
 
     # 6. Infrastructure (システム管理情報)
     raw_zip_path: Optional[str] = None

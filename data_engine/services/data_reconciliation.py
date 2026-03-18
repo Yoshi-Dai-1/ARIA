@@ -168,14 +168,14 @@ class DataReconciliationEngine:
                     continue
 
                 # 【工学的主権】APIの意図(フラグ)に基づき期待値を算出。NaNトラップをpd.isnaで回避。
-                # has_xbrl/has_pdf が None の場合は、既存レコードとの互換性のためパスの有無で判定
-                should_have_zip = row.get("has_xbrl")
+                # xbrl_flag/pdf_flag が None の場合は、既存レコードとの互換性のためパスの有無で判定
+                should_have_zip = row.get("xbrl_flag")
                 if should_have_zip is True:
                     expected_zips[doc_id] = utils.get_edinet_repo_path(doc_id, submit_date_str, suffix="zip")
                 elif should_have_zip is None and not pd.isna(row.get("raw_zip_path")):
                     expected_zips[doc_id] = utils.get_edinet_repo_path(doc_id, submit_date_str, suffix="zip")
 
-                should_have_pdf = row.get("has_pdf")
+                should_have_pdf = row.get("pdf_flag")
                 if should_have_pdf is True:
                     expected_pdfs[doc_id] = utils.get_edinet_repo_path(doc_id, submit_date_str, suffix="pdf")
                 elif should_have_pdf is None and not pd.isna(row.get("pdf_path")):
@@ -217,12 +217,12 @@ class DataReconciliationEngine:
             ghost_zips = [
                 doc_id
                 for doc_id, row in catalog_df.iterrows()
-                if row.get("has_xbrl") is False and not pd.isna(row.get("raw_zip_path"))
+                if row.get("xbrl_flag") is False and not pd.isna(row.get("raw_zip_path"))
             ]
             ghost_pdfs = [
                 doc_id
                 for doc_id, row in catalog_df.iterrows()
-                if row.get("has_pdf") is False and not pd.isna(row.get("pdf_path"))
+                if row.get("pdf_flag") is False and not pd.isna(row.get("pdf_path"))
             ]
 
             if ghost_zips:
