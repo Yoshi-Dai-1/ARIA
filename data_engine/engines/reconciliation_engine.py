@@ -253,10 +253,18 @@ class ReconciliationEngine:
             # Rule 4: is_active および is_listed_edinet の判定基準
             # is_listed_edinet: EDINET 上場区分が「上場」であるか
             # is_active: JPXに存在すれば基本的にTrueとし全件包摂するが、EDINETが「非上場」と明記している場合のみ、絶対にFalseとする (EDINET第一優先)
-            # 【監査事実】df_edinet["is_listed_edinet"] は "上場", "非上場", または NaN の文字列
-            listed_edinet_vals = sorted_group["is_listed_edinet"].dropna().astype(str).tolist()
-            is_listed_edinet = any(v == "上場" for v in listed_edinet_vals)
-            is_explicitly_unlisted_edinet = any(v == "非上場" for v in listed_edinet_vals)
+            # 【監査事実】StockMasterRecord のバリデーター (convert_to_bool_listed) により、
+            # この時点で is_listed_edinet は bool 型 (True/False) に変換済み。
+            # True = EDINET「上場」, False = EDINET「非上場」またはデフォルト
+            listed_edinet_vals = sorted_group["is_listed_edinet"].dropna().tolist()
+            is_listed_edinet = any(v is True for v in listed_edinet_vals)
+            # 「非上場」の明示的判定: EDINETソースのレコードが存在し、かつ全てFalseの場合
+            has_edinet_source = sorted_group["edinet_code"].notna().any()
+            is_explicitly_unlisted_edinet = (
+                has_edinet_source
+                and len(listed_edinet_vals) > 0
+                and not is_listed_edinet
+            )
             
             from_jpx = sorted_group.get("source_jpx", pd.Series([False])).any()
             
