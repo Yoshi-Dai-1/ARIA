@@ -28,11 +28,11 @@ jobs:
       finished: ${{ steps.set-dates.outputs.finished }}
       today: ${{ steps.set-dates.outputs.today }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: 'recursive'
       
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -151,7 +151,7 @@ jobs:
           "
 
       - name: Upload Metadata Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: discovery-metadata
           path: data/meta/discovery_metadata.json
@@ -168,17 +168,17 @@ jobs:
     timeout-minutes: 120
     name: harvester-P (${{ matrix.idx }})
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: 'recursive'
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
           cache: 'pip'
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Download Metadata Artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: discovery-metadata
           path: data/meta/
@@ -192,7 +192,7 @@ jobs:
           RUN_ID="harvest-${{ needs.discovery.outputs.today }}-${{ github.run_id }}"
           python -m data_engine.executors.harvester_main --mode worker --run-id "$RUN_ID" --chunk-id "primary-${{ matrix.idx }}" --id_list "${{ matrix.ids }}"
       - name: Upload Job Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: job-primary-${{ matrix.idx }}
           path: data/
@@ -209,17 +209,17 @@ jobs:
     timeout-minutes: 60
     name: harvester-R (${{ matrix.idx }})
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: 'recursive'
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
           cache: 'pip'
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Download Metadata Artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: discovery-metadata
           path: data/meta/
@@ -233,7 +233,7 @@ jobs:
           RUN_ID="harvest-${{ needs.discovery.outputs.today }}-${{ github.run_id }}"
           python -m data_engine.executors.harvester_main --mode worker --run-id "$RUN_ID" --chunk-id "retry-${{ matrix.idx }}" --id_list "${{ matrix.ids }}"
       - name: Upload Job Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: job-retry-${{ matrix.idx }}
           path: data/
@@ -244,17 +244,17 @@ jobs:
     if: always() && needs.discovery.outputs.finished == 'false' && !cancelled()
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: 'recursive'
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
           cache: 'pip'
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Download All Job Artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: data/
           pattern: job-*
