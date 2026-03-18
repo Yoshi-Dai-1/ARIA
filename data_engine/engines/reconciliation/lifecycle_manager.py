@@ -16,10 +16,10 @@ class LifecycleManager:
         # identity_key の生成 (edinet_code優先) 
         # ※master_df は更新前、new_master_df は今回の統合結果
         if "identity_key" not in self.cm.master_df.columns:
-            self.cm.master_df["identity_key"] = self.cm.master_df["edinet_code"].fillna(self.cm.master_df["code"])
+            self.cm.master_df["identity_key"] = self.cm.master_df["edinet_code"].fillna(self.cm.master_df["code"]).fillna(self.cm.master_df["jcn"])
         
         if "identity_key" not in new_master_df.columns:
-            new_master_df["identity_key"] = new_master_df["edinet_code"].fillna(new_master_df["code"])
+            new_master_df["identity_key"] = new_master_df["edinet_code"].fillna(new_master_df["code"]).fillna(new_master_df["jcn"])
 
         # 以前は存在したが、今回の入力（EDINET/JPX）のどちらにも現れなかった銘柄を特定
         disappeared_mask = (

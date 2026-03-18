@@ -18,7 +18,7 @@
 - **Work Class Robustness**: 中間デルタファイルと Master First 戦略による完全なデータ整合性
 - **Unified Harvester**: 「今日」のリアルタイム監視と「過去」の歴史遡及を1つのパイプラインで並行処理
 - **ARIA_SCOPE**: `aria_config.json` による一元管理（Listed, Unlisted, All）。目的に応じたフィルタリング・抽出を、設定ファイル1箇所の変更で全パイプラインに適用
-- **JCN 主導の不変ビン分割 & Identity Sovereign**: 法人番号 (JCN) を物理パスの分散キーおよび `identity_key` (Sovereign ID) の最優先候補に使用。証券コードや EDINET コードの変更に左右されない永続的なデータ配置と実体識別を実現。
+- **EDINET-First 不変ビン分割 & Identity Sovereign**: 金融庁の公式履歴追跡機能を最大限活かすため、EDINETコードを物理パスの分散キー（`bin_id`）および `identity_key` の絶対的優先主キーとして使用。企業再編による物理データ断絶を防ぎ、永続的なデータ配置と実体識別を実現。
 - **Pure Catalog & Sovereign Master**: カタログは API の事実のみを記録する純粋な元帳とし、`identity_key` はマスタデータのみで管理。データの不変性と検索性能を両立。
 - **EDINET コード集約ブリッジ**: 合併等でコードが変更されても、金融庁公式の集約一覧 (ESE140190.csv) を用いて歴史を自動で繋ぐ名寄せ機能。
 - **API V2 増分同期**: `opeDateTime` パラメータを活用し、差分のみを効率的に取得

@@ -16,18 +16,25 @@ class MasterMerger:
         self.api = HfApi() if hf_repo and hf_token else None
 
     def get_bin_id(self, row: dict) -> str:
-        """物理的事実に基き、不変の分散キー (JCN or EDINET Code) を導出する"""
-        jcn_raw = row.get("jcn") or ""
-        jcn_val = str(jcn_raw).strip()
-        
-        if jcn_val and len(jcn_val) >= 2 and jcn_val.lower() not in ["none", "nan", "null"]:
-            return f"J{jcn_val[-2:]}"
-
+        """物理的事実に基き、不変の分散キー (EDINET Code 最優先) を導出する"""
         e_raw = row.get("edinet_code") or ""
         e_code = str(e_raw).strip()
         
         if e_code and len(e_code) >= 2 and e_code.lower() not in ["none", "nan", "null"]:
             return f"E{e_code[-2:]}"
+
+        c_raw = row.get("code") or ""
+        c_code = str(c_raw).strip().split(":")[-1]
+        
+        if c_code and len(c_code) >= 2 and c_code.lower() not in ["none", "nan", "null"]:
+            # JPX等コード (e.g. 72030) - 5桁目の0を避け実質的な末尾2桁を取得
+            return f"P{c_code[-3:-1]}"
+
+        jcn_raw = row.get("jcn") or ""
+        jcn_val = str(jcn_raw).strip()
+        
+        if jcn_val and len(jcn_val) >= 2 and jcn_val.lower() not in ["none", "nan", "null"]:
+            return f"J{jcn_val[-2:]}"
 
         return "No"
 

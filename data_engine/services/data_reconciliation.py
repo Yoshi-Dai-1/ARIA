@@ -382,12 +382,15 @@ class DataReconciliationEngine:
         try:
             # 1. カタログから「各Binにあるべき書類」を数学的に事前計算（O(1) ターゲット・リダクション）
             def calculate_bin_id(r):
-                jcn = str(r.get("jcn") or "")
-                if jcn and len(jcn) >= 2 and jcn not in ["None", "nan"]:
-                    return f"J{jcn[-2:]}"
                 e_code = str(r.get("edinet_code") or "")
                 if e_code and len(e_code) >= 2 and e_code not in ["None", "nan"]:
                     return f"E{e_code[-2:]}"
+                c_code = str(r.get("code") or "").split(":")[-1]
+                if c_code and len(c_code) >= 2 and c_code not in ["None", "nan"]:
+                    return f"P{c_code[-3:-1]}"
+                jcn = str(r.get("jcn") or "")
+                if jcn and len(jcn) >= 2 and jcn not in ["None", "nan"]:
+                    return f"J{jcn[-2:]}"
                 return "No"
 
             catalog_df = self.cm.catalog_df.copy()

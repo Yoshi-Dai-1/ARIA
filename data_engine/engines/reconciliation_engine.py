@@ -178,9 +178,9 @@ class ReconciliationEngine:
         current_m = self.cm.master_df.copy()
         all_states = pd.concat([current_m, incoming_df], ignore_index=True)
 
-        # identity_key による物理的統合 (JCN-First Multi-Key Identity Resolution)
-        # 1. まず JCN > EDINET > Code の優先順位で解決を試みる
-        all_states["identity_key"] = all_states["jcn"].fillna(all_states["edinet_code"]).fillna(all_states["code"])
+        # identity_key による物理的統合 (EDINET-First Multi-Key Identity Resolution)
+        # 1. まず EDINET > Code > JCN の優先順位で解決を試みる
+        all_states["identity_key"] = all_states["edinet_code"].fillna(all_states["code"]).fillna(all_states["jcn"])
 
         # 【堅牢化】識別子が一切存在しない不正レコードを物理的に排除 (Null Identity Key ガード)
         invalid_mask = all_states["identity_key"].isna()

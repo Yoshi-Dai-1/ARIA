@@ -546,7 +546,7 @@ class WorkerEngine:
         # 【工学的主権】全てのカタログレコードに bin_id を付与し、アクセス経路を統一する
         for record in potential_catalog_records.values():
             # MasterMerger のロジックを用いて不変の分散キー(bin)を決定する
-            bridge_row = {"jcn": record.get("jcn"), "edinet_code": record.get("edinet_code")}
+            bridge_row = {"jcn": record.get("jcn"), "edinet_code": record.get("edinet_code"), "code": record.get("code")}
             record["bin_id"] = self.merger.get_bin_id(bridge_row)
 
         all_success = True

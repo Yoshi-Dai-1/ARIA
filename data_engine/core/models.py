@@ -111,9 +111,9 @@ class CatalogRecord(BaseModel):
     # 1. Identifiers (識別子・基本情報)
     doc_id: str
     bin_id: Optional[str] = None  # 物理パーティションID (分析用 Bin 分割キー)
-    jcn: Optional[str] = None  # 法人番号 (Japan Corporate Number)
     edinet_code: Optional[str] = None
     code: Optional[str] = None  # 証券コード (5桁)
+    jcn: Optional[str] = None  # 法人番号 (Japan Corporate Number)
     company_name: str
 
     # 2. Timeline & Main Content (Web UI 最適化による前寄せ)
@@ -209,10 +209,10 @@ class StockMasterRecord(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     # --- 1. Essential Web Identity (Primary Keys) ---
-    identity_key: str = Field(..., description="ARIA ユニーク識別子 (JCN or EDINET_CODE or CODE)")
-    jcn: Optional[str] = Field(None, description="法人番号 (13桁)")
+    identity_key: str = Field(..., description="ARIA ユニーク識別子 (EDINET_CODE or CODE or JCN)")
     edinet_code: Optional[str] = Field(None, description="EDINETコード (EXXXXX)")
     code: Optional[str] = Field(None, description="証券コード (5桁正規化: JP:XXXX0)")
+    jcn: Optional[str] = Field(None, description="法人番号 (13桁)")
 
     # --- 2. Identity Attributes (Searchable) ---
     company_name: str = Field(..., description="提出者名 (和文)")
