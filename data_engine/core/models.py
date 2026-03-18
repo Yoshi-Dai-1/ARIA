@@ -106,7 +106,7 @@ class EdinetCodeRecord(BaseModel):
 
 
 class CatalogRecord(BaseModel):
-    """統合ドキュメントカタログ (documents_index.parquet) のレコードモデル (33カラム構成)"""
+    """統合ドキュメントカタログ (documents_index.parquet) のレコードモデル (38カラム構成)"""
 
     # 1. Identifiers (識別子・基本情報)
     doc_id: str
@@ -118,6 +118,7 @@ class CatalogRecord(BaseModel):
 
     # 2. Timeline & Main Content (Web UI 最適化による前寄せ)
     submit_at: str
+    seq_number: Optional[int] = None  # 同日提出書類の連番 (EDINETが保証する提出順序)
     title: Optional[str] = None
     doc_type: Optional[str] = None
 
@@ -142,9 +143,13 @@ class CatalogRecord(BaseModel):
     withdrawal_status: Optional[str] = None  # 取下区分 (1:取下済)
     doc_info_edit_status: Optional[str] = None  # 財務局修正状態 (1:修正情報, 2:修正された書類)
     disclosure_status: Optional[str] = None  # 開示ステータス (1:OK, 2:修正 etc.)
+    legal_status: Optional[str] = None  # 縦覧区分 (1:縦覧中, 2:延長期間中, 0:期間満了)
     current_report_reason: Optional[str] = None  # 臨時報告書の提出理由
     has_xbrl: Optional[bool] = None  # XBRL(ZIP)が本来存在するはずか (APIフラグ)
     has_pdf: Optional[bool] = None  # PDFが本来存在するはずか (APIフラグ)
+    has_csv: Optional[bool] = None  # CSV有無 (APIフラグ)
+    has_english: Optional[bool] = None  # 英文ファイル有無 (APIフラグ)
+    has_attachment: Optional[bool] = None  # 代替書面・添付文書有無 (APIフラグ)
 
     # 6. Infrastructure (システム管理情報)
     raw_zip_path: Optional[str] = None
@@ -180,6 +185,7 @@ class CatalogRecord(BaseModel):
         "withdrawal_status",
         "doc_info_edit_status",
         "disclosure_status",
+        "legal_status",
         "current_report_reason",
         "raw_zip_path",
         "pdf_path",
