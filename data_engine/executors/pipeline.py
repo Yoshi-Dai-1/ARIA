@@ -103,7 +103,8 @@ def run_full_discovery(catalog, run_id):
     #               format_err: 真の形式不正(コード長異常)
     cnt = {
         "parse": 0, "save": 0,
-        "processed": 0, "no_code": 0, "withdrawn": 0, "format_err": 0
+        "processed": 0, "no_code": 0, "withdrawn": 0, "format_err": 0,
+        "invalid_meta": 0
     }
 
     from data_engine.engines.filtering_engine import ProcessVerdict, SkipReason
@@ -154,6 +155,8 @@ def run_full_discovery(catalog, run_id):
                     cnt["format_err"] += 1
                 elif reason in [SkipReason.NO_SEC_CODE, SkipReason.HAS_SEC_CODE]:
                     cnt["no_code"] += 1
+                elif reason == SkipReason.INVALID_METADATA:
+                    cnt["invalid_meta"] += 1
                 else:
                     cnt["processed"] += 1  # その他ステータス起因
 
@@ -191,13 +194,14 @@ def run_full_discovery(catalog, run_id):
 
     # 【100% 数学的精度】物理カウントの集計
     total_adopted = cnt["parse"] + cnt["save"]
-    total_skip = cnt["processed"] + cnt["no_code"] + cnt["withdrawn"] + cnt["format_err"]
+    total_skip = cnt["processed"] + cnt["no_code"] + cnt["withdrawn"] + cnt["format_err"] + cnt["invalid_meta"]
     total_all = total_adopted + total_skip
     
     adopted_detail = f"解析: {cnt['parse']}, 保存: {cnt['save']}"
     skip_detail = (
         f"既処理: {cnt['processed']}, 証券コードなし: {cnt['no_code']}, "
-        f"取下げ: {cnt['withdrawn']}, 形式不正: {cnt['format_err']}"
+        f"取下げ: {cnt['withdrawn']}, 形式不正: {cnt['format_err']}, "
+        f"メタデータ不全: {cnt['invalid_meta']}"
     )
     
     logger.info(
