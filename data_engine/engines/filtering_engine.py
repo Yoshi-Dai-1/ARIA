@@ -24,6 +24,7 @@ class SkipReason(str, Enum):
     INVALID_CODE_LENGTH = "invalid_code_length"  # 証券コードの形式不正
     HAS_SEC_CODE = "has_sec_code"  # 非上場検索で証券コードあり
     REACTION_REQUIRED = "retraction_sync_required"  # 取下げ同期が必要（スキップしない）
+    INVALID_METADATA = "invalid_metadata"  # 提出日時や提出者名が欠落（不開示書類等）
 
 
 class FilteringEngine:
@@ -50,8 +51,23 @@ class FilteringEngine:
         """
         書類メタデータを物理的事実（Triple: Doc, Ord, Form）に基づき判定する。
         """
+        # 0. メタデータの完全性チェック (幽霊レコードの排除)
+        # ARIA 品質基準: 提出日時、提出者名、書類種別コードのいずれかが欠落している場合はノイズとみなす
+        submit_at = row.get("submitDateTime")
+        filer_name = row.get("filerName")
+        doc_type = row.get("docTypeCode") or row.get("type")
+
+        if not submit_at or not filer_name or not doc_type:
+            # 物理的指標を最低限埋める (ログ用)
+            indicators = {
+                "doc": doc_type or "---",
+                "ord": row.get("ordinanceCode") or "---",
+                "form": row.get("formCode") or "---",
+                "xbrl": False
+            }
+            return ProcessVerdict.SKIP_OUT_OF_SCOPE, SkipReason.INVALID_METADATA, indicators
+
         form_code = row.get("formCode") or row.get("form") or "---"
-        doc_type = row.get("docTypeCode") or row.get("type") or "---"
         ordinance = row.get("ordinanceCode") or row.get("ord") or "---"
         xbrl_flag = str(row.get("xbrlFlag") or row.get("xbrl") or "0")
 

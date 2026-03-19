@@ -180,6 +180,7 @@ class WorkerEngine:
                 SkipReason.HAS_SEC_CODE: 0,
                 SkipReason.ALREADY_PROCESSED: 0,
                 SkipReason.WITHDRAWN: 0,
+                SkipReason.INVALID_METADATA: 0,
             }
             matrix_data = []
 
@@ -233,7 +234,10 @@ class WorkerEngine:
             skipped_count = sum(skipped_reasons.values())
 
             # スコアに応じた詳細ラベルの作成（工学的最適化）
-            skip_details = [f"既処理: {skipped_reasons[SkipReason.ALREADY_PROCESSED]}"]
+            skip_details = [
+                f"既処理: {skipped_reasons[SkipReason.ALREADY_PROCESSED]}",
+                f"メタデータ不全: {skipped_reasons[SkipReason.INVALID_METADATA]}",
+            ]
             if ARIA_SCOPE == "Listed":
                 skip_details.append(f"証券コードなし: {skipped_reasons[SkipReason.NO_SEC_CODE]}")
                 skip_details.append(f"形式不正: {skipped_reasons[SkipReason.INVALID_CODE_LENGTH]}")

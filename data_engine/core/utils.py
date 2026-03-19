@@ -1,9 +1,10 @@
 from datetime import datetime
+from typing import Optional
 
 import pandas as pd
 
 
-def normalize_code(code, nationality: str = None) -> str:
+def normalize_code(code, nationality: str = None) -> Optional[str]:
     """
     証券コードを ARIA 規格に正規化した文字列として返す。
     - JP の場合: 4桁なら末尾0付与で5桁化し、"JP:" プレフィックスを付ける。
@@ -14,6 +15,10 @@ def normalize_code(code, nationality: str = None) -> str:
 
     # 文字列化して空白除去
     c = str(code).strip()
+
+    # 空文字列の場合は None を返す (JP: などの不完全なプレフィックス付与を防止)
+    if not c:
+        return None
 
     # すでにプレフィックスがあるかチェック
     if ":" in c:
@@ -32,10 +37,10 @@ def normalize_code(code, nationality: str = None) -> str:
         c = c + "0"
 
     # 最終的なプレフィックス結合
-    if current_nat:
+    if current_nat and c:
         return f"{current_nat}:{c}"
 
-    return c
+    return c or None
 
 
 def get_edinet_repo_path(doc_id: str, submit_at: str, suffix: str = "zip") -> str:
