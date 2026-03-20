@@ -37,6 +37,10 @@ class AriaConfig:
 
         # 3. 各項目のバリデーションと正規化
         self.ARIA_SCOPE = self._validate_scope(self._raw_config.get("aria_scope"))
+        self.XBRL_TARGET_DOC_TYPES = self._raw_config.get(
+            "xbrl_target_doc_types", 
+            ["120", "130", "140", "150", "160", "170", "180", "190"]
+        )
         self.TSE_URL = self._raw_config.get(
             "tse_url",
             "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls",

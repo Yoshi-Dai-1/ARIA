@@ -125,14 +125,17 @@ def get_xbrl_dei_df(xbrl_filename:str,log_dict,temp_dir)->(xbrl_elm_schema,dict)
     model_xbrl = ctrl.modelManager.load(xbrl_filename)
     localname="AccountingStandardsDEI"
     qname_prefix = "jpdei_cor"
-    ns = model_xbrl.prefixedNamespaces[qname_prefix]
-    
-    facts=model_xbrl.factsByQname[qname(ns, name=f"{qname_prefix}:{localname}")]
-    fact_list = list(facts)
-    if len(fact_list)>0:
-        log_dict[localname]=fact_list[0].value
+    if qname_prefix in model_xbrl.prefixedNamespaces:
+        ns = model_xbrl.prefixedNamespaces[qname_prefix]
+        facts = model_xbrl.factsByQname[qname(ns, name=f"{qname_prefix}:{localname}")]
+        fact_list = list(facts)
+        if len(fact_list) > 0:
+            log_dict[localname] = fact_list[0].value
+        else:
+            log_dict[localname] = None
     else:
-        log_dict[localname]=None
+        log_dict[localname] = None
+        
     ctrl.close()
     return log_dict
 
@@ -171,21 +174,27 @@ def get_xbrl_wrapper(docid,zip_file:str,temp_dir:Path,out_path:Path,update_flg=F
         #data_dir_raw=PROJDIR / "data" / "1_raw"
         #zip_file = list(data_dir_raw.glob("data_pool_*/"+docid+".zip"))[0]
         with ZipFile(str(zip_file)) as zf:
-            fn=[item for item in zf.namelist() if (".xbrl" in item)&("PublicDoc" in item)&("asr" in item)]
+            # すべての .xbrl ファイルを抽出（IFRS書類は複数インスタンスを持つ）
+            fn=[item for item in zf.namelist() if item.endswith(".xbrl") and "PublicDoc" in item]
             if len(fn)>0:
-                zf.extract(fn[0], out_path)
+                for f in fn:
+                    zf.extract(f, out_path)
                 log_dict["is_xbrl_file"] = True
             else:
                 log_dict["is_xbrl_file"] = False
-            fn=[item for item in zf.namelist() if (".xsd" in item)&("PublicDoc" in item)&("asr" in item)]
+            # すべての .xsd ファイルを抽出
+            fn=[item for item in zf.namelist() if item.endswith(".xsd") and "PublicDoc" in item]
             if len(fn)>0:
-                zf.extract(fn[0], out_path)
+                for f in fn:
+                    zf.extract(f, out_path)
                 log_dict["is_xsd_file"] = True
             else:
                 log_dict["is_xsd_file"] = False
-            fn=[item for item in zf.namelist() if ("def.xml" in item)&("PublicDoc" in item)&("asr" in item)]
+            # すべての def.xml ファイルを抽出
+            fn=[item for item in zf.namelist() if item.endswith("def.xml") and "PublicDoc" in item]
             if len(fn)>0:
-                zf.extract(fn[0], out_path)
+                for f in fn:
+                    zf.extract(f, out_path)
                 log_dict["is_def_file"] = True
             else:
                 log_dict["is_def_file"] = False
@@ -197,19 +206,29 @@ def get_xbrl_wrapper(docid,zip_file:str,temp_dir:Path,out_path:Path,update_flg=F
         has_def = len(list(xbrl_path.glob("*def.xml"))) > 0
 
         if has_xbrl and has_xsd and has_def:
-            xbrl_filename=str(list(xbrl_path.glob("*.xbrl"))[0])
-            if True: # Always parse since we removed CSV cache
-                (xbrl_path / "arelle.log").touch()
-                xbrl_parsed,log_dict=get_xbrl_df(xbrl_filename,log_dict,temp_dir)
+            all_xbrl_files = list(xbrl_path.glob("*.xbrl"))
+            all_parsed_dfs = []
             
-                log_dict=get_xbrl_dei_df(xbrl_filename,log_dict,temp_dir)
-                xbrl_parsed['AccountingStandardsDEI'] = log_dict['AccountingStandardsDEI']
-                log_dict["get_xbrl_status"] = "success"
-                log_dict["get_xbrl_error_message"] = None
+            for xbrl_f in all_xbrl_files:
+                xbrl_filename = str(xbrl_f)
+                (xbrl_path / "arelle.log").touch()
+                
+                # Parse facts
+                df_part, log_dict = get_xbrl_df(xbrl_filename, log_dict, temp_dir)
+                
+                # Parse DEI metadata (only once or update if exist)
+                log_dict = get_xbrl_dei_df(xbrl_filename, log_dict, temp_dir)
+                if 'AccountingStandardsDEI' in log_dict and log_dict['AccountingStandardsDEI']:
+                    df_part['AccountingStandardsDEI'] = log_dict['AccountingStandardsDEI']
+                else:
+                    df_part['AccountingStandardsDEI'] = None
+                    
+                all_parsed_dfs.append(df_part)
+            
+            xbrl_parsed = pd.concat(all_parsed_dfs, ignore_index=True) if all_parsed_dfs else pd.DataFrame(columns=get_columns_df(xbrl_elm_schema))
+            log_dict["get_xbrl_status"] = "success"
+            log_dict["get_xbrl_error_message"] = None
 
-            else:
-                log_dict["get_xbrl_status"] = "success"
-                log_dict["get_xbrl_error_message"] = None
             out_filename=str(xbrl_path / "log_dict.json")
             with open(out_filename, mode="wt", encoding="utf-8") as f:
                 json.dump(log_dict, f, ensure_ascii=False, indent=2)

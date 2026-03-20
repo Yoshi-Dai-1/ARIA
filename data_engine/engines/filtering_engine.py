@@ -1,6 +1,7 @@
 from enum import Enum
 from typing import Any, Dict, Optional, Tuple
 
+from data_engine.core.config import CONFIG
 from data_engine.core.utils import normalize_code
 
 
@@ -36,11 +37,8 @@ class FilteringEngine:
 
     def __init__(self, aria_scope: str = "All"):
         self.aria_scope = aria_scope
-        # 【ARIA 解析対象の中央制御】 将来 140 等を追加する場合は以下のように配列を増やします
-        # 例: self.TARGET_DOC_TYPES = ["120", "140"]
-        self.TARGET_DOC_TYPES = ["120"]
-        self.TARGET_ORDINANCE = "010"
-        self.TARGET_FORMS = ["030000"]
+        # 【ARIA 解析対象の中央制御】 config.py に委譲
+
 
     def get_verdict(
         self,
@@ -111,11 +109,9 @@ class FilteringEngine:
                 if len(core_code) >= 4:
                     return ProcessVerdict.SKIP_OUT_OF_SCOPE, SkipReason.HAS_SEC_CODE, indicators
 
-        # 5. 解析対象判定 (Fact: DocType, Ordinance, Form, XBRL)
+        # 5. 解析対象判定 (Fact: DocType, XBRL)
         is_parsing_target = (
-            doc_type in self.TARGET_DOC_TYPES
-            and ordinance == self.TARGET_ORDINANCE
-            and form_code in self.TARGET_FORMS
+            doc_type in CONFIG.XBRL_TARGET_DOC_TYPES
             and indicators["xbrl"]
         )
 

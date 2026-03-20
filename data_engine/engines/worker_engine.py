@@ -265,11 +265,11 @@ class WorkerEngine:
         found_target_ids = set()
 
         fs_dict = {
-            "BS": ["_BalanceSheet", "_ConsolidatedBalanceSheet"],
-            "PL": ["_StatementOfIncome", "_ConsolidatedStatementOfIncome"],
-            "CF": ["_StatementOfCashFlows", "_ConsolidatedStatementOfCashFlows"],
-            "SS": ["_StatementOfChangesInEquity", "_ConsolidatedStatementOfChangesInEquity"],
-            "notes": ["_Notes", "_ConsolidatedNotes"],
+            "BS": ["_BalanceSheet", "_ConsolidatedBalanceSheet", "_role-210000", "_role-220000"],
+            "PL": ["_StatementOfIncome", "_ConsolidatedStatementOfIncome", "_role-310000", "_role-320000", "_role-410000", "_role-420000"],
+            "CF": ["_StatementOfCashFlows", "_ConsolidatedStatementOfCashFlows", "_role-510000", "_role-520000"],
+            "SS": ["_StatementOfChangesInEquity", "_ConsolidatedStatementOfChangesInEquity", "_role-610000", "_role-710000"],
+            "notes": ["_Notes", "_ConsolidatedNotes", "_role-8"],
             "report": ["_CabinetOfficeOrdinanceOnDisclosure"],
         }
         quant_roles = fs_dict["BS"] + fs_dict["PL"] + fs_dict["CF"] + fs_dict["SS"]
