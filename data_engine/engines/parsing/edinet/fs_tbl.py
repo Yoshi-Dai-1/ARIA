@@ -107,6 +107,9 @@ def get_fs_tbl(account_list_common_obj,docid:str,zip_file_str:str,temp_path_str:
         update_flg=False
         )
     data_list = []
+    # 【Zero-Drop Architecture】プレゼンテーション・リンクベースにマッチした全キーを追跡する
+    matched_keys = set()
+
     for role in list(linkbasefile_obj.account_tbl_role_dict.keys()):
         key_in_the_role:pd.Series = linkbasefile_obj.account_tbl_role_dict[role].key
         data=pd.merge(
@@ -121,20 +124,67 @@ def get_fs_tbl(account_list_common_obj,docid:str,zip_file_str:str,temp_path_str:
             current_flg=data.context_ref.str.contains('CurrentYear').astype(int),
             prior_flg=data.context_ref.str.contains('Prior1Year').astype(int)
         )
-        data['label_jp'] = data.label_jp.fillna('-')
-        data['label_jp_long'] = data.label_jp_long.fillna('-')
-        data['label_en'] = data.label_en.fillna('-')
-        data['label_en_long'] = data.label_en_long.fillna('-')
 
-        data = data.query(
-            "role.str.contains('_role-') or "
-            "((not (non_consolidated_flg==1 and role.str.contains('_Consolidated'))) and "
-            "(not (non_consolidated_flg==0 and not role.str.contains('_Consolidated') and not role.str.contains('_CabinetOfficeOrdinanceOnDisclosure'))))"
-        )
+        # 【Arelle直接ラベル補完】リンクベース由来ラベルがNULLの場合、
+        # Arelle直接ラベル（タクソノミ参照チェーンから自動解決）で補完する。
+        if 'arelle_label_jp' in data.columns:
+            data['label_jp'] = data['label_jp'].fillna(data['arelle_label_jp'])
+            data['label_en'] = data['label_en'].fillna(data['arelle_label_en'])
+            data['label_jp_long'] = data['label_jp_long'].fillna(data['arelle_label_jp_long'])
+            data['label_en_long'] = data['label_en_long'].fillna(data['arelle_label_en_long'])
+
+        matched_keys.update(key_in_the_role.tolist())
         data_list.append(data)
+
+    # 【Zero-Drop】Arelleが抽出した全ファクトのうち、プレゼンテーション・リンクベースに
+    # マッチしなかった「孤立ファクト (Unlinked Facts)」を差集合として算出し、救出する。
+    if not xbrl_data_df.empty:
+        all_arelle_keys = set(xbrl_data_df['key'].unique())
+        unlinked_keys = all_arelle_keys - matched_keys
+
+        if unlinked_keys:
+            unlinked_df = xbrl_data_df[xbrl_data_df['key'].isin(unlinked_keys)].copy()
+            # Unlinked Facts: Arelle直接ラベルを主要ソースとして使用
+            unlinked_df = unlinked_df.assign(
+                docid=docid,
+                role=None,          # 物理的事実: プレゼンテーション・リンクベースに未登録
+                label_jp=unlinked_df.get('arelle_label_jp'),      # Arelle直接ラベルを採用
+                label_jp_long=unlinked_df.get('arelle_label_jp_long'),
+                label_en=unlinked_df.get('arelle_label_en'),
+                label_en_long=unlinked_df.get('arelle_label_en_long'),
+                order=float('nan'),  # 物理的事実: 表示順序が定義されていない（float64 NaN）
+                non_consolidated_flg=unlinked_df.context_ref.str.contains('NonConsolidated').astype(int),
+                current_flg=unlinked_df.context_ref.str.contains('CurrentYear').astype(int),
+                prior_flg=unlinked_df.context_ref.str.contains('Prior1Year').astype(int),
+            )
+            data_list.append(unlinked_df)
+            logger.info(f"Zero-Drop: {len(unlinked_keys)} 個の孤立キーから {len(unlinked_df)} 件の Unlinked Facts を救出しました。")
+
     if not data_list:
         return pd.DataFrame() # 空のDFを返して後続で適切に処理
-    return FsDataDf(pd.concat(data_list)[get_columns_df(FsDataDf)])
+    
+    # 最終結合: FsDataDf スキーマに存在するカラムのみを選択して返す
+    target_cols = get_columns_df(FsDataDf)
+    merged = pd.concat(data_list, ignore_index=True)
+    # スキーマに存在するがデータに存在しないカラムは None で補完する
+    for col in target_cols:
+        if col not in merged.columns:
+            merged[col] = None
+
+    # 【ラベル品質ゲート】Arelle直接ラベル注入後のラベル解決率を監査する。
+    # IFRSタクソノミのダウンロード失敗等でラベルが劣化した場合を検出する。
+    total = len(merged)
+    if total > 0:
+        label_jp_resolved = merged['label_jp'].notna().sum()
+        label_rate = label_jp_resolved / total
+        if label_rate < 0.5:
+            logger.warning(
+                f"⚠ Label quality degradation detected for docid={docid}: "
+                f"label_jp resolved {label_jp_resolved}/{total} ({label_rate:.1%}). "
+                f"Possible cause: IFRS taxonomy download failure or cache miss."
+            )
+
+    return FsDataDf(merged[target_cols])
 
 
 

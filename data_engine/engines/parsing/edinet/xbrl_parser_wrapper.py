@@ -18,6 +18,10 @@ from .utils import get_columns_df
 #
 ######################################################################
 
+# Arelle ラベル解決用ロール定数
+LABEL_ROLE = "http://www.xbrl.org/2003/role/label"
+VERBOSE_LABEL_ROLE = "http://www.xbrl.org/2003/role/verboseLabel"
+
 class xbrl_elm_schema(pa.DataFrameModel):
     """
         key:prefix+":"+element_name
@@ -37,6 +41,11 @@ class xbrl_elm_schema(pa.DataFrameModel):
     period_start: Series[str] = pa.Field(nullable=True)
     period_end: Series[str] = pa.Field(nullable=True)
     instant_date: Series[str] = pa.Field(nullable=True)
+    # Arelle直接ラベル（タクソノミ参照チェーンから自動解決）
+    arelle_label_jp: Series[str] = pa.Field(nullable=True)
+    arelle_label_en: Series[str] = pa.Field(nullable=True)
+    arelle_label_jp_long: Series[str] = pa.Field(nullable=True)
+    arelle_label_en_long: Series[str] = pa.Field(nullable=True)
 
 StrOrNone = Annotated[str, BeforeValidator(lambda x: x or "")]
 
@@ -58,19 +67,45 @@ class ArreleFact(BaseModel):
     end_date_pv:StrOrNone
     instant_date_pv:StrOrNone
     scenario:StrOrNone
+    # Arelle直接ラベル
+    arelle_label_jp:StrOrNone
+    arelle_label_en:StrOrNone
+    arelle_label_jp_long:StrOrNone
+    arelle_label_en_long:StrOrNone
+
+def _safe_label(concept, lang: str, role: str) -> str | None:
+    """Arelleのラベル解決。QNameフォールバック（偽ラベル）を検出して除外する。"""
+    if concept is None:
+        return None
+    try:
+        result = concept.label(lang=lang, preferredLabel=role)
+        # Arelleはラベルが見つからない場合、QName文字列をフォールバックとして返す
+        # これは事実ではないためNULLとして扱う
+        if result == str(concept.qname):
+            return None
+        return result
+    except Exception:
+        return None
 
 def get_fact_data(fact)->ArreleFact:
+    concept = fact.concept
+    qname_str = str(fact.qname)
     fact_data = {
-        'key':str(fact.qname),
+        'key':qname_str,
         'data_str':fact.value,
         'decimals':fact.decimals,
         'precision':fact.precision,
         'context_ref':fact.contextID,
         'element_name':str(fact.qname.localName),
         'unit':fact.unitID,#(str) – unitRef attribute
-        'period_type':fact.concept.periodType,#'instant','duration'
-        'isTextBlock_flg':int(fact.concept.isTextBlock), # 0,1
-        'abstract_flg':int(fact.concept.abstract=='true'), # Note: fatc.concept.abstract is str not bool.
+        'period_type':concept.periodType,#'instant','duration'
+        'isTextBlock_flg':int(concept.isTextBlock), # 0,1
+        'abstract_flg':int(concept.abstract=='true'), # Note: concept.abstract is str not bool.
+        # 【Arelle直接ラベル】タクソノミ参照チェーンから自動解決
+        'arelle_label_jp': _safe_label(concept, 'ja', LABEL_ROLE),
+        'arelle_label_en': _safe_label(concept, 'en', LABEL_ROLE),
+        'arelle_label_jp_long': _safe_label(concept, 'ja', VERBOSE_LABEL_ROLE),
+        'arelle_label_en_long': _safe_label(concept, 'en', VERBOSE_LABEL_ROLE),
     }
     if fact.context.startDatetime:
         fact_data['period_start'] = fact.context.startDatetime.strftime('%Y-%m-%d')

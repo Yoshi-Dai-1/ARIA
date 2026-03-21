@@ -22,11 +22,11 @@ RAW_BASE_DIR = RAW_DIR
 
 def parse_worker(args):
     """並列処理用ワーカー関数"""
-    docid, row, acc_obj, raw_zip, role_kws, task_type = args
-    extract_dir = TEMP_DIR / f"extract_{docid}_{task_type}"
+    docid, row, acc_obj, raw_zip = args
+    extract_dir = TEMP_DIR / f"extract_{docid}"
     try:
         if acc_obj is None:
-            return docid, None, "Account list not loaded"
+            return docid, None, "Account list not loaded", None
 
         logger.debug(f"解析開始: {docid} (Path: {raw_zip})")
         (extract_dir / "XBRL" / "PublicDoc").mkdir(parents=True, exist_ok=True)
@@ -43,7 +43,7 @@ def parse_worker(args):
             docid=docid,
             zip_file_str=str(raw_zip),
             temp_path_str=str(extract_dir),
-            role_keyward_list=role_kws,
+            role_keyward_list=[]
         )
 
         if df is not None and not df.empty:
@@ -58,7 +58,7 @@ def parse_worker(args):
             for col in df.columns:
                 if df[col].dtype == "object":
                     df[col] = df[col].astype(str)
-            logger.debug(f"解析成功: {docid} ({task_type}) | 抽出レコード数: {len(df)}")
+            logger.debug(f"解析成功: {docid} | 抽出レコード数: {len(df)}")
 
             accounting_std = None
             log_path = extract_dir / "XBRL" / "PublicDoc" / "log_dict.json"
@@ -70,17 +70,17 @@ def parse_worker(args):
                 except Exception as e:
                     logger.warning(f"log_dict.json の読み込み失敗 ({docid}): {e}")
 
-            return docid, df, None, (task_type, accounting_std)
+            return docid, df, None, accounting_std
 
         msg = "No objects to concatenate" if (df is None or df.empty) else "Empty Results"
-        return docid, None, msg, (task_type, None)
+        return docid, None, msg, None
 
     except Exception as e:
         import traceback
 
         err_detail = traceback.format_exc()
-        logger.error(f"解析例外: {docid} ({task_type})\n{err_detail}")
-        return docid, None, f"{str(e)}", (task_type, None)
+        logger.error(f"解析例外: {docid}\n{err_detail}")
+        return docid, None, f"{str(e)}", None
     finally:
         if extract_dir.exists():
             import shutil
@@ -263,17 +263,6 @@ class WorkerEngine:
         potential_catalog_records = {}
         parsing_target_ids = set()
         found_target_ids = set()
-
-        fs_dict = {
-            "BS": ["_BalanceSheet", "_ConsolidatedBalanceSheet", "_role-210000", "_role-220000"],
-            "PL": ["_StatementOfIncome", "_ConsolidatedStatementOfIncome", "_role-310000", "_role-320000", "_role-410000", "_role-420000"],
-            "CF": ["_StatementOfCashFlows", "_ConsolidatedStatementOfCashFlows", "_role-510000", "_role-520000"],
-            "SS": ["_StatementOfChangesInEquity", "_ConsolidatedStatementOfChangesInEquity", "_role-610000", "_role-710000"],
-            "notes": ["_Notes", "_ConsolidatedNotes", "_role-8"],
-            "report": ["_CabinetOfficeOrdinanceOnDisclosure"],
-        }
-        quant_roles = fs_dict["BS"] + fs_dict["PL"] + fs_dict["CF"] + fs_dict["SS"]
-        text_roles = fs_dict["report"] + fs_dict["notes"]
 
         loaded_acc = {}
         worker_stats = {
@@ -459,8 +448,7 @@ class WorkerEngine:
                             raise ValueError(f"Taxonomy version '{ty}' not found")
                         loaded_acc[ty] = acc
 
-                    tasks.append((doc_id, row, loaded_acc[ty], raw_zip, quant_roles, "financial_values"))
-                    tasks.append((doc_id, row, loaded_acc[ty], raw_zip, text_roles, "qualitative_text"))
+                    tasks.append((doc_id, row, loaded_acc[ty], raw_zip))
                     parsing_target_ids.add(doc_id)
                     logger.info(f"[PARSE  ] {log_msg} | FY: {ty}")
                 except Exception as e:
@@ -513,13 +501,12 @@ class WorkerEngine:
                     futures = [executor.submit(parse_worker, t) for t in batch]
 
                     for f in as_completed(futures):
-                        did, res_df, err, worker_meta = f.result()
-                        t_type, accounting_std = worker_meta
+                        did, res_df, err, accounting_std = f.result()
 
                         if did in potential_catalog_records:
                             target_rec = potential_catalog_records[did]
                             if err:
-                                logger.error(f"解析失敗 ({t_type}): {did} - {err}")
+                                logger.error(f"解析失敗: {did} - {err}")
                                 if "No objects to concatenate" not in err:
                                     target_rec["processed_status"] = "failure"
                                     worker_stats["parsing_failure"] += 1
@@ -527,16 +514,15 @@ class WorkerEngine:
                                 if target_rec.get("processed_status") != "failure":
                                     target_rec["processed_status"] = "parsed"
 
-                                if t_type == "financial_values":
-                                    worker_stats["parsing_success"] += 1
-                                    quant_only = res_df[res_df["isTextBlock_flg"] == 0]
-                                    if not quant_only.empty:
-                                        all_quant_dfs.append(quant_only)
-                                elif t_type == "qualitative_text":
-                                    worker_stats["parsing_success"] += 1
-                                    txt_only = res_df[res_df["isTextBlock_flg"] == 1]
-                                    if not txt_only.empty:
-                                        all_text_dfs.append(txt_only)
+                                worker_stats["parsing_success"] += 1
+
+                                quant_only = res_df[res_df["isTextBlock_flg"] == 0]
+                                if not quant_only.empty:
+                                    all_quant_dfs.append(quant_only)
+
+                                txt_only = res_df[res_df["isTextBlock_flg"] == 1]
+                                if not txt_only.empty:
+                                    all_text_dfs.append(txt_only)
 
                                 if accounting_std:
                                     target_rec["accounting_standard"] = str(accounting_std)

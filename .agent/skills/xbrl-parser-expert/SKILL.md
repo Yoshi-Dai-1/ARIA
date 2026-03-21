@@ -37,4 +37,33 @@ EDINETには日本基準（JP GAAP）と国際財務報告基準（IFRS）等、
 これらを一元的に抽出するためには、パーサーの参照するRole URI辞書をハードコードされた単一基準の文字列に依存させてはいけません。
 - **JP GAAP**: `<link:presentationLink xlink:role="http://disclosure.edinet-fsa.go.jp/role/jppfs/rol_BalanceSheet">` のように、`_BalanceSheet` や `_StatementOfIncome` といった人間が判読可能な英単語サフィックスを持ちます。
 - **IFRS**: `<link:presentationLink xlink:role="http://xbrl.ifrs.org/role/ifrs/ias_1_2014-03-05_role-210000">` のように、国際基準に対応するため役割が `_role-210000` などの**6桁の数値コード文字列**で厳格に管理されています。
-- **実装規範**: 抽出ロジック（例: `fs_dict`）を構築する際は、これら両基準のRole文字列を**「一つの辞書のなかのエイリアス（同値）」**としてフラットに配列登録すること（例: `BS: ["_BalanceSheet", "_role-210000"]` ）。事前判定（if文での分岐）は排し、Arelleパーサーの自己解決能力に完全に委ねて対象配列を無条件にすべて検索させる設計（事実基底抽出）を遵守します。
+- **US GAAP (米国基準)**: `<link:presentationLink xlink:role="http://disclosure.edinet-fsa.go.jp/role/us-gaap/...">` 等の名前空間を持ちますが、EDINETでは詳細な数値タグ付け（Detailed Tagging）を行わず、**すべて「包括タグ（Block Tagging / Text Block）」として提出されます**。
+- **JMIS (修正国際基準)**: 提出ルールはUS GAAPと同一であり、詳細なタグ付けは対象外として包括タグでの提出となります。IFRS（指定国際会計基準）とは完全に異なる物理構造を持ちます。
+
+## 7. Roleマッピング辞書のリスクと抽出アーキテクチャ (Hazards of Role Mapping)
+EDINETタクソノミの設定規約書において、企業は**「提出者別拡張タクソノミ（Company-Specific Extension Taxonomy）」**を作成し、全く新しい独自の `Role URI` を自由に定義することが公式に認められています。
+
+1. **Roleハードコード（ホワイトリスト）の禁止**:
+   `fs_dict = {"BS": ["_role-210000", "_BalanceSheet"]}` のような固定のRole URI文字列辞書を用いて抽出対象データをフィルタリングする手法は、未知の拡張Role URIを持つファクトデータを**サイレントに欠落（Drop）させる致命的なデータ漏洩の根本原因**となります。
+2. **包括的データ抽出（Exhaustive Extraction）への転換**:
+   工学的主権に基づき、特定のRoleのみを「予測・期待」して検索するのではなく、Arelleがパースした**すべてのファクトデータを無条件で抽出し、カタログへ格納する（`financial_values`）アーキテクチャ**を絶対の仕様とします。
+3. **米国基準（US GAAP）の正解**:
+   US GAAP書類は包括タグ（Text Block）のみで構成される物理的事実に基づき、Arelleは個別の整数値を検知できません。結果として**US GAAPはすべて `qualitative_text.parquet`（定性テキストブロック）側へ格納**されます。これはバグではなく「仕様通りの正常な挙動（Facts over Prediction）」です。
+
+## 8. Arelle直接ラベル注入 (Arelle-Native Label Injection)
+ARIAのラベル解決は3層構造で動作します。FSAタクソノミ（`1c_Taxonomy.zip`）にはIFRSラベルが物理的に含まれていないため、Arelleのスキーマ参照チェーンを通じた直接解決が不可欠です。
+
+### 3層ラベル解決チェーン
+1. **リンクベース由来** (`link_base_file_analyzer.py`): `_pre.xml` + `_lab.xml` から `jpcrp_cor` / `jppfs_cor` のラベルを取得。JP GAAP書類で主に機能する。
+2. **FSA共通タクソノミ** (`account_list_common`): FSA配布の `1c_Taxonomy.zip` から `jpcrp` / `jppfs` ラベルを取得。**IFRSラベルは含まれていない（物理的事実: 全年度で0件確認済み）。**
+3. **Arelle直接解決** (`_safe_label()`): `fact.concept.label(lang, preferredLabel)` を使用。企業`.xsd`の`<import>`チェーンを辿り、IFRS Foundationタクソノミ（例: `http://xbrl.ifrs.org/taxonomy/2014-03-05/...`）のラベルを自動解決する。**年度固有URLが企業提出ファイルに埋め込まれているため、未来のタクソノミバージョンにも自動対応する。**
+
+### QNameフォールバック防御
+Arelleはラベルが未定義の場合、要素のQName文字列（例: `ifrs-full:CashAndCashEquivalents`）をフォールバックとして返す。これは「偽ラベル」であり事実ではないため、`_safe_label()` で検出・除外し、`None` (NULL) として保存する。
+
+### IFRSラベルロールの物理的事実
+IFRS Foundationタクソノミは以下のラベルロールのみを定義している:
+- `label` → ARIAの `label_jp` / `label_en`（100%解決）
+- `totalLabel`, `periodStartLabel`, `periodEndLabel`, `terseLabel`（補助ロール、ARIAでは現在未取得）
+- **`verboseLabel` は未定義** → ARIAの `label_jp_long` / `label_en_long` はIFRS書類で物理的にNULLとなる。これは仕様通りの正常な挙動である。
+

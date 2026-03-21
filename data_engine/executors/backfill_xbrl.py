@@ -99,22 +99,9 @@ def run_backfill(catalog: CatalogManager, run_id: str, limit: int = None):
                     raise ValueError(f"Taxonomy version '{ty}' not found via EDINET API")
                 loaded_acc[ty] = acc
 
-            # Build target roles
-            fs_dict = {
-                "BS": ["_BalanceSheet", "_ConsolidatedBalanceSheet", "_role-210000", "_role-220000"],
-                "PL": ["_StatementOfIncome", "_ConsolidatedStatementOfIncome", "_role-310000", "_role-320000", "_role-410000", "_role-420000"],
-                "CF": ["_StatementOfCashFlows", "_ConsolidatedStatementOfCashFlows", "_role-510000", "_role-520000"],
-                "SS": ["_StatementOfChangesInEquity", "_ConsolidatedStatementOfChangesInEquity", "_role-610000", "_role-710000"],
-                "notes": ["_Notes", "_ConsolidatedNotes", "_role-8"],
-                "report": ["_CabinetOfficeOrdinanceOnDisclosure"],
-            }
-            quant_roles = fs_dict["BS"] + fs_dict["PL"] + fs_dict["CF"] + fs_dict["SS"]
-            text_roles = fs_dict["report"] + fs_dict["notes"]
-
             # Meta row expected by parse_worker
             meta_row = row.to_dict()
-            tasks.append((doc_id, meta_row, loaded_acc[ty], local_zip_path, quant_roles, "financial_values"))
-            tasks.append((doc_id, meta_row, loaded_acc[ty], local_zip_path, text_roles, "qualitative_text"))
+            tasks.append((doc_id, meta_row, loaded_acc[ty], local_zip_path))
             
         except Exception as e:
             logger.error(f"Taxonomy check failed for {doc_id}: {e}")
@@ -138,29 +125,27 @@ def run_backfill(catalog: CatalogManager, run_id: str, limit: int = None):
                 futures = [executor.submit(parse_worker, t) for t in batch]
 
                 for f in as_completed(futures):
-                    did, res_df, err, worker_meta = f.result()
-                    t_type, accounting_std = worker_meta
+                    did, res_df, err, accounting_std = f.result()
 
                     target_rec = potential_catalog_records.get(did)
                     if not target_rec:
                         continue
                         
                     if err:
-                        logger.error(f"Parse failed ({t_type}): {did} - {err}")
+                        logger.error(f"Parse failed: {did} - {err}")
                         if "No objects to concatenate" not in err:
                             target_rec["processed_status"] = "failure"
                     elif res_df is not None:
                         if target_rec.get("processed_status") != "failure":
                             target_rec["processed_status"] = "parsed"
 
-                        if t_type == "financial_values":
-                            quant_only = res_df[res_df["isTextBlock_flg"] == 0]
-                            if not quant_only.empty:
-                                all_quant_dfs.append(quant_only)
-                        elif t_type == "qualitative_text":
-                            txt_only = res_df[res_df["isTextBlock_flg"] == 1]
-                            if not txt_only.empty:
-                                all_text_dfs.append(txt_only)
+                        quant_only = res_df[res_df["isTextBlock_flg"] == 0]
+                        if not quant_only.empty:
+                            all_quant_dfs.append(quant_only)
+
+                        txt_only = res_df[res_df["isTextBlock_flg"] == 1]
+                        if not txt_only.empty:
+                            all_text_dfs.append(txt_only)
 
                         if accounting_std:
                             target_rec["accounting_standard"] = str(accounting_std)
