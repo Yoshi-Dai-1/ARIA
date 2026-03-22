@@ -58,7 +58,10 @@ def parse_worker(args):
             for col in df.columns:
                 if df[col].dtype == "object":
                     df[col] = df[col].astype(str)
-            logger.debug(f"解析成功: {docid} | 抽出レコード数: {len(df)}")
+                    
+            quant_cnt = len(df[df['isTextBlock_flg'] == 0]) if 'isTextBlock_flg' in df.columns else 0
+            text_cnt = len(df[df['isTextBlock_flg'] == 1]) if 'isTextBlock_flg' in df.columns else 0
+            logger.info(f"[SUCCESS] {docid} | 数値データ: {quant_cnt} 件, テキストブロック: {text_cnt} 件を Zero-Drop で抽出・保存に成功しました (計: {len(df)}件)")
 
             accounting_std = None
             log_path = extract_dir / "XBRL" / "PublicDoc" / "log_dict.json"

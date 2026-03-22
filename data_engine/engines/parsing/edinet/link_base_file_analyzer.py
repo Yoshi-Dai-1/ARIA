@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from pydantic.functional_validators import BeforeValidator
 
 from .utils import (flatten_list, format_taxonomi, get_columns_df,
-                    remove_empty_lists)
+                    get_dtype_dict, remove_empty_lists)
 # %%
 StrOrNone = Annotated[str, BeforeValidator(lambda x: x or "")]
 FloatOrNone = Annotated[float, BeforeValidator(lambda x: x or 0.0)]
@@ -293,6 +293,8 @@ class get_presentation_account_list():
         else:
             raise Exception("doc_type must be 'audit' or 'public'")
         
+        self.locators = []
+        self.arcs = []
         self.extruct_pre_file_from_xbrlzip(zip_file_str)
         if self.log_dict['get_pre_status']!='failure':
             self.parse_pre_file()
@@ -351,7 +353,9 @@ class get_presentation_account_list():
         self.arcs = arcs
 
     def _make_label_to_taxonomi_dict(self):
-        
+        if not self.locators:
+            self.label_to_taxonomi_dict = {}
+            return
         locators_df = pd.DataFrame([locator.model_dump() for locator in self.locators]).dropna(subset=['schema_taxonomi'])
         locators_df = locators_df.assign(
             role=locators_df.role.str.split('/',expand=True).iloc[:,-1],
@@ -360,6 +364,11 @@ class get_presentation_account_list():
         self.label_to_taxonomi_dict = locators_df.set_index('label')['key'].to_dict()
 
     def export_account_list_df(self)->OriginalAccountList:
+        if not self.locators:
+            empty_df = pd.DataFrame(columns=get_columns_df(OriginalAccountList))
+            for col, dtype in get_dtype_dict(OriginalAccountList).items():
+                empty_df[col] = pd.Series(dtype=dtype.type)
+            return OriginalAccountList(empty_df)
         locators_df = pd.DataFrame([locator.model_dump() for locator in self.locators]).dropna(subset=['schema_taxonomi'])
         locators_df = locators_df.assign(
             role=locators_df.role.str.split('/',expand=True).iloc[:,-1],
@@ -369,6 +378,11 @@ class get_presentation_account_list():
         return pre_detail_list
     def export_parent_child_link_df(self)->ParentChildLink:
         self._make_label_to_taxonomi_dict()
+        if not self.arcs:
+            empty_df = pd.DataFrame(columns=get_columns_df(ParentChildLink))
+            for col, dtype in get_dtype_dict(ParentChildLink).items():
+                empty_df[col] = pd.Series(dtype=dtype.type)
+            return ParentChildLink(empty_df)
         arcs_df = pd.DataFrame([arc.model_dump() for arc in self.arcs]).dropna(subset=['child'])
         arcs_df = arcs_df.assign(
             parent_key = arcs_df.parent.replace(self.label_to_taxonomi_dict),
@@ -400,6 +414,8 @@ class get_calc_edge_list():
         self.doc_type_str = 'asr'
         self.xml_def_path = self.temp_path / "XBRL" / "PublicDoc"
 
+        self.locators = []
+        self.arcs = []
         self.extruct_cal_file_from_xbrlzip(zip_file_str)
         if self.log_dict['get_cal_status']!='failure':
             self.parse_cal_file()
@@ -453,7 +469,9 @@ class get_calc_edge_list():
         self.arcs = arcs
 
     def _make_label_to_taxonomi_dict(self):
-
+        if not self.locators:
+            self.label_to_taxonomi_dict = {}
+            return
         locators_df = pd.DataFrame([locator.model_dump() for locator in self.locators]).dropna(subset=['schema_taxonomi'])
         locators_df = locators_df.assign(
             role=locators_df.role.str.split('/',expand=True).iloc[:,-1],
@@ -462,6 +480,11 @@ class get_calc_edge_list():
         self.label_to_taxonomi_dict = locators_df.set_index('label')['key'].to_dict()
 
     def export_account_list_df(self)->OriginalAccountList:
+        if not self.locators:
+            empty_df = pd.DataFrame(columns=get_columns_df(OriginalAccountList))
+            for col, dtype in get_dtype_dict(OriginalAccountList).items():
+                empty_df[col] = pd.Series(dtype=dtype.type)
+            return OriginalAccountList(empty_df)
         locators_df = pd.DataFrame([locator.model_dump() for locator in self.locators]).dropna(subset=['schema_taxonomi'])
         locators_df = locators_df.assign(
             role=locators_df.role.str.split('/',expand=True).iloc[:,-1],
@@ -472,6 +495,11 @@ class get_calc_edge_list():
     
     def export_parent_child_link_df(self)->CalParentChildLink:
         self._make_label_to_taxonomi_dict()
+        if not self.arcs:
+            empty_df = pd.DataFrame(columns=get_columns_df(CalParentChildLink))
+            for col, dtype in get_dtype_dict(CalParentChildLink).items():
+                empty_df[col] = pd.Series(dtype=dtype.type)
+            return CalParentChildLink(empty_df)
         arcs_df = pd.DataFrame([arc.model_dump() for arc in self.arcs]).dropna(subset=['child'])
         arcs_df = arcs_df.assign(
             parent_key=arcs_df.parent.replace(self.label_to_taxonomi_dict),
