@@ -348,7 +348,7 @@ class WorkerEngine:
             i_xbrl = "XBRL:1" if ind["xbrl"] else "XBRL:0"
             raw_code = str(row.get("secCode", "")).strip()
             norm_code = normalize_code(raw_code, nationality="JP") if raw_code else ""
-            i_code = f"[{norm_code:5}]" if norm_code else "[     ]"
+            i_code = f"[{norm_code:8}]" if norm_code else "[        ]"
             
             # プレフィックスの構築 (物理的事実の垂直整列)
             log_prefix_facts = f"[{i_doc}, {i_ord}, {i_form}, {i_xbrl}] {i_code} {doc_id:8}"
