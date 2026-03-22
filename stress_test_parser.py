@@ -18,8 +18,22 @@ from data_engine.core.config import TEMP_DIR
 
 def setup_logger():
     logger.remove()
-    logger.add(sys.stdout, colorize=True, format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>")
-    logger.add("stress_test.log", format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}")
+    logger.add(sys.stdout, level="INFO")
+    logger.add("stress_test.log", level="DEBUG", rotation="10 MB")
+
+def discover_taxonomy_task(args):
+    did, row_dict, zip_path = args
+    detect_dir = TEMP_DIR / f"stress_detect_{did}"
+    try:
+        lb = linkbasefile(zip_file_str=str(zip_path), temp_path_str=str(detect_dir))
+        lb.read_linkbase_file()
+        ty = lb.detect_account_list_year()
+        return did, row_dict, ty, zip_path
+    except Exception as e:
+        return did, row_dict, None, zip_path
+    finally:
+        if detect_dir.exists():
+            shutil.rmtree(detect_dir)
 
 def get_stress_test_samples():
     catalog = CatalogManager(sync_master=False)
@@ -85,43 +99,33 @@ def run_stress_test():
             if not success:
                continue
                
-    logger.info(f"Prepared all zip files. Now extracting taxonomy bindings...")
+    logger.info(f"Prepared all zip files. Now extracting taxonomy bindings in parallel...")
     
-    loaded_acc = {}
-    valid_tasks = []
-    
+    discovery_args = []
     for _, row in test_df.iterrows():
         did = row['doc_id']
         dt = row['submit_at']
-        pool_dir = CONFIG.DATA_PATH / "1_raw" / "edinet" / f"data_pool_{dt.strftime('%Y-%m')}"
-        pool_dir.mkdir(parents=True, exist_ok=True)
-        zip_path = pool_dir / f"{did}.zip"
+        zip_path = CONFIG.DATA_PATH / "1_raw" / "edinet" / f"data_pool_{dt.strftime('%Y-%m')}" / f"{did}.zip"
+        if zip_path.exists():
+            discovery_args.append((did, row.to_dict(), zip_path))
+
+    valid_tasks = []
+    loaded_acc = {}
+    
+    with ProcessPoolExecutor(max_workers=CONFIG.PARALLEL_WORKERS) as executor:
+        results = list(executor.map(discover_taxonomy_task, discovery_args))
         
-        if not zip_path.exists() or zip_path.stat().st_size < 1000:
-            logger.info(f"Downloading missing or broken file: {did}")
-            success = edinet.download_doc(doc_id=did, save_path=zip_path, doc_type=1)
-            if not success:
-                logger.error(f"Could not download {did}")
-                continue
+    for did, row_dict, ty, zip_path in results:
+        if ty is None or ty == "-":
+            logger.warning(f"Failed to detect taxonomy for {did}")
+            continue
+        
+        if ty not in loaded_acc:
+            acc = edinet.get_account_list(ty)
+            loaded_acc[ty] = acc
             
-        detect_dir = TEMP_DIR / f"stress_{did}"
-        try:
-            lb = linkbasefile(zip_file_str=str(zip_path), temp_path_str=str(detect_dir))
-            lb.read_linkbase_file()
-            ty = lb.detect_account_list_year()
-            if ty == "-":
-                logger.warning(f"Failed to detect taxonomy for {did}")
-                continue
-            if ty not in loaded_acc:
-                acc = edinet.get_account_list(ty)
-                loaded_acc[ty] = acc
-            valid_tasks.append((did, row.to_dict(), loaded_acc[ty], str(zip_path)))
-        except Exception as e:
-            logger.error(f"Taxonomy failure for {did}: {e}")
-        finally:
-            if detect_dir.exists():
-                shutil.rmtree(detect_dir)
-            
+        valid_tasks.append((did, row_dict, ty, str(zip_path)))
+
     logger.info(f"Prepared {len(valid_tasks)} physical ZIP files for stress testing.")
     if not valid_tasks:
         logger.error("No physical ZIPs found on disk. Did you harvest them?")

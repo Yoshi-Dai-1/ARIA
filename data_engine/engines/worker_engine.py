@@ -19,10 +19,21 @@ RAW_BASE_DIR = RAW_DIR
 
 
 
+_worker_acc_cache = {}
 
 def parse_worker(args):
     """並列処理用ワーカー関数"""
     docid, row, acc_obj, raw_zip = args
+    
+    # 【Pickling回避】acc_obj が文字列(年)の場合、ワーカー内キャッシュから遅延ロードする
+    if isinstance(acc_obj, (str, int)):
+        year = str(acc_obj)
+        if year not in _worker_acc_cache:
+            from data_engine.engines.edinet_engine import EdinetEngine
+            engine = EdinetEngine(api_key=CONFIG.EDINET_API_KEY, data_path=CONFIG.DATA_PATH)
+            _worker_acc_cache[year] = engine.get_account_list(year)
+        acc_obj = _worker_acc_cache[year]
+    
     extract_dir = TEMP_DIR / f"extract_{docid}"
     try:
         if acc_obj is None:
