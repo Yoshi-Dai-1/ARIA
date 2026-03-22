@@ -74,13 +74,14 @@ def parse_worker(args):
             text_cnt = len(df[df['isTextBlock_flg'] == 1]) if 'isTextBlock_flg' in df.columns else 0
             
             accounting_std = None
-            log_path = extract_dir / "XBRL" / "PublicDoc" / "log_dict.json"
             total_physical = 0
+            log_path = extract_dir / "XBRL" / "PublicDoc" / "log_dict.json"
             if log_path.exists():
                 try:
                     with open(log_path, "r", encoding="utf-8") as f:
                         ld = json.load(f)
                         total_physical = ld.get('total_facts_present', 0)
+                        accounting_std = ld.get("AccountingStandardsDEI")
                 except Exception:
                     pass
                     
@@ -103,16 +104,6 @@ def parse_worker(args):
                 )
             else:
                 logger.info(f"[SUCCESS] {docid} | 数値データ: {quant_cnt} 件, テキストブロック: {text_cnt} 件を Zero-Drop で抽出・保存に成功しました (計: {len(df)}件)")
-
-            accounting_std = None
-            log_path = extract_dir / "XBRL" / "PublicDoc" / "log_dict.json"
-            if log_path.exists():
-                try:
-                    with open(log_path, "r", encoding="utf-8") as f:
-                        log_data = json.load(f)
-                    accounting_std = log_data.get("AccountingStandardsDEI")
-                except Exception as e:
-                    logger.warning(f"log_dict.json の読み込み失敗 ({docid}): {e}")
 
             return docid, df, None, accounting_std
 
