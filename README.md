@@ -57,9 +57,10 @@ financial-lakehouse/
 │       └── year=YYYY/month=MM/day=DD/
 │           ├── zip/                # ZIPアーカイブ（1万ファイル制限対応）
 │           ├── pdf/                # PDF書類（1万ファイル制限対応）
-│           └── attach/             # 添付文書（PDF展開版、Webアプリ最適化）
+│           ├── english/            # 英文書類（PDF/HTML展開版）
+│           └── attach/             # 添付文書（PDF展開版）
 ├── catalog/                        # ドキュメントインデックス
-│   └── documents_index.parquet     # 39カラム構成。全書類のメタデータ SSOT (Pure Catalog: 内部管理キーを含まない)
+│   └── documents_index.parquet     # 40カラム構成。全書類のメタデータ SSOT (Pure Catalog: 内部管理キーを含まない)
 ├── meta/                           # システムメタデータ
 │   ├── stocks_master.parquet       # 銘柄マスタ (identity_key を保持する主権的リポジトリ)
 │   ├── jpx_definitions.parquet     # JPX 業種・規模定義マッピング

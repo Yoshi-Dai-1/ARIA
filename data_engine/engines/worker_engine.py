@@ -1,5 +1,7 @@
 import json
 import zipfile
+import shutil
+import traceback
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
@@ -44,9 +46,7 @@ def parse_worker(args):
         logger.debug(f"解析開始: {docid} (Path: {raw_zip})")
         (extract_dir / "XBRL" / "PublicDoc").mkdir(parents=True, exist_ok=True)
 
-        from zipfile import ZipFile
-
-        with ZipFile(str(raw_zip)) as zf:
+        with zipfile.ZipFile(str(raw_zip)) as zf:
             for member in zf.namelist():
                 if "PublicDoc" in member or "AuditDoc" in member:
                     zf.extract(member, extract_dir)
@@ -117,15 +117,11 @@ def parse_worker(args):
         return docid, None, msg, None
 
     except Exception as e:
-        import traceback
-
         err_detail = traceback.format_exc()
         logger.error(f"解析例外: {docid}\n{err_detail}")
         return docid, None, f"{str(e)}", None
     finally:
         if extract_dir.exists():
-            import shutil
-
             shutil.rmtree(extract_dir)
 
 
@@ -396,29 +392,72 @@ class WorkerEngine:
             if pdf_flag:
                 pdf_ok = self.edinet.download_doc(doc_id, raw_pdf, 2)
 
-            # 添付文書のダウンロードと展開 (Webアプリ向け個別PDF保存)
+            # --- ZIP 展開 (English/Attachment) ---
             rel_attach_path = None
+            rel_english_path = None
+            anomaly_status = None
+
+            # 1. 英文書類 (type=4)
+            # 【工学的主権】英文書類は投資判断の核心となるため、抽出失敗は明示的にステータスへ記録。
+            if row.get("englishDocFlag") == "1":
+                eng_dir = save_dir / "english" / doc_id
+                tmp_zip = Path(TEMP_DIR) / f"{doc_id}_english.zip"
+                if self.edinet.download_doc(doc_id, tmp_zip, 4):
+                    try:
+                        extracted_count = 0
+                        with zipfile.ZipFile(tmp_zip, "r") as z:
+                            for file_info in z.infolist():
+                                # EnglishDoc フォルダ内の HTML または PDF を対象とする
+                                if file_info.filename.lower().endswith((".pdf", ".htm", ".html")):
+                                    eng_dir.mkdir(parents=True, exist_ok=True)
+                                    fname = Path(file_info.filename).name
+                                    with z.open(file_info) as src, open(eng_dir / fname, "wb") as dst:
+                                        dst.write(src.read())
+                                    extracted_count += 1
+                        
+                        if extracted_count > 0:
+                            rel_english_path = str(eng_dir.relative_to(RAW_BASE_DIR.parent))
+                            if not rel_english_path.endswith("/"):
+                                rel_english_path += "/"
+                        else:
+                            logger.warning(f"English ZIP is empty or has no valid files: {doc_id}")
+                            anomaly_status = "english_empty"
+                    except Exception as e:
+                        logger.error(f"Failed to extract English docs for {doc_id}: {e}")
+                    finally:
+                        if tmp_zip.exists(): tmp_zip.unlink()
+
+            # 2. 添付書類 (type=3)
+            # 【工学的主権】Web UI での閲覧性を担保するため、ZIP 内の不要な制御ファイル（__MACOSX等）を除外し PDF のみを抽出。
             if attach_flag:
                 attach_dir = save_dir / "attach" / doc_id
                 tmp_zip = Path(TEMP_DIR) / f"{doc_id}_attach.zip"
                 if self.edinet.download_doc(doc_id, tmp_zip, 3):
                     try:
-                        attach_dir.mkdir(parents=True, exist_ok=True)
+                        extracted_count = 0
                         with zipfile.ZipFile(tmp_zip, 'r') as z:
                             for file_info in z.infolist():
                                 if file_info.filename.lower().endswith(".pdf"):
-                                    # 内部のパス構造に関わらず、ファイル名のみを抽出して保存
+                                    attach_dir.mkdir(parents=True, exist_ok=True)
                                     fname = Path(file_info.filename).name
-                                    with z.open(file_info) as source, open(attach_dir / fname, "wb") as target:
-                                        target.write(source.read())
-                        rel_attach_path = str(attach_dir.relative_to(RAW_BASE_DIR.parent))
-                        if not rel_attach_path.endswith("/"):
-                            rel_attach_path += "/"
+                                    with z.open(file_info) as src, open(attach_dir / fname, "wb") as dst:
+                                        dst.write(src.read())
+                                    extracted_count += 1
+                        
+                        if extracted_count > 0:
+                            rel_attach_path = str(attach_dir.relative_to(RAW_BASE_DIR.parent))
+                            if not rel_attach_path.endswith("/"):
+                                rel_attach_path += "/"
+                        else:
+                            logger.warning(f"Attachment ZIP is empty or has no PDFs: {doc_id}")
+                            # 【一貫性の維持】書類全体のステータス列が1つのため、英文(english_empty)を優先。
+                            # 英文に異常がない、または英文提供がない場合のみ attachment_empty を記録。
+                            if not anomaly_status:
+                                anomaly_status = "attachment_empty"
                     except Exception as e:
                         logger.error(f"Failed to extract attachments for {doc_id}: {e}")
                     finally:
-                        if tmp_zip.exists():
-                            tmp_zip.unlink()
+                        if tmp_zip.exists(): tmp_zip.unlink()
 
             dtc = row.get("docTypeCode")
             ord_c = row.get("ordinanceCode")
@@ -444,8 +483,13 @@ class WorkerEngine:
             parent_id = row.get("parentDocID")
             is_amendment = parent_id is not None or str(dtc).endswith("1") or "訂正" in (title or "")
 
-            # 最終ステータスの決定（取下げ事実の反映）
-            final_status = "retracted" if verdict == ProcessVerdict.SKIP_WITHDRAWN else "success"
+            # 最終ステータスの決定
+            if verdict == ProcessVerdict.SKIP_WITHDRAWN:
+                final_status = "retracted"
+            elif anomaly_status:
+                final_status = anomaly_status
+            else:
+                final_status = "success"
 
             rel_zip_path = str(raw_zip.relative_to(RAW_BASE_DIR.parent)) if zip_ok else None
             rel_pdf_path = str(raw_pdf.relative_to(RAW_BASE_DIR.parent)) if pdf_ok else None
@@ -487,6 +531,7 @@ class WorkerEngine:
                 "attachment_flag": attach_flag,
                 "raw_zip_path": rel_zip_path,
                 "pdf_path": rel_pdf_path,
+                "english_path": rel_english_path,
                 "attach_path": rel_attach_path,
                 "processed_status": final_status,
                 "source": "EDINET",
@@ -497,7 +542,6 @@ class WorkerEngine:
             if verdict == ProcessVerdict.PARSE and zip_ok:
                 worker_stats["parsing_attempted"] += 1
                 try:
-                    import shutil
 
                     from data_engine.engines.parsing.edinet.fs_tbl import linkbasefile
 

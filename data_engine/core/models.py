@@ -154,6 +154,7 @@ class CatalogRecord(BaseModel):
     # 6. Infrastructure (システム管理情報)
     raw_zip_path: Optional[str] = None
     pdf_path: Optional[str] = None
+    english_path: Optional[str] = None  # 英文資料(type=4)の展開先ディレクトリパス
     attach_path: Optional[str] = None  # 添付文書(type=3)の展開先ディレクトリパス
     processed_status: Optional[str] = "success"
     source: str = "EDINET"
@@ -190,6 +191,8 @@ class CatalogRecord(BaseModel):
         "current_report_reason",
         "raw_zip_path",
         "pdf_path",
+        "english_path",
+        "attach_path",
         "ope_date_time",
         mode="before",
     )

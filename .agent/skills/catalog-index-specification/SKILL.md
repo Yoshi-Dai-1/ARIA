@@ -6,10 +6,10 @@ description: ARIA カタログインデックス (`documents_index.parquet`) の
 # ARIA Catalog Index Specification (Pure Catalog)
 
 ## 1. 概要
-`documents_index.parquet` は、EDINETから収集したAPIの事実のみを記録する純粋な元帳（Pure Catalog）です。マスタの内部管理キー (`identity_key`) を含まず、結合を前提とした設計になっています。EDINET API V2 の全出力フィールドを網羅しています（`seqNumber` 含む28フィールド中27フィールドをカバー、加えて ARIA 独自の11カラムを含む）。
+`documents_index.parquet` は、EDINETから収集したAPIの事実のみを記録する純粋な元帳（Pure Catalog）です。マスタの内部管理キー (`identity_key`) を含まず、結合を前提とした設計になっています。EDINET API V2 の全出力フィールドを網羅しています（`seqNumber` 含む28フィールド中27フィールドをカバー、加えて ARIA 独自の12カラムを含む）。
 
 ## 2. 物理構造とカラム順序 (Web-Ready Architecture)
-UI最適化のため、Identifiers -> Timeline -> Identifiers (Supplemental) -> Domain -> Document Details -> Infrastructure の順序で配置されています。合計 39 カラムで構成されます。
+UI最適化のため、Identifiers -> Timeline -> Identifiers (Supplemental) -> Domain -> Document Details -> Infrastructure の順序で配置されています。合計 40 カラムで構成されます。
 
 ### 1) Identifiers (識別子・基本情報)
 | カラム名 | 型 | 役割・ロジック | 情報源 |
@@ -69,8 +69,9 @@ UI最適化のため、Identifiers -> Timeline -> Identifiers (Supplemental) -> 
 | :--- | :--- | :--- | :--- |
 | `raw_zip_path` | string | 生ZIPファイルへの物理パス | システム |
 | `pdf_path` | string | 生PDFファイルへの物理パス | システム |
+| `english_path` | string | 英文書類（PDF/HTML展開版）が格納されたディレクトリへの物理パス | システム |
 | `attach_path` | string | 添付文書（PDF展開版）が格納されたディレクトリへの物理パス | システム |
-| `processed_status` | string | 処理ステータス (pending, parsed, success, failure, retracted)。 | システム |
+| `processed_status` | string | 処理ステータス (`pending`, `parsed`, `success`, `failure`, `retracted`, `english_empty`, `attachment_empty`)。 | システム |
 | `source` | string | 情報源 (原則 `EDINET` 固定) | Logic |
 | `ope_date_time` | string | 操作日時 (API V2の差分増分同期の核心項目) | EDINET |
 
@@ -80,5 +81,5 @@ CatalogRecord には、あえて ARIA 内部で生成・維持される `identit
 証券コード、EDINETコード、JCNといった識別子はすべてAPI取得当時の「事実」として保持されます。
 
 ## 4. EDINET API V2 フィールド網羅性
-EDINET API V2 書類一覧レスポンスの全28出力フィールドのうち、27フィールドをカタログに保存しています。
+EDINET API V2 書類一覧レスポンスの全28出力フィールドのうち、27フィールドをカタログに保存しています（2026年3月現在）。
 唯一保存しない `metadata` 系フィールド（`title`, `parameter`, `resultset`, `status`, `message` 等）は、APIリクエストのメタデータであり書類固有の情報ではないため、設計上意図的に除外しています。
