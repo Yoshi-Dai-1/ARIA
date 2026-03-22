@@ -4,6 +4,7 @@
 
 # %% Requirements
 
+from __future__ import annotations
 import json
 import warnings
 from datetime import date, datetime, timedelta
@@ -434,7 +435,7 @@ class RequestResponseDoc(BaseModel):
     message: StrOrNone = Field(default="", title="message", description="message")
 
 @validate_call(config=ConfigDict(arbitrary_types_allowed=True), validate_return=True)
-def request_doc(api_key: str, docid: str, out_filename_str: str, session: Optional[requests.Session] = None) -> RequestResponseDoc:
+def request_doc(api_key: str, docid: str, out_filename_str: str, doc_type: int = 1, session: Optional[requests.Session] = None) -> RequestResponseDoc:
     # EDINET API version 2
     out_filename_path = Path(out_filename_str)
     EDINET_API_url = "https://api.edinet-fsa.go.jp/api/v2/documents/" + docid
@@ -444,7 +445,7 @@ def request_doc(api_key: str, docid: str, out_filename_str: str, session: Option
         session = GLOBAL_ROBUST_SESSION
 
     input_dict = {
-        "type_api_param": 1, # 1:xbrl # 2: PDF 5:csv,
+        "type_api_param": doc_type, # 1:xbrl # 2: PDF 5:csv,
         "api_key": api_key
     }
     params = EdinetDocInputV2(**input_dict)

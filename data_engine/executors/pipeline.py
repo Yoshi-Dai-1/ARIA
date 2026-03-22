@@ -129,7 +129,7 @@ def run_full_discovery(catalog, run_id):
             i_xbrl = "XBRL:1" if indicators["xbrl"] else "XBRL:0"
             raw_code = str(row.get("secCode", "")).strip()
             norm_code = normalize_code(raw_code, nationality="JP") if raw_code else ""
-            i_code = f"[{norm_code:5}]" if norm_code else "[     ]"
+            i_code = f"[{norm_code:8}]" if norm_code else "[        ]"
             
             # プレフィックスの構築
             doc_title = (row.get('docDescription') or 'Unknown').strip()

@@ -3,6 +3,7 @@
 """
 
 
+from __future__ import annotations
 import xml.etree.ElementTree as ET
 import re
 from zipfile import ZipFile

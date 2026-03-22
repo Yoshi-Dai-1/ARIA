@@ -70,6 +70,10 @@ def parse_worker(args):
                 if df[col].dtype == "object":
                     df[col] = df[col].astype(str)
                     
+            # 【工学的主権】全てのオブジェクト列に対し、不適切なセンチネル値を NULL に統一
+            # これにより「-」や「None」文字列が不必要に保存されるのを防ぐ
+            df = df.replace({"-": None, "None": None, "nan": None, "NaN": None})
+
             quant_cnt = len(df[df['isTextBlock_flg'] == 0]) if 'isTextBlock_flg' in df.columns else 0
             text_cnt = len(df[df['isTextBlock_flg'] == 1]) if 'isTextBlock_flg' in df.columns else 0
             
@@ -664,7 +668,7 @@ class WorkerEngine:
                 f"=== Worker 完了サマリー [{self.run_id}/{self.chunk_id}] ===\n"
                 f"・割当総数: {worker_stats['assigned']} 件\n"
                 f"  ├ 既処理スキップ: {worker_stats['already_skipped']} 件\n"
-                f"  ├ 非解析対象保存: {worker_stats['metadata_saved']} 件 (Metadata-only)\n"
+                f"  ├ 非解析対象保存: {worker_stats['metadata_saved']} 件 (Non-parsed Raw Save)\n"
                 f"  └ 解析対象実行: {parse_docs} 件 (財務諸表等)\n"
                 f"      └ 成功: {success_docs} / 失敗: {failure_docs}\n"
                 f"・最終ステータス: SUCCESS"

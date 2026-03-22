@@ -19,9 +19,9 @@ ARIAのデータをユーザーに提供するWebフロントエンド（Vite/Re
 ### B. 包括タグ・テキストデータ（US GAAP / JMIS等）の表示
 - **対象**: `qualitative_text.parquet` (`isTextBlock_flg = 1`)
 - **レンダリング方針**:
-  - ここには、「経営方針」などの定性テキストだけでなく、**US GAAP（米国基準）やJMIS（修正国際基準）における「貸借対照表」「損益計算書」全体をひとつの巨大タグとして囲んだ生のHTML文字列**が含まれます。
-  - US GAAP/JMIS企業の財務データをユーザーが「見たい」とリクエストした場合、フロントエンドは決して `financial_values` から個別の数値を組み上げようとしてはなりません（存在しないため）。
-  - **アーキテクチャ正解**: `qualitative_text` テーブルから該当表（Role等で判別）の生HTML文字列（`data_str` カラム）を取得し、フロントエンド側で React の `dangerouslySetInnerHTML`（または安全なサニタイズ処理を経たDOMインジェクション）を用いて、**そのままHTMLの表として画面にレンダリング**します。
+  - ここには、「経営方針」などの定性テキストだけでなく、**US GAAP（米国基準）やJMIS（修正国際基準）等における「貸借対照表」「損益計算書」全体をひとつの巨大タグとして囲んだ生のHTML文字列**が含まれる場合があります。
+  - フロントエンドは対象企業の会計基準のみで判断せず、`financial_values` に数値データが存在するか、あるいは `qualitative_text` に表形式のHTMLが含まれているかをデータの実態（`isTextBlock_flg`）に基づき判定してください。
+  - **アーキテクチャ正解**: 数値データが欠落（Block Tagging）している場合、`qualitative_text` テーブルから該当表（Role等で判別）の生HTML文字列（`data_str` カラム）を取得し、フロントエンド側で React の `dangerouslySetInnerHTML`（または安全なサニタイズ処理を経たDOMインジェクション）を用いて、**そのままHTMLの表として画面にレンダリング**します。
 
 ## 2. 実装上の必須確認事項 (Implementation Checklist)
 - [ ] 企業マスタ（`stocks_master`）や APIレスポンスから、対象企業の「会計基準（Accounting Standard）」を事前判定しているか？

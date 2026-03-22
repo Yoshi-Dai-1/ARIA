@@ -74,7 +74,9 @@ class EdinetEngine:
         """書類をダウンロード保存 (1=XBRL, 2=PDF)"""
         # サブモジュールの新インターフェース (session注入) を使用し、ロジックを委譲
         try:
-            res = request_doc(api_key=self.api_key, docid=doc_id, out_filename_str=str(save_path), session=self.session)
+            res = request_doc(
+                api_key=self.api_key, docid=doc_id, out_filename_str=str(save_path), doc_type=doc_type, session=self.session
+            )
             if res.status == "success":
                 logger.debug(f"取得成功: {doc_id} (type={doc_type})")
                 return True

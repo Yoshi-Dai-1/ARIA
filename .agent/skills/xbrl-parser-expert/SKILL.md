@@ -42,8 +42,8 @@ EDINETには日本基準（JP GAAP）と国際財務報告基準（IFRS）等、
 これらを一元的に抽出するためには、パーサーの参照するRole URI辞書をハードコードされた単一基準の文字列に依存させてはいけません。
 - **JP GAAP**: `<link:presentationLink xlink:role="http://disclosure.edinet-fsa.go.jp/role/jppfs/rol_BalanceSheet">` のように、`_BalanceSheet` や `_StatementOfIncome` といった人間が判読可能な英単語サフィックスを持ちます。
 - **IFRS**: `<link:presentationLink xlink:role="http://xbrl.ifrs.org/role/ifrs/ias_1_2014-03-05_role-210000">` のように、国際基準に対応するため役割が `_role-210000` などの**6桁の数値コード文字列**で厳格に管理されています。
-- **US GAAP (米国基準)**: `<link:presentationLink xlink:role="http://disclosure.edinet-fsa.go.jp/role/us-gaap/...">` 等の名前空間を持ちますが、EDINETでは詳細な数値タグ付け（Detailed Tagging）を行わず、**すべて「包括タグ（Block Tagging / Text Block）」として提出されます**。
-- **JMIS (修正国際基準)**: 提出ルールはUS GAAPと同一であり、詳細なタグ付けは対象外として包括タグでの提出となります。IFRS（指定国際会計基準）とは完全に異なる物理構造を持ちます。
+- **US GAAP (米国基準)**: `<link:presentationLink xlink:role="http://disclosure.edinet-fsa.go.jp/role/us-gaap/...">` 等の名前空間を持ちます。提出者により「数値タグ付け（Detailed Tagging）」を行う場合と、「包括タグ（Block Tagging / Text Block）」のみで行う場合があります。
+- **JMIS (修正国際基準)**: 提出ルールはUS GAAPと同一であり、物理構造も同様の挙動を示します。
 
 ## 7. Roleマッピング辞書のリスクと抽出アーキテクチャ (Hazards of Role Mapping)
 EDINETタクソノミの設定規約書において、企業は**「提出者別拡張タクソノミ（Company-Specific Extension Taxonomy）」**を作成し、全く新しい独自の `Role URI` を自由に定義することが公式に認められています。
@@ -53,7 +53,7 @@ EDINETタクソノミの設定規約書において、企業は**「提出者別
 2. **包括的データ抽出（Exhaustive Extraction）への転換**:
    工学的主権に基づき、特定のRoleのみを「予測・期待」して検索するのではなく、Arelleがパースした**すべてのファクトデータを無条件で抽出し、カタログへ格納する（`financial_values`）アーキテクチャ**を絶対の仕様とします。
 3. **米国基準（US GAAP）の正解**:
-   US GAAP書類は包括タグ（Text Block）のみで構成される物理的事実に基づき、Arelleは個別の整数値を検知できません。結果として**US GAAPはすべて `qualitative_text.parquet`（定性テキストブロック）側へ格納**されます。これはバグではなく「仕様通りの正常な挙動（Facts over Prediction）」です。
+   US GAAP書類は包括タグ（Text Block）を多用する傾向にありますが、数値タグが存在する場合は `financial_values` へ、包括タグのみの場合は `qualitative_text` へ格納されます。これはバグではなく「提出されたXBRLの物理的事実（Facts over Prediction）」に従った正常な挙動です。
 
 ## 8. Arelle直接ラベル注入 (Arelle-Native Label Injection)
 ARIAのラベル解決は3層構造で動作します。FSAタクソノミ（`1c_Taxonomy.zip`）にはIFRSラベルが物理的に含まれていないため、Arelleのスキーマ参照チェーンを通じた直接解決が不可欠です。
