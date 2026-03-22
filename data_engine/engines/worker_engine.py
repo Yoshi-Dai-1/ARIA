@@ -1,4 +1,6 @@
 import json
+import zipfile
+from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 
@@ -384,6 +386,7 @@ class WorkerEngine:
 
             xbrl_flag = row.get("xbrlFlag") == "1"
             pdf_flag = row.get("pdfFlag") == "1"
+            attach_flag = row.get("attachDocFlag") == "1"
 
             zip_ok = False
             if xbrl_flag:
@@ -392,6 +395,30 @@ class WorkerEngine:
             pdf_ok = False
             if pdf_flag:
                 pdf_ok = self.edinet.download_doc(doc_id, raw_pdf, 2)
+
+            # 添付文書のダウンロードと展開 (Webアプリ向け個別PDF保存)
+            rel_attach_path = None
+            if attach_flag:
+                attach_dir = save_dir / "attach" / doc_id
+                tmp_zip = Path(TEMP_DIR) / f"{doc_id}_attach.zip"
+                if self.edinet.download_doc(doc_id, tmp_zip, 3):
+                    try:
+                        attach_dir.mkdir(parents=True, exist_ok=True)
+                        with zipfile.ZipFile(tmp_zip, 'r') as z:
+                            for file_info in z.infolist():
+                                if file_info.filename.lower().endswith(".pdf"):
+                                    # 内部のパス構造に関わらず、ファイル名のみを抽出して保存
+                                    fname = Path(file_info.filename).name
+                                    with z.open(file_info) as source, open(attach_dir / fname, "wb") as target:
+                                        target.write(source.read())
+                        rel_attach_path = str(attach_dir.relative_to(RAW_BASE_DIR.parent))
+                        if not rel_attach_path.endswith("/"):
+                            rel_attach_path += "/"
+                    except Exception as e:
+                        logger.error(f"Failed to extract attachments for {doc_id}: {e}")
+                    finally:
+                        if tmp_zip.exists():
+                            tmp_zip.unlink()
 
             dtc = row.get("docTypeCode")
             ord_c = row.get("ordinanceCode")
@@ -457,9 +484,10 @@ class WorkerEngine:
                 "pdf_flag": row.get("pdfFlag") == "1",
                 "csv_flag": row.get("csvFlag") == "1",
                 "english_flag": row.get("englishDocFlag") == "1",
-                "attachment_flag": row.get("attachDocFlag") == "1",
+                "attachment_flag": attach_flag,
                 "raw_zip_path": rel_zip_path,
                 "pdf_path": rel_pdf_path,
+                "attach_path": rel_attach_path,
                 "processed_status": final_status,
                 "source": "EDINET",
                 "ope_date_time": (row.get("opeDateTime") or "").strip() or None,

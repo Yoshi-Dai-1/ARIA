@@ -423,7 +423,7 @@ def request_term(api_key:str, start_date_str:str,end_date_str:str, ope_date_time
 # %% doc
 
 class EdinetDocInputV2(BaseModel):
-    type_api_param: Literal[1, 2, 5] = Field(1, title="type", description="1: xbrl, 2: pdf, 5:csv")
+    type_api_param: Literal[1, 2, 3, 4, 5] = Field(1, title="type", description="1: xbrl, 2: pdf, 3:attach, 4:english, 5:csv")
     api_key: str = Field(..., title="Subscription-Key", description="API Key")
     def export(self):
         return {"type": self.type_api_param, "Subscription-Key": self.api_key}

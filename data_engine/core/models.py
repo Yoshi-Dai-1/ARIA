@@ -106,7 +106,7 @@ class EdinetCodeRecord(BaseModel):
 
 
 class CatalogRecord(BaseModel):
-    """統合ドキュメントカタログ (documents_index.parquet) のレコードモデル (38カラム構成)"""
+    """統合ドキュメントカタログ (documents_index.parquet) のレコードモデル (39カラム構成)"""
 
     # 1. Identifiers (識別子・基本情報)
     doc_id: str
@@ -154,6 +154,7 @@ class CatalogRecord(BaseModel):
     # 6. Infrastructure (システム管理情報)
     raw_zip_path: Optional[str] = None
     pdf_path: Optional[str] = None
+    attach_path: Optional[str] = None  # 添付文書(type=3)の展開先ディレクトリパス
     processed_status: Optional[str] = "success"
     source: str = "EDINET"
 

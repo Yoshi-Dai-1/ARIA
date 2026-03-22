@@ -48,6 +48,12 @@ ARIA における「証券データの真実」を管理するためのドメイ
 - **指数構成銘柄 < 40件**: API エラーまたはデータ欠落の可能性。
 - **bin=No への割り当て**: 証券コードの抽出失敗（NULL 非許容）。
 
+## 6. EDINET API V2 データの包括的収集
+- **API V2 の事実**: 旧 API (V1) と異なり、V2 では「代替書面・添付文書 (type=3)」が正式に提供されます。
+- **ARIA の対応**: 
+    - `attachDocFlag == 1` の場合、自動的に ZIP をダウンロードし、内部の PDF を `attach/[doc_id]/` フォルダに展開して正規化保存します。
+    - カタログの `attach_path` を参照することで、ウェブアプリから非財務データ（定款、交代届出書等）への直接アクセスを可能にします。
+
 ## 詳細リファレンス
 - [正規化ロジック詳細](references/RECONCILIATION_LOGIC.md)
 - [ARIA データスキーマ定義](references/SCHEMA_DEFINITION.md): bin sharding 構造の定義
