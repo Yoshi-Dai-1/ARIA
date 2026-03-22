@@ -107,6 +107,7 @@ def get_fs_tbl(account_list_common_obj,docid:str,zip_file_str:str,temp_path_str:
         update_flg=False
         )
     data_list = []
+    matched_records_sum = 0
     # 【Zero-Drop Architecture】プレゼンテーション・リンクベースにマッチした全キーを追跡する
     matched_keys = set()
 
@@ -134,10 +135,12 @@ def get_fs_tbl(account_list_common_obj,docid:str,zip_file_str:str,temp_path_str:
             data['label_en_long'] = data['label_en_long'].fillna(data['arelle_label_en_long'])
 
         matched_keys.update(key_in_the_role.tolist())
+        matched_records_sum += len(data)
         data_list.append(data)
 
     # 【Zero-Drop】Arelleが抽出した全ファクトのうち、プレゼンテーション・リンクベースに
     # マッチしなかった「孤立ファクト (Unlinked Facts)」を差集合として算出し、救出する。
+    unlinked_records_count = 0
     if not xbrl_data_df.empty:
         all_arelle_keys = set(xbrl_data_df['key'].unique())
         unlinked_keys = all_arelle_keys - matched_keys
@@ -157,8 +160,9 @@ def get_fs_tbl(account_list_common_obj,docid:str,zip_file_str:str,temp_path_str:
                 current_flg=unlinked_df.context_ref.str.contains('CurrentYear').astype(int),
                 prior_flg=unlinked_df.context_ref.str.contains('Prior1Year').astype(int),
             )
+            unlinked_records_count = len(unlinked_df)
             data_list.append(unlinked_df)
-            logger.info(f"Zero-Drop: {len(unlinked_keys)} 個の孤立キーから {len(unlinked_df)} 件の Unlinked Facts を救出しました。")
+            logger.info(f"Zero-Drop: {len(unlinked_keys)} 個の孤立キーから {unlinked_records_count} 件の Unlinked Facts を救出しました。")
 
     if not data_list:
         return pd.DataFrame() # 空のDFを返して後続で適切に処理
@@ -166,6 +170,13 @@ def get_fs_tbl(account_list_common_obj,docid:str,zip_file_str:str,temp_path_str:
     # 最終結合: FsDataDf スキーマに存在するカラムのみを選択して返す
     target_cols = get_columns_df(FsDataDf)
     merged = pd.concat(data_list, ignore_index=True)
+    
+    # 【監査用メタデータ】展開後の理論件数を付加
+    merged.attrs['aria_metrics'] = {
+        'matched_records_sum': matched_records_sum,
+        'unlinked_records_count': unlinked_records_count,
+        'theoretical_total': matched_records_sum + unlinked_records_count
+    }
     # スキーマに存在するがデータに存在しないカラムは None で補完する
     for col in target_cols:
         if col not in merged.columns:
