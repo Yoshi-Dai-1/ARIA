@@ -85,7 +85,6 @@ def parse_worker(args):
                     pass
                     
             metrics = df.attrs.get('aria_metrics', {})
-            metrics = df.attrs.get('aria_metrics', {})
             theoretical_total = metrics.get('theoretical_total', len(df))
 
             # 【工程監査】理論上の全マッピング件数と最終抽出件数が一致しているか検証する
@@ -96,10 +95,11 @@ def parse_worker(args):
                 )
 
             if total_physical > 0:
-                # 物理/理論の一致を証明しつつ、ユーザーが加算せずに済む合計値を表示する
+                # 【物理/理論の一致を証明】
+                match_pct = (len(df) / theoretical_total * 100) if theoretical_total > 0 else 100.0
                 logger.info(
                     f"[SUCCESS] {docid} | 理論期待値(Total): {theoretical_total}件 == "
-                    f"最終抽出:{len(df)}件 (数値:{quant_cnt}, テキスト:{text_cnt}) [Zero-Drop 100% 一致]"
+                    f"最終抽出:{len(df)}件 (数値:{quant_cnt}, テキスト:{text_cnt}) [Zero-Drop {match_pct:g}% 一致]"
                 )
             else:
                 logger.info(f"[SUCCESS] {docid} | 数値データ: {quant_cnt} 件, テキストブロック: {text_cnt} 件を Zero-Drop で抽出・保存に成功しました (計: {len(df)}件)")

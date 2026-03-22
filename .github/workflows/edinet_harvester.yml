@@ -107,8 +107,8 @@ jobs:
               for group_key, items in group_map.items():
                   w = 10
                   for x in items:
-                      # ARIA 解析対象判定基準 (現在は 120, 010, 030000 のみ)
-                      is_target = x.get('type') == '120' and x.get('ord') == '010' and x.get('form') == '030000'
+                      # ARIA 解析対象判定基準 (XBRLフラグが立っている全書類を重いタスクとする)
+                      is_target = x.get('xbrl') is True or x.get('xbrl') == '1'
                       w += 100 if is_target else 2
                   tasks.append({'ids': [x['id'] for x in items], 'weight': w})
               return tasks, sum(t['weight'] for t in tasks)
