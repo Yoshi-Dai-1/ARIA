@@ -191,6 +191,7 @@ def get_xbrl_df(xbrl_filename:str,log_dict,temp_dir)->(xbrl_elm_schema,dict):
         return pd.DataFrame(columns=get_columns_df(xbrl_elm_schema)),log_dict
     else:
         log_dict['xbrl_load_status']="success"
+        log_dict['total_facts_present'] = log_dict.get('total_facts_present', 0) + len(model_xbrl.facts)
         fact_dict_list = []
         for fact in model_xbrl.facts:
             fact_dict_list.append(get_fact_data(fact))
