@@ -16,8 +16,8 @@ def normalize_code(code, nationality: str = None) -> Optional[str]:
     # 文字列化して空白除去
     c = str(code).strip()
 
-    # 空文字列の場合は None を返す (JP: などの不完全なプレフィックス付与を防止)
-    if not c:
+    # 空文字列、"None"、"nan" の場合は None を返す (不完全なプレフィックス付与を防止)
+    if not c or c.lower() in ["none", "nan"]:
         return None
 
     # すでにプレフィックスがあるかチェック

@@ -85,8 +85,7 @@ def parse_worker(args):
                     pass
                     
             metrics = df.attrs.get('aria_metrics', {})
-            matched_sum = metrics.get('matched_records_sum', 0)
-            unlinked_cnt = metrics.get('unlinked_records_count', 0)
+            metrics = df.attrs.get('aria_metrics', {})
             theoretical_total = metrics.get('theoretical_total', len(df))
 
             # 【工程監査】理論上の全マッピング件数と最終抽出件数が一致しているか検証する
@@ -97,10 +96,9 @@ def parse_worker(args):
                 )
 
             if total_physical > 0:
-                # 物理的な事実（インスタンス）と、ARIAの構造的展開（理論値）を並記して 100% 一致を証明する
+                # 物理/理論の一致を証明しつつ、ユーザーが加算せずに済む合計値を表示する
                 logger.info(
-                    f"[SUCCESS] {docid} | 物理ファクト(Unique): {total_physical}件 -> "
-                    f"理論期待値(Role展開:{matched_sum} + 孤立救済:{unlinked_cnt}) == "
+                    f"[SUCCESS] {docid} | 理論期待値(Total): {theoretical_total}件 == "
                     f"最終抽出:{len(df)}件 (数値:{quant_cnt}, テキスト:{text_cnt}) [Zero-Drop 100% 一致]"
                 )
             else:
@@ -537,7 +535,7 @@ class WorkerEngine:
         processed_infos = []
 
         if tasks:
-            logger.info(f"解析対象: {len(tasks) // 2} 書類 (Task数: {len(tasks)})")
+            logger.info(f"解析対象: {len(tasks)} 書類")
             TEMP_DIR.mkdir(parents=True, exist_ok=True)
             with ProcessPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:
                 for i in range(0, len(tasks), BATCH_PARALLEL_SIZE):
@@ -668,7 +666,7 @@ class WorkerEngine:
             # Assigned (総割当) = Already-Skipped (既処理) + Metadata-Only (非解析) + Parsing-Attempted (解析対象)
             # Parsing-Attempted = Success-Docs (完全成功) + Failure-Docs (一部または全部失敗)
             parse_docs = worker_stats['parsing_attempted']
-            success_docs = worker_stats['parsing_success'] // 2
+            success_docs = worker_stats['parsing_success']
             failure_docs = parse_docs - success_docs
             
             logger.info(
@@ -676,7 +674,7 @@ class WorkerEngine:
                 f"・割当総数: {worker_stats['assigned']} 件\n"
                 f"  ├ 既処理スキップ: {worker_stats['already_skipped']} 件\n"
                 f"  ├ 非解析対象保存: {worker_stats['metadata_saved']} 件 (Metadata-only)\n"
-                f"  └ 解析対象実行: {parse_docs} 件 (有報等)\n"
+                f"  └ 解析対象実行: {parse_docs} 件 (財務諸表等)\n"
                 f"      └ 成功: {success_docs} / 失敗: {failure_docs}\n"
                 f"・最終ステータス: SUCCESS"
             )

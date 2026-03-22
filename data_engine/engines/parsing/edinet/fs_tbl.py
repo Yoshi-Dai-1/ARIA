@@ -163,7 +163,7 @@ def get_fs_tbl(account_list_common_obj,docid:str,zip_file_str:str,temp_path_str:
             )
             unlinked_records_count = len(unlinked_df)
             data_list.append(unlinked_df)
-            logger.info(f"Zero-Drop: {len(unlinked_keys)} 個の孤立キーから {unlinked_records_count} 件の Unlinked Facts を救出しました。")
+            # logger.info(f"Zero-Drop: {len(unlinked_keys)} 個の孤立キーから {unlinked_records_count} 件の Unlinked Facts を救出しました。")
 
     if not data_list:
         return pd.DataFrame() # 空のDFを返して後続で適切に処理
