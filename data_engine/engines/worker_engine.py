@@ -154,6 +154,20 @@ class WorkerEngine:
         if self.chunk_id in (0, "default", "primary-0", "retry-0") or is_merger:
             logger.info(f"ARIA Execution Scope: {ARIA_SCOPE}")
 
+    def _apply_status(self, record, new_status):
+        """【工学的主権】ステータスの優先順位階層に基づき更新を適用する"""
+        hierarchy = {
+            "retracted": 1,
+            "failure": 2,
+            "english_empty": 3,
+            "attachment_empty": 4,
+            "parsed": 5,
+            "success": 6,
+        }
+        current = record.get("processed_status", "success") # デフォルトは success
+        if hierarchy.get(new_status, 99) < hierarchy.get(current, 99):
+            record["processed_status"] = new_status
+
     def run(self):
         """Workerモード (デフォルト): データの取得・解析・保存のパイプラインを実行する"""
         mode_label = "Discovery" if self.args.list_only else "Worker"
@@ -484,12 +498,13 @@ class WorkerEngine:
             is_amendment = parent_id is not None or str(dtc).endswith("1") or "訂正" in (title or "")
 
             # 最終ステータスの決定
+            # ステータスの初期設定 (Hierarchy適用対象)
             if verdict == ProcessVerdict.SKIP_WITHDRAWN:
-                final_status = "retracted"
+                initial_status = "retracted"
             elif anomaly_status:
-                final_status = anomaly_status
+                initial_status = anomaly_status # 英文異常 > 添付異常 は _process_doc 側で処理済
             else:
-                final_status = "success"
+                initial_status = "success"
 
             rel_zip_path = str(raw_zip.relative_to(RAW_BASE_DIR.parent)) if zip_ok else None
             rel_pdf_path = str(raw_pdf.relative_to(RAW_BASE_DIR.parent)) if pdf_ok else None
@@ -533,7 +548,7 @@ class WorkerEngine:
                 "pdf_path": rel_pdf_path,
                 "english_path": rel_english_path,
                 "attach_path": rel_attach_path,
-                "processed_status": final_status,
+                "processed_status": initial_status,
                 "source": "EDINET",
                 "ope_date_time": (row.get("opeDateTime") or "").strip() or None,
             }
@@ -564,7 +579,7 @@ class WorkerEngine:
                     logger.info(f"[PARSE  ] {log_msg} | FY: {ty}")
                 except Exception as e:
                     logger.error(f"【解析中止】タクソノミ判定失敗 ({doc_id}): {e}")
-                    record["processed_status"] = "failure"
+                    self._apply_status(record, "failure")
                     worker_stats["parsing_failure"] += 1
                     continue
                 finally:
@@ -576,7 +591,7 @@ class WorkerEngine:
                     logger.debug(f"非解析対象保存: {doc_id} | {title}")
                 elif verdict == ProcessVerdict.PARSE and not zip_ok:
                     logger.error(f"保存失敗（有報）: {doc_id} | {title}")
-                    record["processed_status"] = "failure"
+                    self._apply_status(record, "failure")
                     worker_stats["parsing_failure"] += 1
 
         # HF 警告
@@ -619,12 +634,10 @@ class WorkerEngine:
                             if err:
                                 logger.error(f"解析失敗: {did} - {err}")
                                 if "No objects to concatenate" not in err:
-                                    target_rec["processed_status"] = "failure"
+                                    self._apply_status(target_rec, "failure")
                                     worker_stats["parsing_failure"] += 1
                             elif res_df is not None:
-                                if target_rec.get("processed_status") != "failure":
-                                    target_rec["processed_status"] = "parsed"
-
+                                self._apply_status(target_rec, "parsed")
                                 worker_stats["parsing_success"] += 1
 
                                 quant_only = res_df[res_df["isTextBlock_flg"] == 0]
@@ -716,9 +729,11 @@ class WorkerEngine:
             if record["processed_status"] == "parsed":
                 b_id = record["bin_id"]
                 if b_id not in bin_failures:
+                    # parsed は中間ステータス。アノマリがなければ success 相当だが、英/添付アノマリがある場合はそちらが優先されるはず。
+                    # ここでは parsed の時だけ success に書き換える。
                     record["processed_status"] = "success"
                 else:
-                    record["processed_status"] = "failure"
+                    self._apply_status(record, "failure")
                     logger.warning(f"Bin {b_id} の保存失敗によりステータスを failure に設定: {record['doc_id']}")
 
         final_catalog_records = list(potential_catalog_records.values())

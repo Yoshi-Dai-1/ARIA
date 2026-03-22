@@ -279,9 +279,10 @@ class CatalogManager:
 
         # カタログ内の全レコードのステータスを辞書化
         self._status_cache = dict(zip(self.catalog_df["doc_id"], self.catalog_df["processed_status"]))
-        # 成功・取下げ済みのIDをSet化 (O(1)検索用)
+        # 成功・取下げ済み・アノマリ（空書類等）のIDをSet化 (O(1)検索用)
         self._processed_set = {
-            doc_id for doc_id, status in self._status_cache.items() if status in ("success", "retracted")
+            doc_id for doc_id, status in self._status_cache.items() 
+            if status in ("success", "retracted", "english_empty", "attachment_empty")
         }
 
     def is_processed(self, doc_id: str) -> bool:
