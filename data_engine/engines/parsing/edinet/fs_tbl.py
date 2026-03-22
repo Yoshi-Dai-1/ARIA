@@ -91,10 +91,11 @@ class FsDataDf(pa.DataFrameModel):
 
 
 
-def get_fs_tbl(account_list_common_obj,docid:str,zip_file_str:str,temp_path_str:str,role_keyward_list:list)->FsDataDf:
+def get_fs_tbl(account_list_common_obj,docid:str,zip_file_str:str,temp_path_str:str,role_keyward_list:list,doc_type:str='public')->FsDataDf:
     linkbasefile_obj = linkbasefile(
         zip_file_str=zip_file_str,
-        temp_path_str=temp_path_str
+        temp_path_str=temp_path_str,
+        doc_type=doc_type
         )
     linkbasefile_obj.read_linkbase_file()
     linkbasefile_obj.check()
@@ -200,15 +201,16 @@ def get_fs_tbl(account_list_common_obj,docid:str,zip_file_str:str,temp_path_str:
 
 
 class linkbasefile():
-    def __init__(self,zip_file_str:str,temp_path_str:str):
+    def __init__(self,zip_file_str:str,temp_path_str:str,doc_type:str='public'):
         self.zip_file_str = zip_file_str
         self.temp_path_str = temp_path_str
+        self.doc_type = doc_type
         self.log_dict = {}
     def read_linkbase_file(self):
         self.get_presentation_account_list_obj = get_presentation_account_list(
             zip_file_str=self.zip_file_str,
             temp_path_str=self.temp_path_str,
-            doc_type='public'
+            doc_type=self.doc_type
         )
         self.parent_child_df = self.get_presentation_account_list_obj.export_parent_child_link_df()
         self.account_list = self.get_presentation_account_list_obj.export_account_list_df()
@@ -223,7 +225,7 @@ class linkbasefile():
             lang="Japanese",
             zip_file_str=self.zip_file_str,
             temp_path_str=self.temp_path_str,
-            doc_type='public'
+            doc_type=self.doc_type
             )
         self.label_tbl_jp = self.get_label_obj_jp.export_label_tbl(label_to_taxonomi_dict=self.get_presentation_account_list_obj.export_label_to_taxonomi_dict())
         #self.log_dict={**self.log_dict,**self.get_label_obj_jp.export_log().model_dump()}
@@ -231,7 +233,7 @@ class linkbasefile():
             lang="English",
             zip_file_str=self.zip_file_str,
             temp_path_str=self.temp_path_str,
-            doc_type='public'
+            doc_type=self.doc_type
             )
         self.label_tbl_eng = self.get_label_obj_eng.export_label_tbl(label_to_taxonomi_dict=self.get_presentation_account_list_obj.export_label_to_taxonomi_dict())
 

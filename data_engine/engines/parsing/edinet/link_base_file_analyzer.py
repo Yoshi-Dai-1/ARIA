@@ -29,14 +29,14 @@ FloatOrNone = Annotated[float, BeforeValidator(lambda x: x or 0.0)]
 
 class GetCalLog(BaseModel):
     is_cal_file_flg: int = Field(isin=[0,1], title="is_cal_file_flg", description="0: not exist, 1: exist")
-    get_cal_status: Literal['success','failure'] = Field('succsess', title="result", description="success or failure")
+    get_cal_status: Literal['success','failure'] = Field('success', title="result", description="success or failure")
     get_cal_error_message: StrOrNone = Field(default="", title="message", description="message")
 
 class GetPresentationLog(BaseModel):
     is_pre_file_flg: int = Field(isin=[0,1], title="is_pre_file_flg", description="0: not exist, 1: exist")
     #status: Literal['success','failure'] = Field('succsess', title="result", description="success or failure")
     #error_message: StrOrNone = Field(default="", title="message", description="message")
-    get_pre_status: Literal['success','failure'] = Field('succsess', title="result", description="success or failure")
+    get_pre_status: Literal['success','failure'] = Field('success', title="result", description="success or failure")
     get_pre_error_message: StrOrNone = Field(default="", title="message", description="message")
 
 class ParentChildLink(pa.DataFrameModel):
@@ -285,10 +285,10 @@ class get_presentation_account_list():
         self.temp_path=Path(temp_path_str)
         self.temp_path.mkdir(parents=True,exist_ok=True)
         if doc_type == 'audit':
-            self.doc_type_str = 'aai'
+            self.target_dir = 'AuditDoc'
             self.xml_def_path = self.temp_path / "XBRL" / "AuditDoc"
         elif doc_type == 'public':
-            self.doc_type_str = 'asr'
+            self.target_dir = 'PublicDoc'
             self.xml_def_path = self.temp_path / "XBRL" / "PublicDoc"
         else:
             raise Exception("doc_type must be 'audit' or 'public'")
@@ -302,7 +302,7 @@ class get_presentation_account_list():
     def extruct_pre_file_from_xbrlzip(self,zip_file_str:str):
         try:
             with ZipFile(str(zip_file_str)) as zf:
-                fn=[item for item in zf.namelist() if ("pre.xml" in item) & (self.doc_type_str in item)]
+                fn=[item for item in zf.namelist() if ("pre.xml" in item) and (self.target_dir in item)]
                 if len(fn)>0:
                     zf.extract(fn[0], self.temp_path)
             if len(list(self.xml_def_path.glob("*pre.xml")))==0:
@@ -319,7 +319,7 @@ class get_presentation_account_list():
             self.log_dict['get_pre_error_message'] = str(e)
     
     def parse_pre_file(self):
-        files = list(self.xml_def_path.glob(f"*{self.doc_type_str}*pre.xml"))
+        files = list(self.xml_def_path.glob("*pre.xml"))
         if not files:
             self.locators = []
             self.arcs = []
@@ -411,8 +411,13 @@ class get_calc_edge_list():
             'get_cal_error_message':None
                 }
         self.temp_path = Path(temp_path_str)
-        self.doc_type_str = 'asr'
-        self.xml_def_path = self.temp_path / "XBRL" / "PublicDoc"
+        if zip_file_str: # ZIP内を探索する場合
+             # 暫定的にPublicDocを対象とする（計算リンクベースは通常PublicDocにのみ存在）
+            self.target_dir = 'PublicDoc'
+            self.xml_def_path = self.temp_path / "XBRL" / "PublicDoc"
+        else:
+            self.target_dir = 'PublicDoc'
+            self.xml_def_path = self.temp_path / "XBRL" / "PublicDoc"
 
         self.locators = []
         self.arcs = []
@@ -423,7 +428,7 @@ class get_calc_edge_list():
     def extruct_cal_file_from_xbrlzip(self,zip_file_str):
         try:
             with ZipFile(str(zip_file_str)) as zf:
-                fn=[item for item in zf.namelist() if ("cal.xml" in item)&(self.doc_type_str in item)]
+                fn=[item for item in zf.namelist() if ("cal.xml" in item) and (self.target_dir in item)]
                 if len(fn)>0:
                     zf.extract(fn[0], self.temp_path)
 
@@ -434,7 +439,7 @@ class get_calc_edge_list():
             self.log_dict['get_cal_error_message'] = str(e)
         
     def parse_cal_file(self):
-        files = list(self.xml_def_path.glob(f"*{self.doc_type_str}*cal.xml"))
+        files = list(self.xml_def_path.glob("*cal.xml"))
         if not files:
             self.locators = []
             self.arcs = []
@@ -524,17 +529,18 @@ class get_label():
         self.temp_path=Path(temp_path_str)
         self.lang = lang
         if doc_type == 'audit':
-            self.doc_type_str = 'aai'
+            self.target_dir = 'AuditDoc'
+            self.xml_def_path = self.temp_path / "XBRL" / "AuditDoc"
         elif doc_type == 'public':
-            self.doc_type_str = 'asr'
+            self.target_dir = 'PublicDoc'
+            self.xml_def_path = self.temp_path / "XBRL" / "PublicDoc"
         else:
-            self.doc_type_str = ''
-
+            self.target_dir = 'PublicDoc'
+            self.xml_def_path = self.temp_path / "XBRL" / "PublicDoc"
         if lang == 'Japanese':
             self.f_keyword = 'lab.xml'
         else:
             self.f_keyword = 'lab-en.xml'
-        self.xml_def_path = self.temp_path / "XBRL" / "PublicDoc"
         self.extruct_lab_file_from_xbrlzip(zip_file_str)
         if self.log_dict['get_lab_status']!='failure':
             self.parse_lab_file()
@@ -544,7 +550,7 @@ class get_label():
         try:
             
             with ZipFile(str(zip_file_str)) as zf:
-                    fn=[item for item in zf.namelist() if (self.f_keyword in item) and (self.doc_type_str in item)]
+                    fn=[item for item in zf.namelist() if (self.f_keyword in item) and (self.target_dir in item)]
                     if len(fn)>0:
                         zf.extract(fn[0], self.temp_path)
         except Exception as e:
@@ -554,7 +560,7 @@ class get_label():
             self.log_dict['get_lab_error_message'] = str(e)
 
     def parse_lab_file(self):
-        files = list(self.xml_def_path.glob(f"*{self.doc_type_str}*{self.f_keyword}"))
+        files = list(self.xml_def_path.glob(f"*{self.f_keyword}"))
         if not files:
             self.resources = []
             self.arcs = []
