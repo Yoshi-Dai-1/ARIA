@@ -125,6 +125,9 @@ class TopixStrategy(IndexStrategy):
             if not code_col or not weight_col:
                 raise ValueError(f"TOPIX必須カラム欠落: {df.columns}")
 
+            # フッター等の空行を削除
+            df = df.dropna(subset=[code_col, weight_col])
+
             df = df[[code_col, weight_col]].rename(columns={code_col: "code", weight_col: "weight"})
 
             # 型変換 (JPプレフィックス付与)
